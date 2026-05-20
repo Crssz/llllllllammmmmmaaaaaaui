@@ -14,7 +14,7 @@ export type LogEntry = {
 };
 
 const MAX = 500;
-const CONSOLE_PREFIX = "%c[helm]";
+const CONSOLE_PREFIX = "%c[lllammmui]";
 const CONSOLE_STYLE_BY_LEVEL: Record<LogLevel, string> = {
   debug: "color:#888",
   info: "color:#9b7bff",

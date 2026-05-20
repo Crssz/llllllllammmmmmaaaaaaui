@@ -222,7 +222,7 @@ export function BinaryLocator() {
             <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
             {build?.detected ? (
               <>
-                Helm executes{" "}
+                The app executes{" "}
                 <span className="mono" style={{ color: "var(--text-2)" }}>
                   {build.resolved_path}
                   {pathSep(build.resolved_path)}llama-server

@@ -79,7 +79,7 @@ function TopBar({
       <div className="brand">
         <div className="brand-mark">H</div>
         <div className="brand-name">
-          Helm <span className="dim mono">0.4.2</span>
+          llllllllammmmmmaaaaaaui <span className="dim mono">0.4.2</span>
         </div>
       </div>
 

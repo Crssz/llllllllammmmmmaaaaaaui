@@ -235,7 +235,7 @@ export function ModelsScreen() {
             <div className="bin-footer">
               <span>
                 <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-                Helm scans{" "}
+                The app scans{" "}
                 <span className="mono" style={{ color: "var(--text-2)" }}>
                   {path || "<dir>"}/&lt;owner&gt;/&lt;model&gt;/*.gguf
                 </span>{" "}

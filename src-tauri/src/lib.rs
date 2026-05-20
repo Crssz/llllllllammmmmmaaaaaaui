@@ -1732,7 +1732,7 @@ fn init_logging() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_logging();
-    info!("helm starting up");
+    info!("llllllllammmmmmaaaaaaui starting up");
     tauri::Builder::default()
         .setup(|app| {
             // Seed the HIP DLL search hint from persisted settings so AMD
@@ -1869,7 +1869,7 @@ mod tests {
 
     #[test]
     fn canonical_dir_rejects_nonexistent() {
-        let err = canonical_dir("Z:/definitely-does-not-exist-helm-test");
+        let err = canonical_dir("Z:/definitely-does-not-exist-lllammmui-test");
         assert!(err.is_err());
     }
 

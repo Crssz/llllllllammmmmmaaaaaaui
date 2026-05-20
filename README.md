@@ -1,6 +1,6 @@
-# Helm
+# llllllllammmmmmaaaaaaui
 
-[![CI](https://github.com/narawit/helm/actions/workflows/ci.yml/badge.svg)](https://github.com/narawit/helm/actions/workflows/ci.yml)
+[![CI](https://github.com/Crssz/llllllllammmmmmaaaaaaui/actions/workflows/ci.yml/badge.svg)](https://github.com/Crssz/llllllllammmmmmaaaaaaui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue)
 
@@ -90,12 +90,12 @@ The `Manual / Suggest / Auto` pills in the top bar control how aggressively the 
 ## First-time setup
 
 1. Build `llama.cpp` somewhere on disk (`cmake -B build && cmake --build build --config Release`).
-2. Launch Helm, go to **Configure → Binary**, click **Browse…** and pick your `llama.cpp/build` directory.
-3. Helm probes `./`, `bin/`, `bin/Release/`, `Release/` and runs `llama-server --version` to detect the build version, commit, and backend (CUDA / Vulkan / Metal / ROCm / CPU).
+2. Launch llllllllammmmmmaaaaaaui, go to **Configure → Binary**, click **Browse…** and pick your `llama.cpp/build` directory.
+3. llllllllammmmmmaaaaaaui probes `./`, `bin/`, `bin/Release/`, `Release/` and runs `llama-server --version` to detect the build version, commit, and backend (CUDA / Vulkan / Metal / ROCm / CPU).
 4. Click **Browse…** next to the `--model` row to pick a GGUF file.
 5. Hit **Start** in the Configure page header. The TopBar dot turns green and the sidebar runtime card shows the real PID + uptime.
 
-Settings persist to `%APPDATA%\dev.helm.app\settings.json` (build dir, recent dirs, model path, flag values).
+Settings persist to `%APPDATA%\dev.llllllllammmmmmaaaaaaui.app\settings.json` (build dir, recent dirs, model path, flag values).
 
 ## Tauri commands
 

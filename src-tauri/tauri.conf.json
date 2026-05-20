@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Helm",
+  "productName": "llllllllammmmmmaaaaaaui",
   "version": "0.4.2",
-  "identifier": "dev.helm.app",
+  "identifier": "dev.llllllllammmmmmaaaaaaui.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Helm",
+        "title": "llllllllammmmmmaaaaaaui",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,
