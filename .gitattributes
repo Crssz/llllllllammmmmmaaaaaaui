@@ -1,0 +1,11 @@
+# Force consistent LF line endings across platforms so Prettier check
+# behaves identically on Windows dev machines and Windows CI runners.
+* text=auto eol=lf
+
+# Binary file types — never apply text conversion.
+*.png binary
+*.ico binary
+*.icns binary
+*.gguf binary
+*.tar binary
+*.lock -text
