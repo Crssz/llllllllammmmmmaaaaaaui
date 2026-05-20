@@ -1,0 +1,26 @@
+node_modules
+dist
+coverage
+*.tsbuildinfo
+.DS_Store
+.vite
+*.local
+*.log
+.env
+.env.*
+
+# Tauri build artifacts
+src-tauri/target
+src-tauri/gen/schemas
+
+# Local tool state (Claude Code harness, CodeGraph index)
+.claude/
+.codegraph/
+
+# design archive (kept locally as reference, not checked in)
+.design-archive/
+.design-archive-v2/
+.design-archive-v3/
+.design.tar
+.design2.tar
+.design3.tar
