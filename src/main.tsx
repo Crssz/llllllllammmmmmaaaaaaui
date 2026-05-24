@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
-import { AppStateProvider } from "./state";
+import { AppEffects } from "./state";
 import { FLAG_GROUPS } from "./data";
 import "./styles.css";
 
@@ -14,8 +14,7 @@ for (const g of FLAG_GROUPS) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <AppStateProvider initialFlags={initialFlags}>
-      <App />
-    </AppStateProvider>
+    <AppEffects initialFlags={initialFlags} />
+    <App />
   </React.StrictMode>,
 );

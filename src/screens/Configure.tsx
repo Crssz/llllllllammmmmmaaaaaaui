@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
 import { FLAG_GROUPS, MODEL, type Agency, type FlagDef } from "../data";
 import { BinaryLocator } from "./BinaryLocator";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 import { api } from "../lib/api";
 import { buildArgs, type FlagValue } from "../lib/buildArgs";
 
@@ -173,7 +174,20 @@ export function ConfigureScreen({
     settings,
     modelInfo,
     modelInfoError,
-  } = useAppState();
+  } = useAppStore(
+    useShallow((s) => ({
+      flags: s.flags,
+      setFlag: s.setFlag,
+      pickModel: s.pickModel,
+      startServer: s.startServer,
+      stopServer: s.stopServer,
+      server: s.server,
+      startError: s.startError,
+      settings: s.settings,
+      modelInfo: s.modelInfo,
+      modelInfoError: s.modelInfoError,
+    })),
+  );
 
   const [open, setOpen] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(FLAG_GROUPS.map((g) => [g.id, g.defaultOpen])),

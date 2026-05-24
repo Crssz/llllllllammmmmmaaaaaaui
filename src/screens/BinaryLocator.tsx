@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 
 const FALLBACK_BINARIES = [
   { name: "llama-server", desc: "HTTP/WebSocket server" },
@@ -13,7 +14,18 @@ const FALLBACK_BINARIES = [
 
 export function BinaryLocator() {
   const { settings, build, scanning, scanError, pickBuildDir, setBuildDir, rescan, clearRecent } =
-    useAppState();
+    useAppStore(
+      useShallow((s) => ({
+        settings: s.settings,
+        build: s.build,
+        scanning: s.scanning,
+        scanError: s.scanError,
+        pickBuildDir: s.pickBuildDir,
+        setBuildDir: s.setBuildDir,
+        rescan: s.rescan,
+        clearRecent: s.clearRecent,
+      })),
+    );
   const [showRecent, setShowRecent] = useState(false);
 
   const path = build?.path ?? settings.build_dir ?? "";

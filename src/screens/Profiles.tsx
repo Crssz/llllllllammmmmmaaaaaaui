@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 
 function fmtN(n: number | undefined | null): string {
   if (n === undefined || n === null) return "—";
@@ -27,7 +28,15 @@ function timeAgo(ts: number): string {
 }
 
 export function ProfilesScreen() {
-  const { settings, flags, saveProfile, loadProfile, deleteProfile } = useAppState();
+  const { settings, flags, saveProfile, loadProfile, deleteProfile } = useAppStore(
+    useShallow((s) => ({
+      settings: s.settings,
+      flags: s.flags,
+      saveProfile: s.saveProfile,
+      loadProfile: s.loadProfile,
+      deleteProfile: s.deleteProfile,
+    })),
+  );
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");

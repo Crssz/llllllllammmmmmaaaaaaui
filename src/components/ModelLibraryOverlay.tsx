@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 import { api, type GgufInfo } from "../lib/api";
 import { ExpandedRow, bitsClass, flatten, type FlatRow } from "../screens/Models";
 
@@ -33,7 +34,21 @@ export function ModelLibraryOverlay({
     server,
     stopServer,
     modelInfo,
-  } = useAppState();
+  } = useAppStore(
+    useShallow((s) => ({
+      flags: s.flags,
+      setFlag: s.setFlag,
+      settings: s.settings,
+      models: s.models,
+      modelsScanning: s.modelsScanning,
+      pickModelsDir: s.pickModelsDir,
+      pickModel: s.pickModel,
+      loadModelPath: s.loadModelPath,
+      server: s.server,
+      stopServer: s.stopServer,
+      modelInfo: s.modelInfo,
+    })),
+  );
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [q, setQ] = useState("");

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 import { api, type GgufInfo, type ModelEntry, type OwnerEntry, type QuantFile } from "../lib/api";
 
 type SortBy = "recent" | "size" | "name";
@@ -50,7 +51,24 @@ export function ModelsScreen() {
     server,
     startServer,
     stopServer,
-  } = useAppState();
+  } = useAppStore(
+    useShallow((s) => ({
+      flags: s.flags,
+      settings: s.settings,
+      models: s.models,
+      modelsScanning: s.modelsScanning,
+      modelsScanError: s.modelsScanError,
+      pickModelsDir: s.pickModelsDir,
+      setModelsDir: s.setModelsDir,
+      rescanModels: s.rescanModels,
+      clearModelsRecent: s.clearModelsRecent,
+      loadModelPath: s.loadModelPath,
+      setFlag: s.setFlag,
+      server: s.server,
+      startServer: s.startServer,
+      stopServer: s.stopServer,
+    })),
+  );
 
   const [showRecent, setShowRecent] = useState(false);
   const [q, setQ] = useState("");

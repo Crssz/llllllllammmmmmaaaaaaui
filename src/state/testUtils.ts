@@ -1,0 +1,107 @@
+import { vi } from "vitest";
+import { useAppStore, resetAppStore } from "./store";
+import { api, type Settings, type ChatSession } from "../lib/api";
+import { EMPTY_SETTINGS } from "./slices/settingsSlice";
+
+export { useAppStore, resetAppStore };
+
+export function freshStore() {
+  resetAppStore();
+  vi.clearAllMocks();
+}
+
+// Build a Settings object overriding only the fields the caller cares about.
+export function makeSettings(patch: Partial<Settings> = {}): Settings {
+  return { ...EMPTY_SETTINGS, ...patch };
+}
+
+export function makeChat(over: Partial<ChatSession> = {}): ChatSession {
+  return {
+    id: "c1",
+    title: "t",
+    created_at: 1,
+    updated_at: 1,
+    pinned: false,
+    messages: [],
+    ...over,
+  };
+}
+
+// Spy on every Tauri-facing api.* method with a default resolved value, so
+// slice actions that fire-and-forget persistence calls don't blow up.
+export function stubApi() {
+  vi.spyOn(api, "saveSettings").mockResolvedValue(undefined);
+  vi.spyOn(api, "saveChats").mockResolvedValue(undefined);
+  vi.spyOn(api, "loadSettings").mockResolvedValue(EMPTY_SETTINGS);
+  vi.spyOn(api, "loadChats").mockResolvedValue([]);
+  vi.spyOn(api, "addRecentDir").mockResolvedValue(EMPTY_SETTINGS);
+  vi.spyOn(api, "addRecentModelsDir").mockResolvedValue(EMPTY_SETTINGS);
+  vi.spyOn(api, "scanBuild").mockResolvedValue({
+    path: "/b",
+    resolved_path: "/b",
+    detected: true,
+    version: "v1",
+    commit: null,
+    backend_badges: [],
+    binaries: [],
+  });
+  vi.spyOn(api, "scanModels").mockResolvedValue({
+    path: "/m",
+    total_gb: 0,
+    count: 0,
+    owners: 0,
+    tree: [],
+  });
+  vi.spyOn(api, "inspectGguf").mockResolvedValue({
+    path: "/m/model.gguf",
+    gguf_version: 3,
+    tensor_count: 0,
+    metadata_count: 0,
+    architecture: "llama",
+    general_name: null,
+    context_length: null,
+    mtp_support: false,
+    size_gb: 0,
+    mmproj_siblings: [],
+  });
+  vi.spyOn(api, "hwSnapshot").mockResolvedValue({
+    cpu_util: 0,
+    cpu_name: "",
+    cpu_cores: 0,
+    cpu_freq_ghz: 0,
+    ram_total_gb: 0,
+    ram_used_gb: 0,
+    swap_used_gb: 0,
+    gpus: [],
+    gpu_backend: "",
+  });
+  vi.spyOn(api, "startServer").mockResolvedValue({
+    pid: 1,
+    port: 8080,
+    started_at: 1,
+    binary: "llama-server",
+  });
+  vi.spyOn(api, "stopServer").mockResolvedValue(undefined);
+  vi.spyOn(api, "serverStatus").mockResolvedValue({
+    running: false,
+    ready: false,
+    info: null,
+  });
+  vi.spyOn(api, "pickFolder").mockResolvedValue(null);
+  vi.spyOn(api, "pickFile").mockResolvedValue(null);
+  vi.spyOn(api, "mcpConnect").mockResolvedValue({
+    id: "x",
+    connected: true,
+    error: null,
+    tool_count: 0,
+    server_name: null,
+  });
+  vi.spyOn(api, "mcpDisconnect").mockResolvedValue(undefined);
+  vi.spyOn(api, "mcpListTools").mockResolvedValue([]);
+  vi.spyOn(api, "mcpCallTool").mockResolvedValue("");
+  vi.spyOn(api, "mcpStatusAll").mockResolvedValue([]);
+}
+
+// Drain microtasks so fire-and-forget persistence promises settle before the
+// test inspects spy calls.
+export const flush = () => new Promise<void>((r) => queueMicrotask(r));

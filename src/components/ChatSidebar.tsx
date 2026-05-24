@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore, useCurrentChat } from "../state";
+import { useShallow } from "zustand/react/shallow";
 import { defaultSessionConfig, type ChatSessionConfig, type ToolPermission } from "../lib/api";
 
 function Section({
@@ -59,8 +60,8 @@ function ToolPermSelect({
 }
 
 export function ChatSidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const currentChat = useCurrentChat();
   const {
-    currentChat,
     updateSessionConfig,
     settings,
     mcpServers,
@@ -69,7 +70,18 @@ export function ChatSidebar({ open, onToggle }: { open: boolean; onToggle: () =>
     applyPresetToSession,
     saveSessionAsPreset,
     deletePreset,
-  } = useAppState();
+  } = useAppStore(
+    useShallow((s) => ({
+      updateSessionConfig: s.updateSessionConfig,
+      settings: s.settings,
+      mcpServers: s.settings.mcp_servers,
+      mcpStatuses: s.mcpStatuses,
+      mcpTools: s.mcpTools,
+      applyPresetToSession: s.applyPresetToSession,
+      saveSessionAsPreset: s.saveSessionAsPreset,
+      deletePreset: s.deletePreset,
+    })),
+  );
 
   const [newPresetName, setNewPresetName] = useState("");
   const [savingPreset, setSavingPreset] = useState(false);

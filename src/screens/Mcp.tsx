@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 import type { McpServerConfig, McpStatus, McpTool, McpTransport } from "../lib/api";
 
 function emptyServer(): McpServerConfig {
@@ -270,7 +271,18 @@ export function McpScreen() {
     mcpConnect,
     mcpDisconnect,
     mcpRefreshStatus,
-  } = useAppState();
+  } = useAppStore(
+    useShallow((s) => ({
+      mcpServers: s.settings.mcp_servers,
+      mcpStatuses: s.mcpStatuses,
+      mcpTools: s.mcpTools,
+      mcpUpsertServer: s.mcpUpsertServer,
+      mcpDeleteServer: s.mcpDeleteServer,
+      mcpConnect: s.mcpConnect,
+      mcpDisconnect: s.mcpDisconnect,
+      mcpRefreshStatus: s.mcpRefreshStatus,
+    })),
+  );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<McpServerConfig | null>(null);

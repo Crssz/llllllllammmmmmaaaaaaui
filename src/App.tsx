@@ -7,7 +7,8 @@ import { HardwareScreen } from "./screens/Hardware";
 import { ProfilesScreen } from "./screens/Profiles";
 import { ModelsScreen } from "./screens/Models";
 import { McpScreen } from "./screens/Mcp";
-import { useAppState } from "./state";
+import { useAppStore } from "./state";
+import { useShallow } from "zustand/react/shallow";
 import { LogsPanel } from "./components/LogsPanel";
 import { ModelLibraryOverlay } from "./components/ModelLibraryOverlay";
 import { Toasts } from "./components/Toasts";
@@ -63,7 +64,14 @@ function TopBar({
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
 }) {
-  const { server, flags, stopServer, modelInfo } = useAppState();
+  const { server, flags, stopServer, modelInfo } = useAppStore(
+    useShallow((s) => ({
+      server: s.server,
+      flags: s.flags,
+      stopServer: s.stopServer,
+      modelInfo: s.modelInfo,
+    })),
+  );
   const modelPath = (flags.model as string) || "";
   const modelName = modelPath ? basename(modelPath) : "no model";
   // Three states: stopped (muted), running-but-loading (yellow), ready (green).
@@ -151,7 +159,16 @@ function TopBar({
 }
 
 function Sidebar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
-  const { server, settings, chats, currentChatId, selectChat, newChat } = useAppState();
+  const { server, settings, chats, currentChatId, selectChat, newChat } = useAppStore(
+    useShallow((s) => ({
+      server: s.server,
+      settings: s.settings,
+      chats: s.chats,
+      currentChatId: s.currentChatId,
+      selectChat: s.selectChat,
+      newChat: s.newChat,
+    })),
+  );
   const NAV: { id: Tab; label: string; icon: keyof typeof I; meta: string }[] = [
     { id: "chat", label: "Chat", icon: "Chat", meta: "⌘1" },
     { id: "models", label: "Models", icon: "Folder", meta: "⌘2" },
@@ -366,7 +383,9 @@ function useTime() {
 
 function StatusBar({ agency }: { agency: Agency }) {
   const t = useTime();
-  const { server, build, flags } = useAppState();
+  const { server, build, flags } = useAppStore(
+    useShallow((s) => ({ server: s.server, build: s.build, flags: s.flags })),
+  );
   const binary = build?.resolved_path
     ? `${build.resolved_path}${build.resolved_path.includes("\\") ? "\\" : "/"}llama-server`
     : "llama-server";
@@ -399,7 +418,8 @@ function StatusBar({ agency }: { agency: Agency }) {
 
 export function App() {
   const [tab, setTab] = useState<Tab>("configure");
-  const { agency, setAgency } = useAppState();
+  const agency = useAppStore((s) => s.agency);
+  const setAgency = useAppStore((s) => s.setAgency);
   const [configureTabRequest, setConfigureTabRequest] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { splitThink } from "../state";
+import { splitThink } from "./chatHelpers";
 
 describe("splitThink", () => {
   it("returns full content when no think block is present", () => {

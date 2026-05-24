@@ -1,5 +1,6 @@
 import { I } from "../icons";
-import { useAppState } from "../state";
+import { useAppStore } from "../state";
+import { useShallow } from "zustand/react/shallow";
 
 function Sparkline({
   data,
@@ -41,7 +42,9 @@ function Sparkline({
 }
 
 export function HardwareScreen() {
-  const { hw, hwSeries, server } = useAppState();
+  const { hw, hwSeries, server } = useAppStore(
+    useShallow((s) => ({ hw: s.hw, hwSeries: s.hwSeries, server: s.server })),
+  );
 
   const gpu0 = hw?.gpus?.[0];
   const gpuVramPct =

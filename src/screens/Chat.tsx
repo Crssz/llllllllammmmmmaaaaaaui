@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type HTMLAttributes, type ReactElement } f
 import { Streamdown } from "streamdown";
 import { I } from "../icons";
 import type { Agency } from "../data";
-import { useAppState } from "../state";
+import { useAppStore, useCurrentChat, useChatMessages } from "../state";
+import { useShallow } from "zustand/react/shallow";
 import { ChatSidebar } from "../components/ChatSidebar";
 
 // Custom <pre> wrapper for code blocks: hides streamdown's built-in icons
@@ -68,15 +69,15 @@ function fmtTime(ts: number): string {
 }
 
 export function ChatScreen({ agency }: { agency: Agency }) {
+  const chatMessages = useChatMessages();
+  const currentChat = useCurrentChat();
   const {
-    chatMessages,
     chatPending,
     chatError,
     sendChat,
     cancelChat,
     server,
     flags,
-    currentChat,
     newChat,
     deleteChat,
     togglePinChat,
@@ -87,7 +88,26 @@ export function ChatScreen({ agency }: { agency: Agency }) {
     setReasoningEnabled,
     pendingToolApproval,
     approveTool,
-  } = useAppState();
+  } = useAppStore(
+    useShallow((s) => ({
+      chatPending: s.chatPending,
+      chatError: s.chatError,
+      sendChat: s.sendChat,
+      cancelChat: s.cancelChat,
+      server: s.server,
+      flags: s.flags,
+      newChat: s.newChat,
+      deleteChat: s.deleteChat,
+      togglePinChat: s.togglePinChat,
+      editMessage: s.editMessage,
+      deleteMessage: s.deleteMessage,
+      resendFromMessage: s.resendFromMessage,
+      reasoningEnabled: s.reasoningEnabled,
+      setReasoningEnabled: s.setReasoningEnabled,
+      pendingToolApproval: s.pendingToolApproval,
+      approveTool: s.approveTool,
+    })),
+  );
   const [sideOpen, setSideOpen] = useState(true);
   const [draft, setDraft] = useState("");
   const [hiddenThink, setHiddenThink] = useState<Set<number>>(new Set());
