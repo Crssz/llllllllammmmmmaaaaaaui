@@ -21,12 +21,46 @@ export type BuildInfo = {
 };
 
 export type StoredChatMessage = {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   time: number;
   tps?: number | null;
   tokens?: number | null;
   reasoning?: string | null;
+  /** Set on assistant messages that emitted tool calls. */
+  tool_calls?: ToolCall[] | null;
+  /** Set on `tool` role messages — id of the tool_call this responds to. */
+  tool_call_id?: string | null;
+  /** Set on `tool` role messages — display name of the tool. */
+  tool_name?: string | null;
+};
+
+export type ToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+export type ToolPermission = "allow" | "ask" | "deny";
+
+export type ToolPermissions = {
+  default: ToolPermission;
+  per_tool: Record<string, ToolPermission>;
+};
+
+export type ChatSessionConfig = {
+  system_prompt: string | null;
+  chat_template: string | null;
+  mcp_server_ids: string[];
+  tool_permissions: ToolPermissions;
+  preset_id: string | null;
+};
+
+export type ChatPreset = {
+  id: string;
+  name: string;
+  created_at: number;
+  config: ChatSessionConfig;
 };
 
 export type ChatSession = {
@@ -36,6 +70,7 @@ export type ChatSession = {
   updated_at: number;
   pinned: boolean;
   messages: StoredChatMessage[];
+  config?: ChatSessionConfig | null;
 };
 
 export type SavedProfile = {
@@ -47,6 +82,36 @@ export type SavedProfile = {
   agency: string | null;
 };
 
+export type McpTransport = "stdio" | "http" | "sse";
+
+export type McpServerConfig = {
+  id: string;
+  name: string;
+  transport: McpTransport;
+  command?: string | null;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string | null;
+  url?: string | null;
+  headers?: Record<string, string>;
+  enabled: boolean;
+  autostart: boolean;
+};
+
+export type McpTool = {
+  name: string;
+  description: string | null;
+  input_schema: Record<string, unknown>;
+};
+
+export type McpStatus = {
+  id: string;
+  connected: boolean;
+  error: string | null;
+  tool_count: number;
+  server_name: string | null;
+};
+
 export type Settings = {
   build_dir: string | null;
   recent_dirs: string[];
@@ -56,6 +121,8 @@ export type Settings = {
   models_recent: string[];
   profiles: SavedProfile[];
   reasoning_enabled: boolean | null;
+  mcp_servers: McpServerConfig[];
+  chat_presets: ChatPreset[];
 };
 
 export type RunningInfo = {
@@ -140,6 +207,16 @@ export type HwSnapshot = {
   gpu_backend: string;
 };
 
+export function defaultSessionConfig(): ChatSessionConfig {
+  return {
+    system_prompt: null,
+    chat_template: null,
+    mcp_server_ids: [],
+    tool_permissions: { default: "ask", per_tool: {} },
+    preset_id: null,
+  };
+}
+
 export const api = {
   loadSettings: () => invoke<Settings>("load_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
@@ -158,6 +235,13 @@ export const api = {
 
   loadChats: () => invoke<ChatSession[]>("load_chats"),
   saveChats: (chats: ChatSession[]) => invoke<void>("save_chats", { chats }),
+
+  mcpConnect: (id: string) => invoke<McpStatus>("mcp_connect", { id }),
+  mcpDisconnect: (id: string) => invoke<void>("mcp_disconnect", { id }),
+  mcpListTools: (id: string) => invoke<McpTool[]>("mcp_list_tools", { id }),
+  mcpCallTool: (id: string, name: string, args: Record<string, unknown>) =>
+    invoke<unknown>("mcp_call_tool", { id, name, arguments: args }),
+  mcpStatusAll: () => invoke<McpStatus[]>("mcp_status_all"),
 
   pickFolder: (title = "Select a directory") =>
     open({ directory: true, multiple: false, title }) as Promise<string | null>,

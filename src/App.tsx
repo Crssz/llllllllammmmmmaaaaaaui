@@ -6,13 +6,14 @@ import { ConfigureScreen } from "./screens/Configure";
 import { HardwareScreen } from "./screens/Hardware";
 import { ProfilesScreen } from "./screens/Profiles";
 import { ModelsScreen } from "./screens/Models";
+import { McpScreen } from "./screens/Mcp";
 import { useAppState } from "./state";
 import { LogsPanel } from "./components/LogsPanel";
 import { ModelLibraryOverlay } from "./components/ModelLibraryOverlay";
 import { Toasts } from "./components/Toasts";
 import { log } from "./lib/logger";
 
-type Tab = "chat" | "models" | "configure" | "hardware" | "profiles";
+type Tab = "chat" | "models" | "configure" | "hardware" | "profiles" | "mcp";
 
 function ModePills({ value, onChange }: { value: Agency; onChange: (a: Agency) => void }) {
   return (
@@ -157,6 +158,7 @@ function Sidebar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
     { id: "configure", label: "Configure", icon: "Sliders", meta: "⌘3" },
     { id: "hardware", label: "Hardware", icon: "Hardware", meta: "⌘4" },
     { id: "profiles", label: "Profiles", icon: "Bookmark", meta: "⌘5" },
+    { id: "mcp", label: "MCP", icon: "Globe", meta: "⌘6" },
   ];
 
   const pinned = chats.filter((c) => c.pinned).sort((a, b) => b.updated_at - a.updated_at);
@@ -403,9 +405,9 @@ export function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
-    const tabs: Tab[] = ["chat", "models", "configure", "hardware", "profiles"];
+    const tabs: Tab[] = ["chat", "models", "configure", "hardware", "profiles", "mcp"];
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-5]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
         e.preventDefault();
         setTab(tabs[Number(e.key) - 1]);
       } else if ((e.metaKey || e.ctrlKey) && e.key === "`") {
@@ -450,6 +452,7 @@ export function App() {
           )}
           {tab === "hardware" && <HardwareScreen />}
           {tab === "profiles" && <ProfilesScreen />}
+          {tab === "mcp" && <McpScreen />}
         </main>
       </div>
       <StatusBar agency={agency} />

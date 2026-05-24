@@ -1,3 +1,5 @@
+mod mcp;
+
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -10,8 +12,11 @@ use std::time::Duration;
 
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::mcp::{McpRegistry, McpServerConfig, McpStatus, McpTool};
 
 // Mutex helper that recovers from poison rather than panicking. A poisoned
 // mutex means a thread panicked while holding the lock, but the data inside
@@ -58,6 +63,69 @@ pub struct Settings {
     /// None == use default (true) so older settings files still work.
     #[serde(default)]
     pub reasoning_enabled: Option<bool>,
+    /// User-registered MCP servers.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    /// Reusable chat session presets (system prompt, MCP toggles, etc.).
+    #[serde(default)]
+    pub chat_presets: Vec<ChatPreset>,
+}
+
+/// Reusable bundle of per-session chat configuration. Saved at the top level
+/// so a user can apply the same setup to multiple sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatPreset {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub config: ChatSessionConfig,
+}
+
+/// Per-session chat config. Stored on each ChatSession when overridden.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChatSessionConfig {
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Optional client-side chat template override. When present, requests
+    /// include `chat_template` so llama-server uses it instead of the
+    /// model-default template.
+    #[serde(default)]
+    pub chat_template: Option<String>,
+    /// IDs of MCP servers enabled for this session. Tools are pulled from
+    /// these servers and offered to the model.
+    #[serde(default)]
+    pub mcp_server_ids: Vec<String>,
+    /// Default tool-permission policy and per-tool overrides.
+    #[serde(default)]
+    pub tool_permissions: ToolPermissions,
+    /// If this session was hydrated from a preset, remember the preset id so
+    /// the UI can show "linked" state.
+    #[serde(default)]
+    pub preset_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolPermissions {
+    /// One of: "allow" | "ask" | "deny"
+    #[serde(default = "default_policy")]
+    pub default: String,
+    /// "<serverId>:<toolName>" → policy. Falls back to `default` if missing.
+    #[serde(default)]
+    pub per_tool: std::collections::HashMap<String, String>,
+}
+
+impl Default for ToolPermissions {
+    fn default() -> Self {
+        Self {
+            default: default_policy(),
+            per_tool: Default::default(),
+        }
+    }
+}
+
+fn default_policy() -> String {
+    "ask".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1657,6 +1725,10 @@ pub struct ChatSession {
     #[serde(default)]
     pub pinned: bool,
     pub messages: Vec<ChatMessage>,
+    /// Per-session overrides (system prompt, MCP toggles, etc.). None means
+    /// fall back to the global defaults.
+    #[serde(default)]
+    pub config: Option<ChatSessionConfig>,
 }
 
 fn chats_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1711,6 +1783,49 @@ fn add_recent_models_dir(app: AppHandle, dir: String) -> Result<Settings, String
     Ok(settings)
 }
 
+// ── MCP commands ────────────────────────────────────────────────────────────
+#[tauri::command]
+fn mcp_connect(
+    app: AppHandle,
+    reg: State<'_, McpRegistry>,
+    id: String,
+) -> Result<McpStatus, String> {
+    let settings = load_settings(app)?;
+    let cfg = settings
+        .mcp_servers
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("MCP server {id} not found"))?;
+    reg.connect(&cfg)
+}
+
+#[tauri::command]
+fn mcp_disconnect(reg: State<'_, McpRegistry>, id: String) -> Result<(), String> {
+    reg.disconnect(&id);
+    Ok(())
+}
+
+#[tauri::command]
+fn mcp_list_tools(reg: State<'_, McpRegistry>, id: String) -> Result<Vec<McpTool>, String> {
+    reg.list_tools(&id)
+}
+
+#[tauri::command]
+fn mcp_call_tool(
+    reg: State<'_, McpRegistry>,
+    id: String,
+    name: String,
+    arguments: JsonValue,
+) -> Result<JsonValue, String> {
+    reg.call_tool(&id, &name, arguments)
+}
+
+#[tauri::command]
+fn mcp_status_all(app: AppHandle, reg: State<'_, McpRegistry>) -> Result<Vec<McpStatus>, String> {
+    let settings = load_settings(app)?;
+    Ok(reg.status_all(&settings.mcp_servers))
+}
+
 // ── App entry ───────────────────────────────────────────────────────────────
 fn init_logging() {
     use std::io::Write;
@@ -1762,6 +1877,7 @@ pub fn run() {
             hip: Mutex::new(None),
             build_dir_hint: Mutex::new(None),
         })
+        .manage(McpRegistry::default())
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
@@ -1776,6 +1892,11 @@ pub fn run() {
             hw_snapshot,
             load_chats,
             save_chats,
+            mcp_connect,
+            mcp_disconnect,
+            mcp_list_tools,
+            mcp_call_tool,
+            mcp_status_all,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -1785,6 +1906,9 @@ pub fn run() {
                     if let Some(mut c) = child.take() {
                         let _ = c.kill();
                     }
+                }
+                if let Some(reg) = window.try_state::<McpRegistry>() {
+                    reg.shutdown_all();
                 }
             }
         })
@@ -1892,6 +2016,8 @@ mod tests {
             models_recent: vec![],
             profiles: vec![],
             reasoning_enabled: Some(false),
+            mcp_servers: vec![],
+            chat_presets: vec![],
         };
         let encoded = serde_json::to_string(&s).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();

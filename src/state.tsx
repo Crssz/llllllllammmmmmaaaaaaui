@@ -11,26 +11,37 @@ import {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   api,
+  defaultSessionConfig,
   type BuildInfo,
+  type ChatPreset,
   type ChatSession,
+  type ChatSessionConfig,
   type GgufInfo,
   type HwSnapshot,
+  type McpServerConfig,
+  type McpStatus,
+  type McpTool,
   type ModelsScan,
   type RunningInfo,
   type SavedProfile,
   type Settings,
   type StoredChatMessage,
+  type ToolCall,
+  type ToolPermission,
 } from "./lib/api";
 import { log, logFailure } from "./lib/logger";
 
 type FlagValues = Record<string, string | number | boolean>;
 
 export type ChatMessage = {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   time: number;
   reasoning?: string;
   meta?: { tps?: number; tokens?: number };
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  tool_name?: string;
 };
 
 function toView(msgs: StoredChatMessage[]): ChatMessage[] {
@@ -43,6 +54,9 @@ function toView(msgs: StoredChatMessage[]): ChatMessage[] {
       m.tps != null || m.tokens != null
         ? { tps: m.tps ?? undefined, tokens: m.tokens ?? undefined }
         : undefined,
+    tool_calls: m.tool_calls ?? undefined,
+    tool_call_id: m.tool_call_id ?? undefined,
+    tool_name: m.tool_name ?? undefined,
   }));
 }
 
@@ -54,6 +68,9 @@ function fromView(m: ChatMessage): StoredChatMessage {
     tps: m.meta?.tps ?? null,
     tokens: m.meta?.tokens ?? null,
     reasoning: m.reasoning ?? null,
+    tool_calls: m.tool_calls ?? null,
+    tool_call_id: m.tool_call_id ?? null,
+    tool_name: m.tool_name ?? null,
   };
 }
 
@@ -86,6 +103,46 @@ export function splitThink(raw: string): { content: string; reasoning: string } 
 
 function newChatId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Flatten an MCP tools/call result into a single string suitable as the
+ * content of a `tool` role message. MCP returns a structured response:
+ *
+ *   { content: [{ type: "text", text: "..." }, ...], isError?: boolean }
+ *
+ * We concatenate text parts, fall back to JSON-stringify for non-text parts,
+ * and prefix with [error] when isError is set so the model sees the failure.
+ */
+export function mcpResultToText(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+  const obj = raw as { content?: unknown; isError?: boolean };
+  const parts: string[] = [];
+  if (Array.isArray(obj.content)) {
+    for (const p of obj.content) {
+      if (p && typeof p === "object") {
+        const pp = p as { type?: string; text?: string };
+        if (pp.type === "text" && typeof pp.text === "string") {
+          parts.push(pp.text);
+          continue;
+        }
+      }
+      try {
+        parts.push(JSON.stringify(p));
+      } catch {
+        parts.push(String(p));
+      }
+    }
+  } else {
+    try {
+      parts.push(JSON.stringify(raw));
+    } catch {
+      parts.push(String(raw));
+    }
+  }
+  const text = parts.join("\n").trim();
+  return obj.isError ? `[error] ${text}` : text;
 }
 
 function deriveTitle(messages: StoredChatMessage[]): string {
@@ -168,6 +225,36 @@ type AppState = {
   editMessage: (chatId: string, index: number, content: string) => void;
   deleteMessage: (chatId: string, index: number) => void;
   resendFromMessage: (chatId: string, index: number) => Promise<void>;
+
+  // per-session config + presets
+  updateSessionConfig: (chatId: string, patch: Partial<ChatSessionConfig>) => void;
+  applyPresetToSession: (chatId: string, presetId: string) => void;
+  saveSessionAsPreset: (chatId: string, name: string) => Promise<void>;
+  updatePreset: (id: string, patch: Partial<ChatPreset>) => Promise<void>;
+  deletePreset: (id: string) => Promise<void>;
+
+  // MCP
+  mcpServers: McpServerConfig[];
+  mcpStatuses: Record<string, McpStatus>;
+  mcpTools: Record<string, McpTool[]>;
+  mcpUpsertServer: (cfg: McpServerConfig) => Promise<void>;
+  mcpDeleteServer: (id: string) => Promise<void>;
+  mcpConnect: (id: string) => Promise<void>;
+  mcpDisconnect: (id: string) => Promise<void>;
+  mcpRefreshStatus: () => Promise<void>;
+
+  // Tool approval flow ("ask" policy)
+  pendingToolApproval: PendingToolApproval | null;
+  approveTool: (id: string, decision: "allow" | "deny", remember?: boolean) => void;
+};
+
+export type PendingToolApproval = {
+  /** Internal unique id so callbacks can target the right pending request. */
+  id: string;
+  serverId: string;
+  serverName: string;
+  toolName: string;
+  args: Record<string, unknown>;
 };
 
 const Ctx = createContext<AppState | null>(null);
@@ -188,6 +275,8 @@ const EMPTY_SETTINGS: Settings = {
   models_recent: [],
   profiles: [],
   reasoning_enabled: null,
+  mcp_servers: [],
+  chat_presets: [],
 };
 
 export function AppStateProvider({
@@ -230,6 +319,13 @@ export function AppStateProvider({
   const [chatError, setChatError] = useState<string | null>(null);
   const [reasoningEnabled, setReasoningEnabledState] = useState(true);
   const chatAbortRef = useRef<AbortController | null>(null);
+
+  const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpStatus>>({});
+  const [mcpTools, setMcpTools] = useState<Record<string, McpTool[]>>({});
+  const [pendingToolApproval, setPendingToolApproval] = useState<PendingToolApproval | null>(null);
+  // Resolve callback for the current pending approval — set when we surface a
+  // request to the user, called when they click Allow / Deny.
+  const approvalResolveRef = useRef<((d: "allow" | "deny") => void) | null>(null);
 
   const persistChats = useCallback((next: ChatSession[]) => {
     api.saveChats(next).catch(logFailure("persist", "saveChats"));
@@ -820,6 +916,7 @@ export function AppStateProvider({
       reasoning: string | null,
       tokens: number | null,
       tps: number | null,
+      toolCalls: ToolCall[] | null,
     ) => {
       setChats((prev) => {
         const next = prev.map((c) => {
@@ -832,6 +929,7 @@ export function AppStateProvider({
             reasoning,
             tokens,
             tps,
+            tool_calls: toolCalls && toolCalls.length > 0 ? toolCalls : null,
             time: last.time,
           };
           return {
@@ -847,79 +945,127 @@ export function AppStateProvider({
     [persistChats],
   );
 
-  // Shared streaming helper. `baseMessages` is the conversation history that
-  // should be sent to the model; this helper appends a streaming assistant
-  // placeholder, runs the SSE loop, and finalizes the message.
-  const streamReply = useCallback(
-    async (session: ChatSession, baseMessages: StoredChatMessage[]) => {
-      if (!server.running || !server.info) {
-        setChatError("Start llama-server on the Configure tab first.");
-        return;
-      }
-      if (!server.ready) {
-        setChatError("Server is still loading the model — give it a moment.");
-        return;
-      }
-      setChatError(null);
-
-      const placeholderAssistant: StoredChatMessage = {
-        role: "assistant",
-        content: "",
-        time: Date.now(),
-      };
-      const updated: ChatSession = {
-        ...session,
-        title: session.messages.length === 0 ? deriveTitle(baseMessages) : session.title,
-        updated_at: Date.now(),
-        messages: [...baseMessages, placeholderAssistant],
-      };
-
+  // Append a fully-formed tool-role message (response to a single tool_call)
+  // and persist. Returns the updated session for chaining the next round.
+  const appendToolMessage = useCallback(
+    (chatId: string, msg: StoredChatMessage) => {
+      let updated: ChatSession | null = null;
       setChats((prev) => {
-        const others = prev.filter((c) => c.id !== updated.id);
-        const next = [updated, ...others];
+        const next = prev.map((c) => {
+          if (c.id !== chatId) return c;
+          const out = {
+            ...c,
+            messages: [...c.messages, msg],
+            updated_at: Date.now(),
+          };
+          updated = out;
+          return out;
+        });
         persistChats(next);
         return next;
       });
-      setCurrentChatId(updated.id);
-      setChatPending(true);
+      return updated;
+    },
+    [persistChats],
+  );
 
+  // Request user approval for a tool call when the policy is "ask". Resolves
+  // once they click Allow / Deny in the chat UI. There's one outstanding
+  // approval at a time (matches the one-stream-at-a-time chat model).
+  const requestApproval = useCallback((req: PendingToolApproval) => {
+    return new Promise<"allow" | "deny">((resolve) => {
+      approvalResolveRef.current = resolve;
+      setPendingToolApproval(req);
+    });
+  }, []);
+
+  const approveTool = useCallback(
+    (id: string, decision: "allow" | "deny", remember?: boolean) => {
+      const cb = approvalResolveRef.current;
+      const req = pendingToolApproval;
+      approvalResolveRef.current = null;
+      setPendingToolApproval(null);
+      if (remember && req && currentChatId) {
+        // Persist the decision as a per-tool override on the session config.
+        const key = `${req.serverId}:${req.toolName}`;
+        setChats((prev) => {
+          const next = prev.map((c) => {
+            if (c.id !== currentChatId) return c;
+            const cfg = c.config ?? defaultSessionConfig();
+            const per_tool = { ...cfg.tool_permissions.per_tool, [key]: decision };
+            return {
+              ...c,
+              config: {
+                ...cfg,
+                tool_permissions: { ...cfg.tool_permissions, per_tool },
+              },
+              updated_at: Date.now(),
+            };
+          });
+          persistChats(next);
+          return next;
+        });
+      }
+      void id;
+      cb?.(decision);
+    },
+    [pendingToolApproval, currentChatId, persistChats],
+  );
+
+  // Run a single OpenAI-compatible streaming round. Returns the captured
+  // results so the outer loop can decide whether to dispatch tool calls and
+  // run another round. Throws on hard transport errors.
+  const runChatRound = useCallback(
+    async (
+      chatId: string,
+      messages: StoredChatMessage[],
+      tools: Array<{
+        type: "function";
+        function: { name: string; description?: string; parameters: unknown };
+      }>,
+      chatTemplate?: string | null,
+    ): Promise<{
+      content: string;
+      reasoning: string | null;
+      toolCalls: ToolCall[];
+      tokens: number | null;
+      tps: number | null;
+      error: string | null;
+    }> => {
+      if (!server.running || !server.info) throw new Error("server not running");
       const url = `http://127.0.0.1:${server.info.port}/v1/chat/completions`;
       const t0 = performance.now();
       const abort = new AbortController();
       chatAbortRef.current = abort;
 
-      log.info("chat", `→ ${url} (stream)`, {
-        chat: updated.id,
-        history_len: baseMessages.length,
-      });
-
-      // Accumulate raw deltas. `rawContent` is the OpenAI `delta.content`
-      // stream — may contain inline <think> tags. `streamedReasoning` is the
-      // separate `delta.reasoning_content` channel emitted by llama.cpp when
-      // --reasoning-format extracts the think block server-side.
       let rawContent = "";
       let streamedReasoning = "";
       let usageTokens: number | null = null;
       let streamError: string | null = null;
+      const toolCallBuf: Map<number, ToolCall> = new Map();
 
-      // chat_template_kwargs is only safe to send when the server is running
-      // with --jinja (and the Jinja template inspects enable_thinking). For
-      // models that don't use the kwarg, the template just ignores it. We
-      // gate on flags.jinja so older llama-server builds without the kwarg
-      // path don't reject the request.
       const useTemplateKwargs = flags.jinja === true;
+      const apiMessages: Array<Record<string, unknown>> = messages.map((m) => {
+        const out: Record<string, unknown> = { role: m.role, content: m.content };
+        if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls;
+        if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+        if (m.tool_name) out.name = m.tool_name;
+        return out;
+      });
       const body: Record<string, unknown> = {
         model: "local",
         stream: true,
         stream_options: { include_usage: true },
-        messages: baseMessages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
+        messages: apiMessages,
       };
+      if (tools.length > 0) body.tools = tools;
       if (useTemplateKwargs) {
         body.chat_template_kwargs = { enable_thinking: reasoningEnabled };
-        log.debug("chat", `chat_template_kwargs: enable_thinking=${reasoningEnabled}`);
+      }
+      if (chatTemplate && chatTemplate.trim()) {
+        // llama-server accepts chat_template in the request body (b4400+).
+        // When absent the server falls back to the model-default template.
+        body.chat_template = chatTemplate;
       }
 
       try {
@@ -930,23 +1076,18 @@ export function AppStateProvider({
           signal: abort.signal,
         });
         if (!res.ok) {
-          const body = await res.text().catch(() => "");
-          throw new Error(`HTTP ${res.status}${body ? `: ${body}` : ""}`);
+          const errBody = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status}${errBody ? `: ${errBody}` : ""}`);
         }
-        if (!res.body) {
-          throw new Error("response has no body");
-        }
+        if (!res.body) throw new Error("response has no body");
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let frameCount = 0;
         let nextFlush = 0;
-
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-
           let nl: number;
           while ((nl = buffer.indexOf("\n")) !== -1) {
             const raw = buffer.slice(0, nl);
@@ -954,9 +1095,7 @@ export function AppStateProvider({
             const line = raw.trim();
             if (!line.startsWith("data:")) continue;
             const payload = line.slice(5).trim();
-            if (payload === "[DONE]") {
-              continue;
-            }
+            if (payload === "[DONE]") continue;
             try {
               const chunk = JSON.parse(payload);
               if (chunk.error) {
@@ -967,26 +1106,46 @@ export function AppStateProvider({
                 );
               }
               const delta = chunk.choices?.[0]?.delta ?? {};
-              const contentDelta: unknown = delta.content;
-              const reasoningDelta: unknown = delta.reasoning_content;
               let touched = false;
-              if (typeof contentDelta === "string" && contentDelta.length > 0) {
-                rawContent += contentDelta;
+              if (typeof delta.content === "string" && delta.content.length > 0) {
+                rawContent += delta.content;
                 touched = true;
               }
-              if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
-                streamedReasoning += reasoningDelta;
+              if (
+                typeof delta.reasoning_content === "string" &&
+                delta.reasoning_content.length > 0
+              ) {
+                streamedReasoning += delta.reasoning_content;
                 touched = true;
+              }
+              const tcDeltas = delta.tool_calls;
+              if (Array.isArray(tcDeltas)) {
+                for (const tc of tcDeltas) {
+                  const idx = typeof tc.index === "number" ? tc.index : 0;
+                  const slot =
+                    toolCallBuf.get(idx) ??
+                    ({
+                      id: tc.id || `call_${idx}_${Date.now()}`,
+                      type: "function" as const,
+                      function: { name: "", arguments: "" },
+                    } as ToolCall);
+                  if (tc.id) slot.id = tc.id;
+                  if (tc.function?.name) slot.function.name = tc.function.name;
+                  if (typeof tc.function?.arguments === "string") {
+                    slot.function.arguments += tc.function.arguments;
+                  }
+                  toolCallBuf.set(idx, slot);
+                  touched = true;
+                }
               }
               if (touched) {
-                frameCount++;
                 const now = performance.now();
                 if (now >= nextFlush) {
                   const split = splitThink(rawContent);
                   const reasoning = (
                     streamedReasoning + (split.reasoning ? "\n" + split.reasoning : "")
                   ).trim();
-                  patchAssistantContent(updated.id, split.content, reasoning || null);
+                  patchAssistantContent(chatId, split.content, reasoning || null);
                   nextFlush = now + 33;
                 }
               }
@@ -1001,16 +1160,10 @@ export function AppStateProvider({
             }
           }
         }
-
-        // Flush whatever's left in the buffer one last time.
-        if (buffer.trim().startsWith("data:")) {
-          // ignore trailing partial frame
-        }
-
-        log.debug("chat", `stream finished after ${frameCount} delta frames`);
       } catch (e: unknown) {
         if ((e as { name?: string })?.name === "AbortError") {
           log.info("chat", "request aborted by user");
+          streamError = "aborted";
         } else {
           const msg = e instanceof Error ? e.message : String(e);
           streamError = msg;
@@ -1018,31 +1171,293 @@ export function AppStateProvider({
         }
       } finally {
         chatAbortRef.current = null;
-        const elapsed = (performance.now() - t0) / 1000;
-        const tps = usageTokens && elapsed > 0 ? usageTokens / elapsed : null;
-        log.info(
-          "chat",
-          `← ${usageTokens ?? "?"} tokens in ${elapsed.toFixed(2)}s (${tps ? tps.toFixed(1) : "?"} tok/s)`,
-        );
+      }
 
-        // Final parse: pull think blocks out of rawContent and combine with
-        // any reasoning_content that streamed in parallel.
-        const split = splitThink(rawContent);
-        const reasoning =
-          (streamedReasoning + (split.reasoning ? "\n" + split.reasoning : "")).trim() || null;
-        // If we never produced any content and hit an error, replace the
-        // placeholder with the error so the user sees something.
-        if (!split.content && !reasoning && streamError) {
-          finalizeAssistant(updated.id, `⚠️ ${streamError}`, null, usageTokens, tps);
-          setChatError(streamError);
-        } else {
-          finalizeAssistant(updated.id, split.content, reasoning, usageTokens, tps);
-          if (streamError) setChatError(streamError);
+      const elapsed = (performance.now() - t0) / 1000;
+      const tps = usageTokens && elapsed > 0 ? usageTokens / elapsed : null;
+      const split = splitThink(rawContent);
+      const reasoning =
+        (streamedReasoning + (split.reasoning ? "\n" + split.reasoning : "")).trim() || null;
+      const toolCalls = Array.from(toolCallBuf.values()).filter((tc) => tc.function.name);
+      log.info(
+        "chat",
+        `← ${usageTokens ?? "?"} tokens in ${elapsed.toFixed(2)}s, ${toolCalls.length} tool_calls`,
+      );
+      return {
+        content: split.content,
+        reasoning,
+        toolCalls,
+        tokens: usageTokens,
+        tps,
+        error: streamError,
+      };
+    },
+    [server, flags.jinja, reasoningEnabled, patchAssistantContent],
+  );
+
+  // Outer streaming helper: handles system prompt, MCP tool injection, and
+  // looping when the model emits tool calls. `baseMessages` is the conversation
+  // history (already including the new user message, if any).
+  const streamReply = useCallback(
+    async (session: ChatSession, baseMessages: StoredChatMessage[]) => {
+      if (!server.running || !server.info) {
+        setChatError("Start llama-server on the Configure tab first.");
+        return;
+      }
+      if (!server.ready) {
+        setChatError("Server is still loading the model — give it a moment.");
+        return;
+      }
+      setChatError(null);
+
+      // Compose the effective message list: prepend a system message if the
+      // session config sets one. Otherwise pass through.
+      const cfg = session.config ?? null;
+      const composedMessages: StoredChatMessage[] = [];
+      if (cfg?.system_prompt && cfg.system_prompt.trim()) {
+        composedMessages.push({
+          role: "system",
+          content: cfg.system_prompt.trim(),
+          time: Date.now(),
+        });
+      }
+      composedMessages.push(...baseMessages);
+
+      // Build the tools list from currently-connected, session-enabled MCP
+      // servers. We skip servers that aren't connected — the user must
+      // explicitly connect them on the MCP screen first.
+      const enabledIds = cfg?.mcp_server_ids ?? [];
+      const tools: Array<{
+        type: "function";
+        function: { name: string; description?: string; parameters: unknown };
+      }> = [];
+      const toolIndex: Map<string, { serverId: string; toolName: string }> = new Map();
+      for (const sid of enabledIds) {
+        const status = mcpStatuses[sid];
+        if (!status?.connected) continue;
+        const toolList = mcpTools[sid] ?? [];
+        for (const t of toolList) {
+          // Prefix tool names with the server id to disambiguate when two
+          // servers expose the same tool name.
+          const exposed = `${sid}__${t.name}`;
+          tools.push({
+            type: "function",
+            function: {
+              name: exposed,
+              description: t.description ?? undefined,
+              parameters: t.input_schema,
+            },
+          });
+          toolIndex.set(exposed, { serverId: sid, toolName: t.name });
         }
+      }
+
+      // Add the assistant placeholder up front so the UI streams into it.
+      const placeholder: StoredChatMessage = { role: "assistant", content: "", time: Date.now() };
+      let working: ChatSession = {
+        ...session,
+        title: session.messages.length === 0 ? deriveTitle(baseMessages) : session.title,
+        updated_at: Date.now(),
+        messages: [...baseMessages, placeholder],
+      };
+      setChats((prev) => {
+        const others = prev.filter((c) => c.id !== working.id);
+        const next = [working, ...others];
+        persistChats(next);
+        return next;
+      });
+      setCurrentChatId(working.id);
+      setChatPending(true);
+
+      // We pass the composed list (system prefix + history + placeholder).
+      // The placeholder content is empty so it doesn't pollute the request.
+      let liveMessages: StoredChatMessage[] = [...composedMessages];
+
+      try {
+        // Loop up to a sane bound to avoid runaway tool-call cycles.
+        for (let round = 0; round < 8; round++) {
+          const result = await runChatRound(
+            working.id,
+            liveMessages,
+            tools,
+            cfg?.chat_template ?? null,
+          );
+          if (result.error === "aborted") {
+            finalizeAssistant(
+              working.id,
+              result.content,
+              result.reasoning,
+              result.tokens,
+              result.tps,
+              result.toolCalls.length > 0 ? result.toolCalls : null,
+            );
+            break;
+          }
+          if (
+            result.error &&
+            !result.content &&
+            !result.reasoning &&
+            result.toolCalls.length === 0
+          ) {
+            finalizeAssistant(
+              working.id,
+              `⚠️ ${result.error}`,
+              null,
+              result.tokens,
+              result.tps,
+              null,
+            );
+            setChatError(result.error);
+            break;
+          }
+          // Persist this round's assistant message.
+          finalizeAssistant(
+            working.id,
+            result.content,
+            result.reasoning,
+            result.tokens,
+            result.tps,
+            result.toolCalls.length > 0 ? result.toolCalls : null,
+          );
+          if (result.error) setChatError(result.error);
+
+          if (result.toolCalls.length === 0) break;
+
+          // Run each tool call (with permission gating) and append `tool`
+          // role messages with the results. Then loop.
+          const assistantMsg: StoredChatMessage = {
+            role: "assistant",
+            content: result.content,
+            time: Date.now(),
+            reasoning: result.reasoning,
+            tool_calls: result.toolCalls,
+          };
+          liveMessages = [...liveMessages, assistantMsg];
+
+          for (const tc of result.toolCalls) {
+            const mapped = toolIndex.get(tc.function.name);
+            if (!mapped) {
+              const errMsg: StoredChatMessage = {
+                role: "tool",
+                content: `Tool ${tc.function.name} is not registered for this session.`,
+                time: Date.now(),
+                tool_call_id: tc.id,
+                tool_name: tc.function.name,
+              };
+              appendToolMessage(working.id, errMsg);
+              liveMessages.push(errMsg);
+              continue;
+            }
+            const sid = mapped.serverId;
+            const toolName = mapped.toolName;
+            const serverCfg = settings.mcp_servers.find((s) => s.id === sid);
+            const serverName = serverCfg?.name ?? sid;
+
+            // Permission check
+            const perms = cfg?.tool_permissions ?? {
+              default: "ask" as ToolPermission,
+              per_tool: {},
+            };
+            const policy: ToolPermission = perms.per_tool[`${sid}:${toolName}`] ?? perms.default;
+
+            let args: Record<string, unknown> = {};
+            try {
+              args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+            } catch {
+              args = { _raw: tc.function.arguments };
+            }
+
+            let decision: "allow" | "deny" = "allow";
+            if (policy === "deny") {
+              decision = "deny";
+            } else if (policy === "ask") {
+              const reqId = `${tc.id}_${Date.now()}`;
+              decision = await requestApproval({
+                id: reqId,
+                serverId: sid,
+                serverName,
+                toolName,
+                args,
+              });
+            }
+
+            if (decision === "deny") {
+              const denyMsg: StoredChatMessage = {
+                role: "tool",
+                content: `Tool call denied by user policy.`,
+                time: Date.now(),
+                tool_call_id: tc.id,
+                tool_name: toolName,
+              };
+              appendToolMessage(working.id, denyMsg);
+              liveMessages.push(denyMsg);
+              continue;
+            }
+
+            try {
+              log.info("mcp", `call ${sid}/${toolName}`, { args });
+              const raw = await api.mcpCallTool(sid, toolName, args);
+              const text = mcpResultToText(raw);
+              const okMsg: StoredChatMessage = {
+                role: "tool",
+                content: text,
+                time: Date.now(),
+                tool_call_id: tc.id,
+                tool_name: toolName,
+              };
+              appendToolMessage(working.id, okMsg);
+              liveMessages.push(okMsg);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              log.error("mcp", `tool call failed`, { server: sid, tool: toolName, error: msg });
+              const errMsg: StoredChatMessage = {
+                role: "tool",
+                content: `Tool execution failed: ${msg}`,
+                time: Date.now(),
+                tool_call_id: tc.id,
+                tool_name: toolName,
+              };
+              appendToolMessage(working.id, errMsg);
+              liveMessages.push(errMsg);
+            }
+          }
+
+          // Prepare a new placeholder for the next round.
+          const nextPlaceholder: StoredChatMessage = {
+            role: "assistant",
+            content: "",
+            time: Date.now(),
+          };
+          setChats((prev) => {
+            const next = prev.map((c) => {
+              if (c.id !== working.id) return c;
+              const out = {
+                ...c,
+                messages: [...c.messages, nextPlaceholder],
+                updated_at: Date.now(),
+              };
+              working = out;
+              return out;
+            });
+            persistChats(next);
+            return next;
+          });
+        }
+      } finally {
         setChatPending(false);
       }
     },
-    [server, persistChats, patchAssistantContent, finalizeAssistant, flags.jinja, reasoningEnabled],
+    [
+      server,
+      persistChats,
+      runChatRound,
+      finalizeAssistant,
+      appendToolMessage,
+      mcpStatuses,
+      mcpTools,
+      settings.mcp_servers,
+      requestApproval,
+    ],
   );
 
   const sendChat = useCallback(
@@ -1143,6 +1558,204 @@ export function AppStateProvider({
     [chats, streamReply],
   );
 
+  // ── Per-session config + presets ─────────────────────────────────────────
+  const updateSessionConfig = useCallback(
+    (chatId: string, patch: Partial<ChatSessionConfig>) => {
+      setChats((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== chatId) return c;
+          const cur = c.config ?? defaultSessionConfig();
+          return { ...c, config: { ...cur, ...patch }, updated_at: Date.now() };
+        });
+        persistChats(next);
+        return next;
+      });
+    },
+    [persistChats],
+  );
+
+  const applyPresetToSession = useCallback(
+    (chatId: string, presetId: string) => {
+      const preset = settings.chat_presets.find((p) => p.id === presetId);
+      if (!preset) return;
+      setChats((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== chatId) return c;
+          return {
+            ...c,
+            config: { ...preset.config, preset_id: preset.id },
+            updated_at: Date.now(),
+          };
+        });
+        persistChats(next);
+        return next;
+      });
+    },
+    [persistChats, settings.chat_presets],
+  );
+
+  const saveSessionAsPreset = useCallback(
+    async (chatId: string, name: string) => {
+      const session = chats.find((c) => c.id === chatId);
+      if (!session) return;
+      const config: ChatSessionConfig = session.config ?? defaultSessionConfig();
+      const preset: ChatPreset = {
+        id: `preset_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name: name || "Untitled preset",
+        created_at: Date.now(),
+        config: { ...config, preset_id: null },
+      };
+      const updated: Settings = {
+        ...settings,
+        chat_presets: [preset, ...settings.chat_presets].slice(0, 50),
+      };
+      await api.saveSettings(updated);
+      setSettings(updated);
+      // Mark the session as linked to the new preset.
+      updateSessionConfig(chatId, { preset_id: preset.id });
+    },
+    [chats, settings, updateSessionConfig],
+  );
+
+  const updatePreset = useCallback(
+    async (id: string, patch: Partial<ChatPreset>) => {
+      const updated: Settings = {
+        ...settings,
+        chat_presets: settings.chat_presets.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+      };
+      await api.saveSettings(updated);
+      setSettings(updated);
+    },
+    [settings],
+  );
+
+  const deletePreset = useCallback(
+    async (id: string) => {
+      const updated: Settings = {
+        ...settings,
+        chat_presets: settings.chat_presets.filter((p) => p.id !== id),
+      };
+      await api.saveSettings(updated);
+      setSettings(updated);
+    },
+    [settings],
+  );
+
+  // ── MCP CRUD + connection management ─────────────────────────────────────
+  const refreshMcpStatus = useCallback(async () => {
+    try {
+      const statuses = await api.mcpStatusAll();
+      const byId: Record<string, McpStatus> = {};
+      for (const s of statuses) byId[s.id] = s;
+      setMcpStatuses(byId);
+      // For each connected server we don't yet have tools for, fetch them.
+      for (const s of statuses) {
+        if (s.connected && !mcpTools[s.id]) {
+          try {
+            const tools = await api.mcpListTools(s.id);
+            setMcpTools((cur) => ({ ...cur, [s.id]: tools }));
+          } catch (e) {
+            log.warn("mcp", `list_tools failed`, { id: s.id, error: String(e) });
+          }
+        }
+      }
+    } catch (e) {
+      log.warn("mcp", "status_all failed", { error: String(e) });
+    }
+  }, [mcpTools]);
+
+  const mcpUpsertServer = useCallback(
+    async (cfg: McpServerConfig) => {
+      const exists = settings.mcp_servers.some((s) => s.id === cfg.id);
+      const mcp_servers = exists
+        ? settings.mcp_servers.map((s) => (s.id === cfg.id ? cfg : s))
+        : [...settings.mcp_servers, cfg];
+      const updated: Settings = { ...settings, mcp_servers };
+      await api.saveSettings(updated);
+      setSettings(updated);
+    },
+    [settings],
+  );
+
+  const mcpDeleteServer = useCallback(
+    async (id: string) => {
+      try {
+        await api.mcpDisconnect(id);
+      } catch {
+        /* ignore — may not be connected */
+      }
+      const updated: Settings = {
+        ...settings,
+        mcp_servers: settings.mcp_servers.filter((s) => s.id !== id),
+      };
+      await api.saveSettings(updated);
+      setSettings(updated);
+      setMcpStatuses((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+      setMcpTools((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
+    },
+    [settings],
+  );
+
+  const mcpConnectCmd = useCallback(async (id: string) => {
+    try {
+      const status = await api.mcpConnect(id);
+      setMcpStatuses((cur) => ({ ...cur, [id]: status }));
+      try {
+        const tools = await api.mcpListTools(id);
+        setMcpTools((cur) => ({ ...cur, [id]: tools }));
+      } catch (e) {
+        log.warn("mcp", `list_tools after connect failed`, { id, error: String(e) });
+      }
+      log.info("mcp", `connected ${id}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.error("mcp", `connect failed`, { id, error: msg });
+      setMcpStatuses((cur) => ({
+        ...cur,
+        [id]: { id, connected: false, error: msg, tool_count: 0, server_name: null },
+      }));
+      throw e;
+    }
+  }, []);
+
+  const mcpDisconnectCmd = useCallback(async (id: string) => {
+    await api.mcpDisconnect(id);
+    setMcpStatuses((cur) => ({
+      ...cur,
+      [id]: { id, connected: false, error: null, tool_count: 0, server_name: null },
+    }));
+    setMcpTools((cur) => {
+      const next = { ...cur };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  // Autostart any MCP servers flagged for autostart, once on mount after
+  // settings have loaded.
+  const autostartedRef = useRef(false);
+  useEffect(() => {
+    if (autostartedRef.current) return;
+    if (!settings.mcp_servers || settings.mcp_servers.length === 0) return;
+    autostartedRef.current = true;
+    (async () => {
+      await refreshMcpStatus();
+      for (const s of settings.mcp_servers) {
+        if (s.autostart) {
+          mcpConnectCmd(s.id).catch(() => {});
+        }
+      }
+    })();
+  }, [settings.mcp_servers, refreshMcpStatus, mcpConnectCmd]);
+
   // expose old `clearChat` name as "discard current session" so callers don't break
   void fromView; // ensure helper kept (avoids unused-import warning)
 
@@ -1199,6 +1812,21 @@ export function AppStateProvider({
       resendFromMessage,
       reasoningEnabled,
       setReasoningEnabled,
+      updateSessionConfig,
+      applyPresetToSession,
+      saveSessionAsPreset,
+      updatePreset,
+      deletePreset,
+      mcpServers: settings.mcp_servers,
+      mcpStatuses,
+      mcpTools,
+      mcpUpsertServer,
+      mcpDeleteServer,
+      mcpConnect: mcpConnectCmd,
+      mcpDisconnect: mcpDisconnectCmd,
+      mcpRefreshStatus: refreshMcpStatus,
+      pendingToolApproval,
+      approveTool,
     }),
     [
       settings,
@@ -1251,6 +1879,20 @@ export function AppStateProvider({
       resendFromMessage,
       reasoningEnabled,
       setReasoningEnabled,
+      updateSessionConfig,
+      applyPresetToSession,
+      saveSessionAsPreset,
+      updatePreset,
+      deletePreset,
+      mcpStatuses,
+      mcpTools,
+      mcpUpsertServer,
+      mcpDeleteServer,
+      mcpConnectCmd,
+      mcpDisconnectCmd,
+      refreshMcpStatus,
+      pendingToolApproval,
+      approveTool,
     ],
   );
 
