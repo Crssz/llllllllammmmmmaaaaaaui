@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CodeGraph MCP — interactive UI</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --bg-2: #161b22;
+    --bg-3: #1f2630;
+    --bg-4: #2a3340;
+    --border: #2a3340;
+    --fg: #e6edf3;
+    --fg-dim: #8b949e;
+    --accent: #7aa2f7;
+    --accent-2: #bb9af7;
+    --warn: #e0af68;
+    --danger: #f7768e;
+    --ok: #9ece6a;
+    --code: #c0caf5;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  code, pre, .mono { font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+
+  #app { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: 44px 1fr; height: 100vh; }
+
+  header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border); background: var(--bg-2);
+  }
+  header h1 { font-size: 13px; margin: 0; font-weight: 600; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  header .dot.dead { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+  header .meta { color: var(--fg-dim); font-size: 11px; margin-left: auto; }
+
+  aside.tools {
+    background: var(--bg-2); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 8px 6px;
+  }
+  aside.tools h2 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.9px;
+    color: var(--fg-dim); margin: 6px 8px 4px;
+  }
+  .tool {
+    padding: 7px 10px; border-radius: 5px; cursor: pointer;
+    margin-bottom: 2px; border: 1px solid transparent;
+  }
+  .tool:hover { background: var(--bg-3); }
+  .tool.sel { background: var(--bg-3); border-color: var(--accent); }
+  .tool .name { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--fg); }
+  .tool .desc { color: var(--fg-dim); font-size: 11px; line-height: 1.35; margin-top: 2px; }
+
+  main { display: grid; grid-template-rows: auto 1fr; overflow: hidden; min-width: 0; }
+
+  .form {
+    padding: 12px 16px; border-bottom: 1px solid var(--border); background: #11161e;
+    display: grid; gap: 8px;
+  }
+  .form .title { display: flex; align-items: center; gap: 10px; }
+  .form .title .name { font-family: ui-monospace, Menlo, monospace; font-weight: 600; font-size: 14px; color: var(--accent); }
+  .form .title .desc { color: var(--fg-dim); font-size: 12px; }
+  .fields { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .field label { display: block; font-size: 11px; color: var(--fg-dim); margin-bottom: 3px; }
+  .field label .req { color: var(--danger); }
+  .field input, .field select, .field textarea {
+    width: 100%; padding: 6px 8px; background: var(--bg-3); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; font: inherit;
+  }
+  .field textarea { min-height: 60px; resize: vertical; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+  .field .hint { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+
+  .actions { display: flex; gap: 8px; align-items: center; }
+  .btn {
+    background: var(--accent); color: #0c1117; border: none; padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font: inherit; font-weight: 600;
+  }
+  .btn:hover { filter: brightness(1.1); }
+  .btn.secondary { background: var(--bg-3); color: var(--fg); border: 1px solid var(--border); font-weight: 500; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .pane {
+    display: grid; grid-template-columns: 1fr 380px; overflow: hidden; min-height: 0;
+  }
+  .response { overflow-y: auto; padding: 16px 22px; min-width: 0; }
+  .response .status {
+    display: flex; gap: 10px; align-items: center;
+    color: var(--fg-dim); font-size: 11px; margin-bottom: 10px;
+  }
+  .response .status .ok { color: var(--ok); }
+  .response .status .err { color: var(--danger); }
+  .response .empty {
+    text-align: center; color: var(--fg-dim); padding: 80px 20px;
+  }
+
+  /* markdown render */
+  .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; }
+  .md h1 { font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .md h2 { font-size: 15px; color: var(--accent); }
+  .md h3 { font-size: 13.5px; color: var(--accent-2); }
+  .md h4 { font-size: 12.5px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.6px; }
+  .md p { margin: 4px 0; }
+  .md ul, .md ol { margin: 4px 0; padding-left: 20px; }
+  .md li { margin: 1px 0; }
+  .md code {
+    background: var(--bg-3); color: var(--code);
+    padding: 1px 5px; border-radius: 3px; font-size: 12px;
+  }
+  .md pre {
+    background: #0a0d12; color: var(--code); border: 1px solid var(--border);
+    padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 12px;
+    margin: 6px 0;
+  }
+  .md pre code { background: transparent; padding: 0; }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+  .md strong { color: var(--fg); }
+  .md blockquote { border-left: 3px solid var(--accent); padding-left: 10px; color: var(--fg-dim); margin: 6px 0; }
+  .md table { border-collapse: collapse; margin: 6px 0; }
+  .md th, .md td { border: 1px solid var(--border); padding: 4px 8px; }
+  .md th { background: var(--bg-3); }
+
+  /* clickable chips inserted into markdown */
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 6px; border-radius: 10px; font-size: 11px;
+    background: var(--bg-3); border: 1px solid var(--border);
+    cursor: pointer; color: var(--accent); text-decoration: none;
+    font-family: ui-monospace, Menlo, monospace;
+    margin: 0 1px; vertical-align: 1px;
+  }
+  .pill:hover { background: var(--bg-4); border-color: var(--accent); }
+  .pill.file::before { content: "📄"; font-size: 10px; }
+  .pill.sym::before { content: "⊙"; color: var(--accent-2); }
+
+  /* right side: history + raw */
+  aside.right {
+    border-left: 1px solid var(--border); background: var(--bg-2);
+    display: grid; grid-template-rows: auto 1fr auto; overflow: hidden;
+  }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 14px; cursor: pointer; font-size: 12px; color: var(--fg-dim);
+    border-bottom: 2px solid transparent;
+  }
+  .tab.sel { color: var(--fg); border-bottom-color: var(--accent); }
+  .tabpanel { overflow-y: auto; padding: 12px; }
+  .tabpanel.hidden { display: none; }
+  .raw {
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: var(--code); white-space: pre-wrap; word-break: break-word;
+    background: #0a0d12; border: 1px solid var(--border); padding: 10px; border-radius: 4px;
+  }
+  .history .h-item {
+    padding: 6px 8px; border-radius: 4px; cursor: pointer;
+    border: 1px solid transparent; margin-bottom: 4px;
+  }
+  .history .h-item:hover { background: var(--bg-3); border-color: var(--border); }
+  .history .h-item .h-name { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent); }
+  .history .h-item .h-args { color: var(--fg-dim); font-size: 11px; word-break: break-all; }
+  .history .h-item .h-meta { color: var(--fg-dim); font-size: 10px; display: flex; gap: 8px; margin-top: 2px; }
+
+  /* source modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50;
+    display: none; align-items: center; justify-content: center;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px;
+    width: min(900px, 95vw); max-height: 85vh; display: grid; grid-template-rows: auto 1fr;
+    overflow: hidden;
+  }
+  .modal header {
+    grid-column: auto; background: var(--bg-3); border-bottom: 1px solid var(--border);
+    padding: 8px 14px; height: auto; gap: 8px;
+  }
+  .modal header .path { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--fg); }
+  .modal header .close { margin-left: auto; cursor: pointer; padding: 2px 8px; border-radius: 3px; color: var(--fg-dim); }
+  .modal header .close:hover { color: var(--fg); background: var(--bg-4); }
+  .modal pre {
+    overflow: auto; margin: 0; padding: 12px 16px;
+    background: #0a0d12; color: var(--code); font-size: 12px; line-height: 1.5;
+  }
+  .modal pre .gutter { color: #565f89; margin-right: 14px; user-select: none; display: inline-block; min-width: 4ch; text-align: right; }
+  .modal pre .hl { background: rgba(122, 162, 247, 0.12); display: block; margin: 0 -16px; padding: 0 16px; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a3340; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="dot" id="dot" title="MCP server status"></span>
+    <h1>CodeGraph MCP — interactive UI</h1>
+    <span class="meta" id="meta"></span>
+  </header>
+
+  <aside class="tools">
+    <h2>Tools</h2>
+    <div id="toolList"></div>
+  </aside>
+
+  <main>
+    <div class="form" id="form">
+      <div class="empty" style="color:var(--fg-dim);padding:8px">Select a tool from the left.</div>
+    </div>
+    <div class="pane">
+      <section class="response" id="response">
+        <div class="empty">
+          <div style="font-size:32px;margin-bottom:8px">⊙</div>
+          Pick a tool, fill in arguments, hit <b>Run</b>.<br/>
+          File paths and symbol names in the response are clickable — they'll fire follow-up tool calls.
+        </div>
+      </section>
+      <aside class="right">
+        <div class="tabs">
+          <div class="tab sel" data-tab="history">History</div>
+          <div class="tab" data-tab="raw">Raw JSON</div>
+        </div>
+        <div class="tabpanel history" id="tab-history">
+          <div style="color:var(--fg-dim);font-size:11px">No calls yet.</div>
+        </div>
+        <div class="tabpanel hidden" id="tab-raw">
+          <div class="raw" id="raw">—</div>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <header>
+      <span class="path" id="modalPath"></span>
+      <span class="close" id="modalClose">✕</span>
+    </header>
+    <pre id="modalPre"></pre>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+
+let tools = [];
+let projectRoot = '';
+let symbolNames = new Set();
+let fileSet = new Set();
+let selectedTool = null;
+const history = [];
+let lastRaw = null;
+
+(async () => {
+  try {
+    const r = await fetch('/api/tools');
+    const j = await r.json();
+    tools = j.tools;
+    projectRoot = j.projectRoot || '';
+    $('#meta').textContent = `${tools.length} tools  ·  ${projectRoot}`;
+    $('#dot').classList.remove('dead');
+    renderToolList();
+    // pick a sensible first tool
+    selectTool(tools.find((t) => t.name === 'codegraph_status') || tools[0]);
+  } catch (e) {
+    $('#dot').classList.add('dead');
+    $('#meta').textContent = 'bridge offline';
+  }
+})();
+
+function renderToolList() {
+  const host = $('#toolList');
+  host.innerHTML = '';
+  for (const t of tools) {
+    const el = document.createElement('div');
+    el.className = 'tool';
+    el.dataset.name = t.name;
+    el.innerHTML = `<div class="name">${t.name.replace(/^codegraph_/, '')}</div>
+                    <div class="desc">${escapeHtml(firstSentence(t.description))}</div>`;
+    el.addEventListener('click', () => selectTool(t));
+    host.appendChild(el);
+  }
+}
+function firstSentence(s) {
+  if (!s) return '';
+  const m = String(s).match(/^[^.]{0,180}\./);
+  return m ? m[0] : String(s).slice(0, 180);
+}
+
+function selectTool(tool) {
+  selectedTool = tool;
+  $$('.tool').forEach((el) => el.classList.toggle('sel', el.dataset.name === tool.name));
+  renderForm(tool);
+}
+
+function renderForm(tool, prefill = {}) {
+  const schema = tool.inputSchema || { properties: {}, required: [] };
+  const req = new Set(schema.required || []);
+  const form = $('#form');
+  form.innerHTML = `
+    <div class="title">
+      <span class="name">${tool.name}</span>
+      <span class="desc">${escapeHtml(firstSentence(tool.description))}</span>
+    </div>
+    <div class="fields" id="fields"></div>
+    <div class="actions">
+      <button class="btn" id="runBtn">Run ▶</button>
+      <button class="btn secondary" id="resetBtn">Reset</button>
+      <span style="color:var(--fg-dim);font-size:11px;margin-left:auto" id="statusLine"></span>
+    </div>
+  `;
+  const fhost = $('#fields');
+  for (const [key, prop] of Object.entries(schema.properties || {})) {
+    if (key === 'projectPath') continue; // we are bound to the server's project
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const id = 'fld_' + key;
+    const isReq = req.has(key);
+    const val = prefill[key] ?? prop.default ?? '';
+    let input;
+    if (prop.enum && Array.isArray(prop.enum)) {
+      input = `<select id="${id}" data-key="${key}" data-type="${prop.type}">
+        <option value="">${isReq ? '— select —' : '(any)'}</option>
+        ${prop.enum.map((v) => `<option value="${escapeHtml(v)}" ${v === val ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+      </select>`;
+    } else if (prop.type === 'boolean') {
+      input = `<select id="${id}" data-key="${key}" data-type="boolean">
+        <option value="">(default)</option>
+        <option value="true" ${val === true ? 'selected' : ''}>true</option>
+        <option value="false" ${val === false ? 'selected' : ''}>false</option>
+      </select>`;
+    } else if (prop.type === 'number' || prop.type === 'integer') {
+      input = `<input id="${id}" data-key="${key}" data-type="number" type="number" value="${val !== '' ? val : ''}" />`;
+    } else if (key === 'task' || (prop.description || '').length > 80) {
+      input = `<textarea id="${id}" data-key="${key}" data-type="string" placeholder="${escapeHtml(prop.description || '')}">${escapeHtml(String(val))}</textarea>`;
+    } else {
+      input = `<input id="${id}" data-key="${key}" data-type="string" value="${escapeHtml(String(val))}" placeholder="${escapeHtml(prop.description || '')}" />`;
+    }
+    wrap.innerHTML = `<label for="${id}">${key}${isReq ? ' <span class="req">*</span>' : ''}</label>
+                      ${input}
+                      ${prop.description ? `<div class="hint">${escapeHtml(prop.description)}</div>` : ''}`;
+    fhost.appendChild(wrap);
+  }
+  $('#runBtn').addEventListener('click', () => runSelected());
+  $('#resetBtn').addEventListener('click', () => renderForm(tool));
+  // enter-to-run on any input (except textarea)
+  fhost.querySelectorAll('input').forEach((el) => {
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSelected(); });
+  });
+}
+
+function collectArgs() {
+  const out = {};
+  $$('#fields [data-key]').forEach((el) => {
+    const k = el.dataset.key;
+    const t = el.dataset.type;
+    let v = el.value;
+    if (v === '' || v == null) return;
+    if (t === 'number') v = Number(v);
+    if (t === 'boolean') v = v === 'true';
+    out[k] = v;
+  });
+  return out;
+}
+
+async function runSelected(args) {
+  if (!selectedTool) return;
+  const arguments_ = args || collectArgs();
+  // basic required check
+  const req = new Set(selectedTool.inputSchema?.required || []);
+  const missing = [...req].filter((k) => k !== 'projectPath' && !(k in arguments_));
+  if (missing.length) {
+    $('#statusLine').innerHTML = `<span style="color:var(--danger)">missing: ${missing.join(', ')}</span>`;
+    return;
+  }
+  $('#statusLine').textContent = 'running…';
+  $('#runBtn').disabled = true;
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/call', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: selectedTool.name, arguments: arguments_ }),
+    });
+    const j = await r.json();
+    const ms = Math.round(performance.now() - t0);
+    lastRaw = j;
+    $('#raw').textContent = JSON.stringify(j, null, 2);
+    renderResponse(selectedTool.name, arguments_, j, ms);
+    pushHistory(selectedTool.name, arguments_, j, ms);
+    $('#statusLine').innerHTML = j.ok
+      ? `<span style="color:var(--ok)">ok</span>  ${ms}ms`
+      : `<span style="color:var(--danger)">err</span>  ${ms}ms`;
+  } catch (e) {
+    $('#statusLine').innerHTML = `<span style="color:var(--danger)">${escapeHtml(e.message)}</span>`;
+  } finally {
+    $('#runBtn').disabled = false;
+  }
+}
+
+function renderResponse(name, args, j, ms) {
+  const host = $('#response');
+  host.innerHTML = '';
+  const status = document.createElement('div');
+  status.className = 'status';
+  status.innerHTML = `<span class="${j.ok ? 'ok' : 'err'}">${j.ok ? '● ok' : '● error'}</span>
+                      <span>${name}(${formatArgsShort(args)})</span>
+                      <span>${ms}ms</span>`;
+  host.appendChild(status);
+
+  if (!j.ok) {
+    const pre = document.createElement('pre');
+    pre.className = 'raw';
+    pre.textContent = JSON.stringify(j.error, null, 2);
+    host.appendChild(pre);
+    return;
+  }
+  // result.content is an array of {type:'text', text:'...'} blocks
+  const content = j.result?.content || [];
+  for (const block of content) {
+    if (block.type === 'text') {
+      const div = document.createElement('div');
+      div.className = 'md';
+      div.innerHTML = renderMarkdown(block.text);
+      host.appendChild(div);
+    } else {
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(block, null, 2);
+      host.appendChild(pre);
+    }
+  }
+  // crawl mentioned names so future responses can chip them
+  harvestSymbols(content);
+  // attach click handlers on freshly inserted pills
+  attachPillHandlers(host);
+}
+
+function formatArgsShort(args) {
+  const entries = Object.entries(args);
+  if (!entries.length) return '';
+  return entries
+    .map(([k, v]) => {
+      let s = typeof v === 'string' ? `"${v}"` : JSON.stringify(v);
+      if (s.length > 40) s = s.slice(0, 37) + '…"';
+      return `${k}: ${s}`;
+    })
+    .join(', ');
+}
+
+// ---------- markdown -> html ----------
+// minimal but adequate for codegraph's output (headings, lists, bold, code, code fences, hr)
+function renderMarkdown(src) {
+  // protect fenced code blocks first
+  const codeBlocks = [];
+  src = src.replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, body) => {
+    const id = codeBlocks.length;
+    codeBlocks.push({ lang, body });
+    return ` CB${id} `;
+  });
+  // escape
+  src = escapeHtml(src);
+  // inline code
+  src = src.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`);
+  // bold
+  src = src.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  // chip-ify file:line references (paths with at least one slash + : + digits)
+  // also bare file paths in `` already became <code>, leave those alone — clickable handler in attachPillHandlers
+  src = src.replace(/([A-Za-z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|rs|py|go|java|rb|json|md|yml|yaml|toml|html|css))(?::(\d+)(?:-(\d+))?)?/g,
+    (m, path, l1, l2) => {
+      // skip if inside an already-rendered tag (rough)
+      const slug = path.replace(/\\/g, '/');
+      const args = `data-pill="file" data-path="${escapeAttr(slug)}"${l1 ? ` data-line="${l1}"` : ''}${l2 ? ` data-end="${l2}"` : ''}`;
+      const label = l1 ? `${slug}:${l1}${l2 ? '-' + l2 : ''}` : slug;
+      return `<span class="pill file" ${args}>${escapeHtml(label)}</span>`;
+    });
+  // headings
+  src = src.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  src = src.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  src = src.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  src = src.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+  // hr
+  src = src.replace(/^---\s*$/gm, '<hr/>');
+  // lists (bullets)
+  src = src.replace(/^(?:[-*]\s+.+(?:\n|$))+?/gm, (block) => {
+    const items = block.trim().split(/\n/).map((l) => l.replace(/^[-*]\s+/, ''));
+    return '<ul>' + items.map((i) => `<li>${i}</li>`).join('') + '</ul>';
+  });
+  // numbered lists
+  src = src.replace(/^(?:\d+\.\s+.+(?:\n|$))+?/gm, (block) => {
+    const items = block.trim().split(/\n/).map((l) => l.replace(/^\d+\.\s+/, ''));
+    return '<ol>' + items.map((i) => `<li>${i}</li>`).join('') + '</ol>';
+  });
+  // blockquotes
+  src = src.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
+  // paragraphs: turn double newlines into <br/> blocks (cheap)
+  src = src.replace(/\n{2,}/g, '<br/><br/>');
+  src = src.replace(/\n/g, ' ');
+  // restore code blocks
+  src = src.replace(/ CB(\d+) /g, (_, i) => {
+    const { lang, body } = codeBlocks[+i];
+    return `<pre><code data-lang="${escapeAttr(lang)}">${escapeHtml(body)}</code></pre>`;
+  });
+  return src;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
+
+// ---------- symbol harvesting & pill chipping ----------
+function harvestSymbols(content) {
+  for (const block of content) {
+    if (block.type !== 'text') continue;
+    // pull file paths
+    const fileMatches = block.text.matchAll(/[A-Za-z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|rs|py|go|java|rb)\b/g);
+    for (const m of fileMatches) fileSet.add(m[0].replace(/\\/g, '/'));
+    // pull backtick'd symbols
+    const symMatches = block.text.matchAll(/`([A-Za-z_][A-Za-z0-9_]*(?:[:.][A-Za-z_][A-Za-z0-9_]*)*)`/g);
+    for (const m of symMatches) symbolNames.add(m[1]);
+  }
+  // re-chip code spans for already-known symbols inside the just-rendered response
+  $$('.md code').forEach((c) => {
+    const txt = c.textContent;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(txt)) return;
+    if (!symbolNames.has(txt)) return;
+    if (c.dataset.chipped) return;
+    c.dataset.chipped = '1';
+    c.style.cursor = 'pointer';
+    c.style.color = 'var(--accent)';
+    c.title = 'click → codegraph_node';
+    c.addEventListener('click', () => runOther('codegraph_node', { symbol: txt }));
+  });
+}
+
+function attachPillHandlers(root) {
+  root.querySelectorAll('[data-pill="file"]').forEach((p) => {
+    p.addEventListener('click', () => {
+      const path = p.dataset.path;
+      const line = p.dataset.line ? Number(p.dataset.line) : 1;
+      const end = p.dataset.end ? Number(p.dataset.end) : line + 40;
+      openSource(path, line, end);
+    });
+  });
+}
+
+function runOther(toolName, args) {
+  const t = tools.find((x) => x.name === toolName);
+  if (!t) return;
+  selectTool(t);
+  renderForm(t, args);
+  runSelected(args);
+}
+
+// ---------- source modal ----------
+async function openSource(path, line, end) {
+  $('#modalPath').textContent = `${path}:${line}${end !== line ? '-' + end : ''}`;
+  $('#modalPre').innerHTML = '<span style="color:var(--fg-dim)">loading…</span>';
+  $('#modalBg').classList.add('show');
+  const ctx = 6;
+  const s = Math.max(1, line - ctx);
+  const e = end + ctx;
+  try {
+    const r = await fetch(`/api/source?path=${encodeURIComponent(path)}&start=${s}&end=${e}`);
+    const j = await r.json();
+    const lines = (j.source || '').split('\n');
+    let html = '';
+    for (let i = 0; i < lines.length; i++) {
+      const ln = s + i;
+      const isHl = ln >= line && ln <= end;
+      const row = `<span class="${isHl ? 'hl' : ''}"><span class="gutter">${ln}</span>${escapeHtml(lines[i] || ' ')}</span>`;
+      html += row + '\n';
+    }
+    $('#modalPre').innerHTML = html;
+  } catch (e) {
+    $('#modalPre').textContent = e.message;
+  }
+}
+$('#modalClose').addEventListener('click', () => $('#modalBg').classList.remove('show'));
+$('#modalBg').addEventListener('click', (e) => { if (e.target.id === 'modalBg') $('#modalBg').classList.remove('show'); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modalBg').classList.remove('show'); });
+
+// ---------- history ----------
+function pushHistory(name, args, j, ms) {
+  history.unshift({ name, args, j, ms, at: new Date() });
+  if (history.length > 30) history.pop();
+  renderHistory();
+}
+function renderHistory() {
+  const host = $('#tab-history');
+  if (!history.length) {
+    host.innerHTML = '<div style="color:var(--fg-dim);font-size:11px">No calls yet.</div>';
+    return;
+  }
+  host.innerHTML = '';
+  for (const h of history) {
+    const el = document.createElement('div');
+    el.className = 'h-item';
+    el.innerHTML = `
+      <div class="h-name">${h.name.replace(/^codegraph_/, '')}</div>
+      <div class="h-args">${escapeHtml(formatArgsShort(h.args) || '(no args)')}</div>
+      <div class="h-meta"><span>${h.at.toLocaleTimeString()}</span><span>${h.ms}ms</span><span class="${h.j.ok ? 'ok' : 'err'}" style="color:${h.j.ok ? 'var(--ok)' : 'var(--danger)'}">${h.j.ok ? '✓' : '✗'}</span></div>
+    `;
+    el.addEventListener('click', () => {
+      const t = tools.find((x) => x.name === h.name);
+      if (!t) return;
+      selectTool(t);
+      renderForm(t, h.args);
+      // also re-render the previous response without re-calling
+      lastRaw = h.j;
+      $('#raw').textContent = JSON.stringify(h.j, null, 2);
+      renderResponse(h.name, h.args, h.j, h.ms);
+    });
+    host.appendChild(el);
+  }
+}
+
+// tabs
+$$('.tab').forEach((t) => {
+  t.addEventListener('click', () => {
+    $$('.tab').forEach((x) => x.classList.toggle('sel', x === t));
+    $$('.tabpanel').forEach((p) => p.classList.add('hidden'));
+    $(`#tab-${t.dataset.tab}`).classList.remove('hidden');
+  });
+});
+</script>
+</body>
+</html>
