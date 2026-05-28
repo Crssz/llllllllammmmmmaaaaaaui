@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>CodeGraph MCP — interactive UI</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <style>
   :root {
     --bg: #0e1116;
@@ -192,6 +193,48 @@
   .modal pre .gutter { color: #565f89; margin-right: 14px; user-select: none; display: inline-block; min-width: 4ch; text-align: right; }
   .modal pre .hl { background: rgba(122, 162, 247, 0.12); display: block; margin: 0 -16px; padding: 0 16px; }
 
+  /* ---- graph view ---- */
+  .view-toggle { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-left: 8px; }
+  .view-toggle button {
+    background: var(--bg-3); color: var(--fg-dim); border: none; padding: 3px 10px;
+    cursor: pointer; font: inherit; font-size: 11px;
+  }
+  .view-toggle button.sel { background: var(--accent); color: #0c1117; font-weight: 600; }
+  .view-toggle button:not(.sel):hover { color: var(--fg); background: var(--bg-4); }
+
+  .graph-host { position: relative; display: none; height: calc(100vh - 160px); min-height: 420px; background: radial-gradient(circle at 50% 40%, #11161e 0%, #0a0d12 70%); border-radius: 6px; border: 1px solid var(--border); overflow: hidden; }
+  .graph-host.show { display: block; }
+  .graph-host svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  .graph-host svg:active { cursor: grabbing; }
+  .graph-host .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-dim); font-size: 12px; text-align: center; padding: 20px; pointer-events: none; }
+  .graph-host .empty.hide { display: none; }
+
+  .graph-toolbar { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; z-index: 5; }
+  .graph-toolbar .btn { padding: 3px 9px; font-size: 11px; background: rgba(22,27,34,0.85); color: var(--fg); border: 1px solid var(--border); font-weight: 500; }
+  .graph-toolbar .btn:hover { background: var(--bg-3); border-color: var(--accent); }
+
+  .graph-legend { position: absolute; bottom: 10px; left: 10px; font-size: 10.5px; color: var(--fg-dim); background: rgba(22,27,34,0.88); padding: 6px 9px; border: 1px solid var(--border); border-radius: 4px; line-height: 1.5; }
+  .graph-legend .row { display: flex; align-items: center; gap: 6px; }
+  .graph-legend .sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  .graph-stats { position: absolute; top: 10px; right: 10px; font-size: 10.5px; color: var(--fg-dim); background: rgba(22,27,34,0.85); padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-variant-numeric: tabular-nums; }
+
+  .g-node circle { stroke: #0c1117; stroke-width: 1.2px; cursor: pointer; transition: stroke 120ms; }
+  .g-node:hover circle { stroke: #fff; stroke-width: 2.2px; }
+  .g-node.focal circle { stroke: var(--warn); stroke-width: 2.4px; }
+  .g-node.dim { opacity: 0.18; }
+  .g-node.hi circle { stroke: #fff; stroke-width: 2px; }
+  .g-node text { fill: var(--fg); font-size: 10px; pointer-events: none; paint-order: stroke; stroke: #0a0d12; stroke-width: 3px; stroke-linejoin: round; }
+  .g-link { stroke-opacity: 0.45; fill: none; }
+  .g-link.dim { stroke-opacity: 0.06; }
+  .g-link.hi { stroke-opacity: 0.95; }
+  .g-link-arrow { fill: var(--fg-dim); }
+
+  /* graph node detail popover (reuses response area when graph-only) */
+  .response.graph-mode { display: flex; flex-direction: column; padding-top: 10px; }
+  .response.graph-mode .status, .response.graph-mode .md, .response.graph-mode .empty { display: none; }
+  .response.graph-mode .graph-host { display: block; }
+
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #2a3340; border-radius: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -216,10 +259,36 @@
     </div>
     <div class="pane">
       <section class="response" id="response">
-        <div class="empty">
-          <div style="font-size:32px;margin-bottom:8px">⊙</div>
-          Pick a tool, fill in arguments, hit <b>Run</b>.<br/>
-          File paths and symbol names in the response are clickable — they'll fire follow-up tool calls.
+        <div class="response-header" style="display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:11px;color:var(--fg-dim);flex-wrap:wrap">
+          <span id="responseTitle" style="font-weight:600;color:var(--fg)">Response</span>
+          <span class="view-toggle" id="viewToggle">
+            <button data-view="markdown" class="sel" title="Rendered markdown response">Markdown</button>
+            <button data-view="graph" title="Accumulated symbol/edge graph">Graph</button>
+          </span>
+          <span id="graphIngestNote" style="margin-left:auto;font-size:10.5px"></span>
+        </div>
+        <div class="markdown-host" id="markdownHost">
+          <div class="empty">
+            <div style="font-size:32px;margin-bottom:8px">⊙</div>
+            Pick a tool, fill in arguments, hit <b>Run</b>.<br/>
+            File paths and symbol names in the response are clickable — they'll fire follow-up tool calls.<br/><br/>
+            Switch to <b>Graph</b> to see results accumulate as a live node-edge map.
+          </div>
+        </div>
+        <div class="graph-host" id="graphHost">
+          <div class="graph-toolbar">
+            <button class="btn" id="gBtnFit" title="Fit graph to viewport">Fit</button>
+            <button class="btn" id="gBtnFreeze" title="Pin all nodes in place">Freeze</button>
+            <button class="btn" id="gBtnClear" title="Drop all accumulated nodes/edges">Clear</button>
+          </div>
+          <div class="graph-stats" id="graphStats">0 nodes · 0 edges</div>
+          <svg id="graphSvg"></svg>
+          <div class="graph-legend" id="graphLegend"></div>
+          <div class="empty" id="graphEmpty">
+            Run a structural query — <code>search</code>, <code>callers</code>, <code>callees</code>,<br/>
+            <code>node</code>, <code>impact</code>, <code>explore</code>, <code>trace</code> — to populate the graph.<br/>
+            Click a node to expand it (callers + callees).
+          </div>
         </div>
       </section>
       <aside class="right">
@@ -408,8 +477,9 @@ async function runSelected(args) {
 }
 
 function renderResponse(name, args, j, ms) {
-  const host = $('#response');
+  const host = $('#markdownHost');
   host.innerHTML = '';
+  $('#responseTitle').textContent = `${name.replace(/^codegraph_/, '')} response`;
   const status = document.createElement('div');
   status.className = 'status';
   status.innerHTML = `<span class="${j.ok ? 'ok' : 'err'}">${j.ok ? '● ok' : '● error'}</span>
@@ -426,8 +496,10 @@ function renderResponse(name, args, j, ms) {
   }
   // result.content is an array of {type:'text', text:'...'} blocks
   const content = j.result?.content || [];
+  const textBlocks = [];
   for (const block of content) {
     if (block.type === 'text') {
+      textBlocks.push(block.text);
       const div = document.createElement('div');
       div.className = 'md';
       div.innerHTML = renderMarkdown(block.text);
@@ -442,6 +514,13 @@ function renderResponse(name, args, j, ms) {
   harvestSymbols(content);
   // attach click handlers on freshly inserted pills
   attachPillHandlers(host);
+
+  // ---- ingest into graph state ----
+  const ingestResult = ingestIntoGraph(name, args, textBlocks.join('\n\n'));
+  $('#graphIngestNote').innerHTML = ingestResult.added
+    ? `<span style="color:var(--ok)">+${ingestResult.addedNodes} nodes · +${ingestResult.addedEdges} edges</span>`
+    : `<span style="color:var(--fg-dim)">no graph data extracted</span>`;
+  renderGraph();
 }
 
 function formatArgsShort(args) {
@@ -631,6 +710,516 @@ $$('.tab').forEach((t) => {
     $$('.tabpanel').forEach((p) => p.classList.add('hidden'));
     $(`#tab-${t.dataset.tab}`).classList.remove('hidden');
   });
+});
+
+/* ============================================================
+   GRAPH VIEW — accumulated symbol graph from MCP responses
+   ============================================================ */
+
+const KIND_COLOR = {
+  file: '#7aa2f7',
+  function: '#9ece6a',
+  method: '#73daca',
+  class: '#bb9af7',
+  struct: '#bb9af7',
+  enum: '#e0af68',
+  enum_member: '#e0af68',
+  type_alias: '#f7768e',
+  constant: '#ff9e64',
+  variable: '#ff9e64',
+  import: '#565f89',
+  unknown: '#888',
+};
+const EDGE_COLOR = {
+  calls: '#9ece6a',
+  callers: '#9ece6a',
+  references: '#e0af68',
+  impact: '#f7768e',
+  trace: '#bb9af7',
+  contains: '#3b4252',
+  imports: '#565f89',
+};
+
+// state — keyed by symbol name (we don't always have qname/id)
+const graphState = {
+  nodes: new Map(), // key -> { id, name, kind, file, line, lastTool }
+  edges: new Map(), // key "src→tgt:kind" -> { source, target, kind }
+  focal: null,
+};
+
+let currentView = 'markdown'; // 'markdown' | 'graph'
+let gSim = null;
+let gZoom = null;
+let gFrozen = false;
+let gHoverId = null;
+let gSelectedId = null;
+
+// view toggle
+$$('#viewToggle button').forEach((b) => {
+  b.addEventListener('click', () => setView(b.dataset.view));
+});
+function setView(v) {
+  currentView = v;
+  $$('#viewToggle button').forEach((b) => b.classList.toggle('sel', b.dataset.view === v));
+  $('#markdownHost').style.display = v === 'markdown' ? '' : 'none';
+  $('#graphHost').classList.toggle('show', v === 'graph');
+  if (v === 'graph') {
+    renderGraph();
+  }
+}
+
+// graph toolbar
+$('#gBtnFit').addEventListener('click', () => fitGraph());
+$('#gBtnFreeze').addEventListener('click', () => {
+  gFrozen = !gFrozen;
+  $('#gBtnFreeze').textContent = gFrozen ? 'Unfreeze' : 'Freeze';
+  const nodes = Array.from(d3.select('#graphSvg').selectAll('g.g-node').data());
+  if (gFrozen) {
+    nodes.forEach((n) => { n.fx = n.x; n.fy = n.y; });
+    gSim && gSim.stop();
+  } else {
+    nodes.forEach((n) => { n.fx = null; n.fy = null; });
+    gSim && gSim.alpha(0.5).restart();
+  }
+});
+$('#gBtnClear').addEventListener('click', () => {
+  graphState.nodes.clear();
+  graphState.edges.clear();
+  graphState.focal = null;
+  gSelectedId = null;
+  renderGraph();
+});
+
+// ---------- ingestion ----------
+function nKey(name) { return String(name).trim(); }
+
+function upsertNode(name, info = {}, tool = null) {
+  const key = nKey(name);
+  if (!key) return null;
+  const existing = graphState.nodes.get(key);
+  const merged = {
+    id: key,
+    name: key,
+    kind: info.kind || existing?.kind || 'unknown',
+    file: info.file ?? existing?.file ?? null,
+    line: info.line ?? existing?.line ?? null,
+    lastTool: tool || existing?.lastTool || null,
+  };
+  graphState.nodes.set(key, merged);
+  return key;
+}
+
+function upsertEdge(srcName, tgtName, kind) {
+  const s = nKey(srcName), t = nKey(tgtName);
+  if (!s || !t || s === t) return false;
+  // make sure both endpoints exist (as 'unknown' if needed)
+  if (!graphState.nodes.has(s)) upsertNode(s);
+  if (!graphState.nodes.has(t)) upsertNode(t);
+  const k = `${s}→${t}:${kind}`;
+  if (graphState.edges.has(k)) return false;
+  graphState.edges.set(k, { source: s, target: t, kind });
+  return true;
+}
+
+// turn "file:line", "file:line-line", or trailing line ":42" into structured bits
+function splitLoc(s) {
+  if (!s) return { file: null, line: null };
+  // PATH:LINE optionally -ENDLINE
+  const m = s.match(/^([A-Za-z0-9_\-./\\]+(?:\.[A-Za-z0-9]+)?):(\d+)(?:-(\d+))?$/);
+  if (m) return { file: m[1].replace(/\\/g, '/'), line: Number(m[2]) };
+  // bare path
+  if (/[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+/.test(s)) return { file: s.replace(/\\/g, '/'), line: null };
+  return { file: null, line: null };
+}
+
+// extract `- NAME (kind) - file:line` or `- NAME (kind) — file:line`
+function parseListEntry(line) {
+  const m = line.match(/^\s*[-*]\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([a-z_]+)\)\s*[-–—]\s*(.+?)\s*$/);
+  if (!m) return null;
+  const [, name, kind, locStr] = m;
+  return { name, kind, ...splitLoc(locStr.trim()) };
+}
+
+// extract `### NAME (kind)\nfile:line` block heads from search-style output
+function parseSearchBlocks(text) {
+  const out = [];
+  const re = /###\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*\(([a-z_]+)\)\s*\n\s*([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+:\d+)/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const { file, line } = splitLoc(m[3]);
+    out.push({ name: m[1], kind: m[2], file, line });
+  }
+  return out;
+}
+
+function ingestIntoGraph(toolName, args, text) {
+  const before = graphState.nodes.size + graphState.edges.size;
+  let addedNodes = 0, addedEdges = 0;
+  const tNode = (name, info) => {
+    const had = graphState.nodes.has(nKey(name));
+    upsertNode(name, info, toolName);
+    if (!had) addedNodes++;
+  };
+  const tEdge = (s, t, k) => {
+    if (upsertEdge(s, t, k)) addedEdges++;
+  };
+
+  const t = toolName || '';
+  const sym = args?.symbol || args?.from || null;
+
+  // --- codegraph_search ---
+  if (t.endsWith('codegraph_search') || t === 'search') {
+    for (const r of parseSearchBlocks(text)) tNode(r.name, { kind: r.kind, file: r.file, line: r.line });
+  }
+
+  // --- codegraph_callers / codegraph_callees ---
+  if (/callers$/.test(t) || /callees$/.test(t)) {
+    const isCallers = /callers$/.test(t);
+    // focal title:  "## Callers of NAME" or "## Callees of NAME"
+    const h = text.match(/##\s+(?:Callers|Callees)\s+of\s+([A-Za-z_][A-Za-z0-9_:.]*)/);
+    const focal = (h && h[1]) || sym;
+    if (focal) {
+      tNode(focal, {});
+      graphState.focal = nKey(focal);
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const e = parseListEntry(line);
+      if (!e) continue;
+      tNode(e.name, { kind: e.kind, file: e.file, line: e.line });
+      if (focal) {
+        if (isCallers) tEdge(e.name, focal, 'calls');
+        else tEdge(focal, e.name, 'calls');
+      }
+    }
+  }
+
+  // --- codegraph_node ---
+  if (/codegraph_node$/.test(t) || t === 'node') {
+    // ## NAME (kind)\n**Location:** file:line
+    const h = text.match(/##\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*\(([a-z_]+)\)/);
+    const loc = text.match(/\*\*Location:\*\*\s*([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+:\d+)/);
+    let focal = h ? h[1] : sym;
+    if (focal) {
+      const kind = h ? h[2] : undefined;
+      const ll = loc ? splitLoc(loc[1]) : {};
+      tNode(focal, { kind, file: ll.file, line: ll.line });
+      graphState.focal = nKey(focal);
+    }
+    // **Calls →** A (file:line), B (file:line)
+    const callsLine = text.match(/\*\*Calls\s*[→\->]+\*\*\s*([^\n]+)/);
+    if (callsLine && focal) {
+      for (const m of callsLine[1].matchAll(/([A-Za-z_][A-Za-z0-9_:.]*)\s*\(([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+:\d+)\)/g)) {
+        const ll = splitLoc(m[2]);
+        tNode(m[1], { file: ll.file, line: ll.line });
+        tEdge(focal, m[1], 'calls');
+      }
+    }
+    // **Called by →** A (file:line), …
+    const calledLine = text.match(/\*\*Called\s*by\s*[→\->]+\*\*\s*([^\n]+)/i);
+    if (calledLine && focal) {
+      for (const m of calledLine[1].matchAll(/([A-Za-z_][A-Za-z0-9_:.]*)\s*\(([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+:\d+)\)/g)) {
+        const ll = splitLoc(m[2]);
+        tNode(m[1], { file: ll.file, line: ll.line });
+        tEdge(m[1], focal, 'calls');
+      }
+    }
+  }
+
+  // --- codegraph_impact ---
+  if (/impact$/.test(t)) {
+    const h = text.match(/##\s+Impact:\s*"?([A-Za-z_][A-Za-z0-9_:.]*)"?/);
+    const focal = (h && h[1]) || sym;
+    if (focal) {
+      tNode(focal, {});
+      graphState.focal = nKey(focal);
+    }
+    // Walk file-section blocks: **path:**\nname:line, name:line, …
+    const re = /\*\*([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+):\*\*\s*\n([^\n]+)/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const file = m[1].replace(/\\/g, '/');
+      for (const entry of m[2].split(',')) {
+        const e = entry.trim().match(/^([A-Za-z_][A-Za-z0-9_:.]*):(\d+)$/);
+        if (!e) continue;
+        if (/\.[A-Za-z0-9]+$/.test(e[1])) continue; // skip file:line entries that are just filenames
+        tNode(e[1], { file, line: Number(e[2]) });
+        if (focal && focal !== e[1]) tEdge(focal, e[1], 'impact');
+      }
+    }
+  }
+
+  // --- codegraph_explore: parses both relationships + source-code section heads ---
+  if (/explore$/.test(t)) {
+    // section: **calls:** / **references:** / **imports:** followed by `- A → B`
+    const sections = text.split(/\n(?=\*\*[a-z_]+:\*\*)/);
+    for (const sec of sections) {
+      const sh = sec.match(/^\*\*([a-z_]+):\*\*/);
+      if (!sh) continue;
+      const kind = sh[1];
+      for (const line of sec.split(/\r?\n/)) {
+        const m = line.match(/^\s*[-*]\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*[→\->]+\s*([A-Za-z_][A-Za-z0-9_:.]*)/);
+        if (!m) continue;
+        tNode(m[1], {});
+        tNode(m[2], {});
+        tEdge(m[1], m[2], kind);
+      }
+    }
+    // file source headers: `#### path — NAME(kind), NAME(kind), …`
+    const fileRe = /####\s+([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+)\s*[—\-:]\s*([^\n]+)/g;
+    let m;
+    while ((m = fileRe.exec(text))) {
+      const file = m[1].replace(/\\/g, '/');
+      for (const x of m[2].matchAll(/([A-Za-z_][A-Za-z0-9_:.]*)\s*\(([a-z_]+)\)/g)) {
+        tNode(x[1], { kind: x[2], file });
+      }
+    }
+  }
+
+  // --- codegraph_trace: path of arrows ---
+  if (/trace$/.test(t)) {
+    // anything like A → B → C, possibly with (file:line) decorations
+    for (const line of text.split(/\r?\n/)) {
+      const parts = line.split(/\s*[→\->]+\s*/);
+      if (parts.length < 2) continue;
+      const named = parts
+        .map((p) => p.match(/([A-Za-z_][A-Za-z0-9_:.]*)\s*(?:\(([A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]+:\d+)\))?/))
+        .filter(Boolean);
+      if (named.length < 2) continue;
+      for (let i = 0; i < named.length - 1; i++) {
+        const a = named[i][1], b = named[i + 1][1];
+        if (!a || !b) continue;
+        const la = named[i][2] ? splitLoc(named[i][2]) : {};
+        const lb = named[i + 1][2] ? splitLoc(named[i + 1][2]) : {};
+        tNode(a, la); tNode(b, lb);
+        tEdge(a, b, 'trace');
+      }
+    }
+    if (sym) { tNode(sym, {}); graphState.focal = nKey(sym); }
+  }
+
+  // --- codegraph_context: just a symbol list usually ---
+  if (/context$/.test(t)) {
+    for (const r of parseSearchBlocks(text)) tNode(r.name, { kind: r.kind, file: r.file, line: r.line });
+    // also list entries
+    for (const line of text.split(/\r?\n/)) {
+      const e = parseListEntry(line);
+      if (e) tNode(e.name, { kind: e.kind, file: e.file, line: e.line });
+    }
+  }
+
+  const after = graphState.nodes.size + graphState.edges.size;
+  return { added: after > before, addedNodes, addedEdges };
+}
+
+// ---------- D3 render ----------
+const gSvg = d3.select('#graphSvg');
+const gRoot = gSvg.append('g');
+const gLinks = gRoot.append('g').attr('class', 'links').attr('fill', 'none');
+const gNodes = gRoot.append('g').attr('class', 'nodes');
+
+// arrowhead
+gSvg.append('defs').html(`
+  <marker id="arrow" viewBox="0 -5 10 10" refX="14" refY="0" markerWidth="6" markerHeight="6" orient="auto">
+    <path d="M0,-5L10,0L0,5" fill="#8b949e"/>
+  </marker>
+`);
+
+gZoom = d3.zoom().scaleExtent([0.1, 6]).on('zoom', (ev) => gRoot.attr('transform', ev.transform));
+gSvg.call(gZoom);
+
+function renderGraph() {
+  const nodes = Array.from(graphState.nodes.values()).map((n) => {
+    const prev = (gSim?.nodes() || []).find((x) => x.id === n.id);
+    return { ...n, x: prev?.x, y: prev?.y, vx: prev?.vx, vy: prev?.vy, fx: prev?.fx, fy: prev?.fy };
+  });
+  const links = Array.from(graphState.edges.values()).map((e) => ({
+    source: e.source, target: e.target, kind: e.kind,
+  }));
+
+  // degree (for node radius)
+  const deg = new Map();
+  for (const n of nodes) deg.set(n.id, 0);
+  for (const l of links) {
+    deg.set(l.source, (deg.get(l.source) || 0) + 1);
+    deg.set(l.target, (deg.get(l.target) || 0) + 1);
+  }
+  nodes.forEach((n) => { n.degree = deg.get(n.id) || 0; });
+
+  $('#graphStats').textContent = `${nodes.length} nodes · ${links.length} edges`;
+  $('#graphEmpty').classList.toggle('hide', nodes.length > 0);
+
+  const rect = $('#graphHost').getBoundingClientRect();
+  const W = Math.max(300, rect.width);
+  const H = Math.max(220, rect.height);
+
+  // links
+  const link = gLinks.selectAll('line').data(links, (d) => `${d.source}→${d.target}:${d.kind}`);
+  link.exit().remove();
+  const linkEnter = link.enter().append('line')
+    .attr('class', 'g-link')
+    .attr('stroke', (d) => EDGE_COLOR[d.kind] || '#666')
+    .attr('stroke-width', 1.1)
+    .attr('marker-end', 'url(#arrow)');
+  const linkAll = linkEnter.merge(link);
+
+  // nodes
+  const node = gNodes.selectAll('g.g-node').data(nodes, (d) => d.id);
+  node.exit().remove();
+  const ent = node.enter().append('g').attr('class', 'g-node');
+  ent.append('circle')
+    .attr('r', (d) => nodeRadius(d))
+    .attr('fill', (d) => KIND_COLOR[d.kind] || KIND_COLOR.unknown)
+    .on('click', (ev, d) => { ev.stopPropagation(); selectGraphNode(d); })
+    .on('dblclick', (ev, d) => { ev.stopPropagation(); expandNode(d); })
+    .on('mouseover', (_, d) => { gHoverId = d.id; applyGraphHighlight(); })
+    .on('mouseout', () => { gHoverId = null; applyGraphHighlight(); });
+  ent.append('title').text((d) => `${d.name}${d.kind ? ' (' + d.kind + ')' : ''}${d.file ? '\n' + d.file + (d.line ? ':' + d.line : '') : ''}\n\n• click → details\n• dbl-click → expand (callers + callees)`);
+  ent.append('text')
+    .attr('dx', (d) => nodeRadius(d) + 4)
+    .attr('dy', 3)
+    .text((d) => d.name);
+
+  const nodeAll = ent.merge(node);
+  nodeAll.select('circle').attr('r', (d) => nodeRadius(d));
+  nodeAll.classed('focal', (d) => d.id === graphState.focal);
+
+  if (gSim) gSim.stop();
+  gSim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id((d) => d.id).distance(70).strength(0.5))
+    .force('charge', d3.forceManyBody().strength(-180))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collide', d3.forceCollide().radius((d) => nodeRadius(d) + 6))
+    .alpha(gFrozen ? 0 : 0.8)
+    .on('tick', () => {
+      linkAll
+        .attr('x1', (d) => d.source.x).attr('y1', (d) => d.source.y)
+        .attr('x2', (d) => d.target.x).attr('y2', (d) => d.target.y);
+      nodeAll.attr('transform', (d) => `translate(${d.x},${d.y})`);
+    });
+
+  nodeAll.call(d3.drag()
+    .on('start', (ev, d) => { if (!ev.active) gSim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+    .on('end', (ev, d) => { if (!ev.active) gSim.alphaTarget(0); if (!gFrozen) { d.fx = null; d.fy = null; } })
+  );
+
+  renderGraphLegend();
+  applyGraphHighlight();
+}
+
+function nodeRadius(d) {
+  if (d.id === graphState.focal) return 9;
+  return 4 + Math.min(8, Math.sqrt(d.degree || 0) * 1.6);
+}
+
+function renderGraphLegend() {
+  const usedKinds = new Set(Array.from(graphState.nodes.values()).map((n) => n.kind || 'unknown'));
+  const usedEdges = new Set(Array.from(graphState.edges.values()).map((e) => e.kind));
+  const rows = [];
+  if (usedKinds.size) {
+    rows.push('<div style="font-weight:600;color:var(--fg);margin-bottom:2px">Nodes</div>');
+    for (const k of usedKinds) {
+      const c = KIND_COLOR[k] || KIND_COLOR.unknown;
+      rows.push(`<div class="row"><span class="sw" style="background:${c}"></span>${k}</div>`);
+    }
+  }
+  if (usedEdges.size) {
+    rows.push('<div style="font-weight:600;color:var(--fg);margin:4px 0 2px">Edges</div>');
+    for (const k of usedEdges) {
+      const c = EDGE_COLOR[k] || '#888';
+      rows.push(`<div class="row"><span class="sw" style="background:${c}"></span>${k}</div>`);
+    }
+  }
+  $('#graphLegend').innerHTML = rows.join('') || '';
+  $('#graphLegend').style.display = rows.length ? '' : 'none';
+}
+
+function applyGraphHighlight() {
+  const focus = gHoverId || gSelectedId;
+  const neighbors = new Set();
+  if (focus) {
+    neighbors.add(focus);
+    for (const e of graphState.edges.values()) {
+      if (e.source === focus) neighbors.add(e.target);
+      if (e.target === focus) neighbors.add(e.source);
+    }
+  }
+  gNodes.selectAll('g.g-node')
+    .classed('dim', (d) => focus && !neighbors.has(d.id))
+    .classed('hi', (d) => d.id === gSelectedId);
+  gLinks.selectAll('line')
+    .classed('dim', (d) => focus && d.source.id !== focus && d.target.id !== focus)
+    .classed('hi', (d) => focus && (d.source.id === focus || d.target.id === focus));
+}
+
+function selectGraphNode(d) {
+  gSelectedId = d.id;
+  applyGraphHighlight();
+  const note = $('#graphIngestNote');
+  note.innerHTML =
+    `<span style="color:var(--accent);font-family:ui-monospace,Menlo,monospace">${escapeHtml(d.name)}</span>` +
+    (d.kind ? ` <span style="color:var(--fg-dim)">${d.kind}</span>` : '') +
+    (d.file ? ` <span class="pill file" data-pill="file" data-path="${escapeAttr(d.file)}"${d.line ? ` data-line="${d.line}"` : ''}>${escapeHtml(d.file)}${d.line ? ':' + d.line : ''}</span>` : '') +
+    `  <button class="btn secondary" data-act="expand" style="padding:2px 8px;font-size:10.5px;margin-left:6px">Expand</button>` +
+    `  <button class="btn secondary" data-act="inspect" style="padding:2px 8px;font-size:10.5px">Inspect</button>`;
+  attachPillHandlers(note);
+  note.querySelector('[data-act="expand"]').addEventListener('click', () => expandNode({ id: d.name, name: d.name }));
+  note.querySelector('[data-act="inspect"]').addEventListener('click', () => runOther('codegraph_node', { symbol: d.name }));
+}
+
+async function expandNode(d) {
+  graphState.focal = d.id;
+  const callersTool = tools.find((t) => /callers$/.test(t.name));
+  const calleesTool = tools.find((t) => /callees$/.test(t.name));
+  const calls = [];
+  if (callersTool) calls.push(callMcp(callersTool.name, { symbol: d.name }));
+  if (calleesTool) calls.push(callMcp(calleesTool.name, { symbol: d.name }));
+  const results = await Promise.all(calls);
+  for (let i = 0; i < results.length; i++) {
+    const toolName = i === 0 && callersTool ? callersTool.name : calleesTool.name;
+    const j = results[i];
+    if (!j?.ok) continue;
+    const text = (j.result?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+    ingestIntoGraph(toolName, { symbol: d.name }, text);
+  }
+  renderGraph();
+}
+
+async function callMcp(name, args) {
+  try {
+    const r = await fetch('/api/call', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, arguments: args }),
+    });
+    return await r.json();
+  } catch { return null; }
+}
+
+function fitGraph() {
+  const nodes = gSim?.nodes() || [];
+  if (!nodes.length) return;
+  const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const rect = $('#graphHost').getBoundingClientRect();
+  const dx = maxX - minX || 1, dy = maxY - minY || 1;
+  const scale = Math.min(rect.width / (dx + 80), rect.height / (dy + 80), 2);
+  const tx = rect.width / 2 - ((minX + maxX) / 2) * scale;
+  const ty = rect.height / 2 - ((minY + maxY) / 2) * scale;
+  gSvg.transition().duration(400).call(
+    gZoom.transform,
+    d3.zoomIdentity.translate(tx, ty).scale(scale),
+  );
+}
+
+// clear selection on bg click
+gSvg.on('click', () => { gSelectedId = null; applyGraphHighlight(); });
+
+// resize
+window.addEventListener('resize', () => {
+  if (!gSim) return;
+  const rect = $('#graphHost').getBoundingClientRect();
+  gSim.force('center', d3.forceCenter(rect.width / 2, rect.height / 2)).alpha(0.3).restart();
 });
 </script>
 </body>
