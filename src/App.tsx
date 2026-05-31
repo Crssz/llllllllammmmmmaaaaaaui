@@ -17,7 +17,7 @@ import { log } from "./lib/logger";
 
 type Tab = "chat" | "models" | "configure" | "hardware" | "profiles" | "mcp" | "audio";
 
-function ModePills({ value, onChange }: { value: Agency; onChange: (a: Agency) => void }) {
+function ModePills({ value, onChange }: Readonly<{ value: Agency; onChange: (a: Agency) => void }>) {
   return (
     <div className="mode-pills" role="tablist" aria-label="Pilot mode">
       {(Object.entries(AGENCY_LABELS) as [Agency, (typeof AGENCY_LABELS)[Agency]][]).map(
@@ -46,25 +46,31 @@ function basename(p: string): string {
   return p.split(sep).pop() || p;
 }
 
+type ServerLike = { running: boolean; ready: boolean; info?: { port?: number } | null };
+
+// Compact "stopped / loading… / :PORT" label for the model picker.
+function serverStatusLabel(server: ServerLike): string {
+  if (!server.running) return "stopped";
+  return server.ready ? `:${server.info?.port}` : "loading…";
+}
+
 function TopBar({
   agency,
   onAgency,
   onSwitchToBinary,
-  onSwitchToModels,
   onToggleLogs,
   logsOpen,
   pickerOpen,
   setPickerOpen,
-}: {
+}: Readonly<{
   agency: Agency;
   onAgency: (a: Agency) => void;
   onSwitchToBinary: () => void;
-  onSwitchToModels: () => void;
   onToggleLogs: () => void;
   logsOpen: boolean;
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
-}) {
+}>) {
   const { server, flags, stopServer, modelInfo } = useAppStore(
     useShallow((s) => ({
       server: s.server,
@@ -76,13 +82,8 @@ function TopBar({
   const modelPath = (flags.model as string) || "";
   const modelName = modelPath ? basename(modelPath) : "no model";
   // Three states: stopped (muted), running-but-loading (yellow), ready (green).
-  const dotColor = !server.running
-    ? "var(--muted)"
-    : server.ready
-      ? "var(--green)"
-      : "var(--yellow)";
-  void stopServer;
-  void onSwitchToModels;
+  let dotColor = "var(--muted)";
+  if (server.running) dotColor = server.ready ? "var(--green)" : "var(--yellow)";
 
   return (
     <div className="topbar">
@@ -111,9 +112,7 @@ function TopBar({
             + MTP
           </span>
         )}
-        <span className="meta mono">
-          {server.running ? (server.ready ? `:${server.info?.port}` : "loading…") : "stopped"}
-        </span>
+        <span className="meta mono">{serverStatusLabel(server)}</span>
         <I.Chevron
           size={12}
           style={{
@@ -159,7 +158,7 @@ function TopBar({
   );
 }
 
-function Sidebar({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>) {
   const { server, settings, chats, currentChatId, selectChat, newChat } = useAppStore(
     useShallow((s) => ({
       server: s.server,
@@ -369,21 +368,21 @@ function useUptime(startedAt: number | undefined) {
 }
 
 function useTime() {
-  const [s, ss] = useState(() => {
+  const [time, setTime] = useState(() => {
     const d = new Date();
     return d.toTimeString().slice(0, 5);
   });
   useEffect(() => {
     const id = setInterval(() => {
       const d = new Date();
-      ss(d.toTimeString().slice(0, 5));
+      setTime(d.toTimeString().slice(0, 5));
     }, 30_000);
     return () => clearInterval(id);
   }, []);
-  return s;
+  return time;
 }
 
-function StatusBar({ agency }: { agency: Agency }) {
+function StatusBar({ agency }: Readonly<{ agency: Agency }>) {
   const t = useTime();
   const { server, build, flags } = useAppStore(
     useShallow((s) => ({ server: s.server, build: s.build, flags: s.flags })),
@@ -437,8 +436,8 @@ export function App() {
         setLogsOpen((o) => !o);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    globalThis.addEventListener("keydown", onKey);
+    return () => globalThis.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -454,7 +453,6 @@ export function App() {
           setTab("configure");
           setConfigureTabRequest("binary");
         }}
-        onSwitchToModels={() => setTab("models")}
         logsOpen={logsOpen}
         onToggleLogs={() => setLogsOpen((o) => !o)}
         pickerOpen={pickerOpen}
