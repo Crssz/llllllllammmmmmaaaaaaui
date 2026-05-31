@@ -20,7 +20,7 @@ function emptyServer(): McpServerConfig {
   };
 }
 
-function StatusBadge({ status }: { status: McpStatus | undefined }) {
+function StatusBadge({ status }: Readonly<{ status: McpStatus | undefined }>) {
   if (!status) {
     return (
       <span className="badge ghost">
@@ -50,7 +50,7 @@ function StatusBadge({ status }: { status: McpStatus | undefined }) {
   );
 }
 
-function ToolList({ tools }: { tools: McpTool[] | undefined }) {
+function ToolList({ tools }: Readonly<{ tools: McpTool[] | undefined }>) {
   if (!tools || tools.length === 0) {
     return (
       <div style={{ color: "var(--muted)", fontStyle: "italic", fontSize: 12.5, padding: "8px 0" }}>
@@ -80,13 +80,13 @@ function KvEditor({
   onChange,
   placeholderKey,
   placeholderValue,
-}: {
+}: Readonly<{
   label: string;
   value: Record<string, string>;
   onChange: (v: Record<string, string>) => void;
   placeholderKey: string;
   placeholderValue: string;
-}) {
+}>) {
   const entries = Object.entries(value);
   const update = (idx: number, k: string, v: string) => {
     const arr = [...entries];
@@ -143,10 +143,10 @@ function KvEditor({
 function ServerEditor({
   draft,
   onChange,
-}: {
+}: Readonly<{
   draft: McpServerConfig;
   onChange: (next: McpServerConfig) => void;
-}) {
+}>) {
   const patch = (p: Partial<McpServerConfig>) => onChange({ ...draft, ...p });
   const argsString = (draft.args ?? []).join("\n");
   const uid = useId();

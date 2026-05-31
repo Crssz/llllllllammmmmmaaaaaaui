@@ -13,13 +13,13 @@ function FlagRow({
   onChange,
   agency,
   onBrowse,
-}: {
+}: Readonly<{
   f: FlagDef;
   value: FlagValue;
   onChange: (v: FlagValue) => void;
   agency: Agency;
   onBrowse?: () => void;
-}) {
+}>) {
   const showSuggestion = agency === "suggest" && f.suggest !== undefined && f.suggest !== value;
   const lockedByAuto = agency === "auto" && f.suggest !== undefined;
 

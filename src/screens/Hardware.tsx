@@ -6,11 +6,11 @@ function Sparkline({
   data,
   color = "var(--accent)",
   height = 32,
-}: {
+}: Readonly<{
   data: number[];
   color?: string;
   height?: number;
-}) {
+}>) {
   const w = 100;
   const h = height;
   if (data.length === 0) {

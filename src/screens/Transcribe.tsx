@@ -22,7 +22,7 @@ function PathField({
   onChange,
   onBrowse,
   disabled,
-}: {
+}: Readonly<{
   label: string;
   hint?: string;
   value: string;
@@ -30,7 +30,7 @@ function PathField({
   onChange: (v: string) => void;
   onBrowse: () => void;
   disabled?: boolean;
-}) {
+}>) {
   return (
     <div className="tr-field">
       <label>
@@ -67,7 +67,7 @@ function NumField({
   step,
   min,
   placeholder,
-}: {
+}: Readonly<{
   label: string;
   value: number;
   onChange: (v: number) => void;
@@ -75,7 +75,7 @@ function NumField({
   step?: number;
   min?: number;
   placeholder?: string;
-}) {
+}>) {
   return (
     <div className="tr-field">
       <label>{label}</label>

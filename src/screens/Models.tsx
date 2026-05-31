@@ -446,14 +446,14 @@ export function ExpandedRow({
   setFlag,
   onLoad,
   isLoaded,
-}: {
+}: Readonly<{
   row: FlatRow;
   info: GgufInfo | "loading" | "error" | undefined;
   flags: Record<string, string | number | boolean>;
   setFlag: (k: string, v: string | number | boolean) => void;
   onLoad: () => void;
   isLoaded: boolean;
-}) {
+}>) {
   const ctx = (flags.ctx as number) ?? 32768;
   const ngl = (flags.ngl as number) ?? 30;
   const fa = !!flags.fa;
