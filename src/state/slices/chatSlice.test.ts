@@ -4,7 +4,10 @@ import { freshStore, flush, makeChat, makeSettings, stubApi, useAppStore } from 
 import type { StoredChatMessage } from "../../lib/api";
 
 // Build an SSE-style streaming Response for the chat-completions endpoint.
-function sseResponse(events: string[], opts: { ok?: boolean; status?: number; text?: string } = {}): Response {
+function sseResponse(
+  events: string[],
+  opts: { ok?: boolean; status?: number; text?: string } = {},
+): Response {
   const ok = opts.ok ?? true;
   const chunks = events.map((e) => new TextEncoder().encode(e));
   let i = 0;
@@ -91,9 +94,7 @@ describe("chat slice — CRUD", () => {
 
   it("editMessage replaces content at index, ignores out-of-bounds", () => {
     useAppStore.setState({
-      chats: [
-        makeChat({ id: "a", messages: [{ role: "user", content: "hi", time: 1 }] }),
-      ],
+      chats: [makeChat({ id: "a", messages: [{ role: "user", content: "hi", time: 1 }] })],
     });
     useAppStore.getState().editMessage("a", 0, "hello");
     expect(useAppStore.getState().chats[0].messages[0].content).toBe("hello");
@@ -210,9 +211,7 @@ describe("chat slice — streaming roundtrip", () => {
   });
 
   it("surfaces a non-200 response as a chat error message", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response("nope", { status: 500, statusText: "ERR" }),
-    );
+    fetchMock.mockResolvedValueOnce(new Response("nope", { status: 500, statusText: "ERR" }));
     await useAppStore.getState().sendChat("hi");
     const last = useAppStore.getState().chats[0].messages.at(-1)!;
     expect(last.content).toMatch(/⚠️ HTTP 500/);
@@ -308,7 +307,9 @@ describe("chat slice — streaming roundtrip", () => {
 
     await useAppStore.getState().sendChat("please use echo");
     const msgs = useAppStore.getState().chats[0].messages;
-    expect(msgs.some((m: StoredChatMessage) => m.role === "tool" && m.content === "tool-said-hi")).toBe(true);
+    expect(
+      msgs.some((m: StoredChatMessage) => m.role === "tool" && m.content === "tool-said-hi"),
+    ).toBe(true);
     expect(msgs.at(-1)?.content).toBe("ok");
     expect(api.mcpCallTool).toHaveBeenCalledWith("s1", "echo", { x: 1 });
   });
@@ -381,7 +382,9 @@ describe("chat slice — streaming roundtrip", () => {
 
     await useAppStore.getState().sendChat("try it");
     const msgs = useAppStore.getState().chats[0].messages;
-    expect(msgs.some((m: StoredChatMessage) => m.role === "tool" && /denied/.test(m.content))).toBe(true);
+    expect(msgs.some((m: StoredChatMessage) => m.role === "tool" && /denied/.test(m.content))).toBe(
+      true,
+    );
     expect(api.mcpCallTool).not.toHaveBeenCalled();
   });
 
@@ -686,18 +689,13 @@ describe("chat slice — request body + edge SSE", () => {
       });
     });
     await sendP;
-    const tool = useAppStore
-      .getState()
-      .chats[0].messages.find((m) => m.role === "tool")!;
+    const tool = useAppStore.getState().chats[0].messages.find((m) => m.role === "tool")!;
     expect(tool.content).toMatch(/denied/);
   });
 
   it("captures SSE payload errors as chunk.error string", async () => {
     fetchMock.mockResolvedValueOnce(
-      sseResponse([
-        `data: ${JSON.stringify({ error: "model exploded" })}\n`,
-        `data: [DONE]\n`,
-      ]),
+      sseResponse([`data: ${JSON.stringify({ error: "model exploded" })}\n`, `data: [DONE]\n`]),
     );
     await useAppStore.getState().sendChat("hi");
     const last = useAppStore.getState().chats[0].messages.at(-1)!;

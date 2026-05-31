@@ -40,7 +40,9 @@ describe("mcp slice", () => {
   it("mcpDeleteServer removes the entry and forgets status/tools", async () => {
     useAppStore.getState().setSettings(makeSettings({ mcp_servers: [srv()] }));
     useAppStore.setState({
-      mcpStatuses: { s1: { id: "s1", connected: true, error: null, tool_count: 0, server_name: null } },
+      mcpStatuses: {
+        s1: { id: "s1", connected: true, error: null, tool_count: 0, server_name: null },
+      },
       mcpTools: { s1: [] },
     });
     await useAppStore.getState().mcpDeleteServer("s1");
@@ -79,7 +81,9 @@ describe("mcp slice", () => {
 
   it("mcpDisconnect clears status + tools", async () => {
     useAppStore.setState({
-      mcpStatuses: { s1: { id: "s1", connected: true, error: null, tool_count: 0, server_name: null } },
+      mcpStatuses: {
+        s1: { id: "s1", connected: true, error: null, tool_count: 0, server_name: null },
+      },
       mcpTools: { s1: [{ name: "t", description: null, input_schema: {} }] },
     });
     await useAppStore.getState().mcpDisconnect("s1");

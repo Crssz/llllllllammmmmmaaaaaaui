@@ -45,9 +45,7 @@ describe("models slice", () => {
 
   it("pickModelsDir cascades to setModelsDir → scan", async () => {
     vi.spyOn(api, "pickFolder").mockResolvedValueOnce("/m");
-    vi.spyOn(api, "addRecentModelsDir").mockResolvedValueOnce(
-      makeSettings({ models_dir: "/m" }),
-    );
+    vi.spyOn(api, "addRecentModelsDir").mockResolvedValueOnce(makeSettings({ models_dir: "/m" }));
     await useAppStore.getState().pickModelsDir();
     expect(api.scanModels).toHaveBeenCalledWith("/m");
   });

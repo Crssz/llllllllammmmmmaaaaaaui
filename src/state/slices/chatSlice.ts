@@ -101,7 +101,11 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
             tool_calls: toolCalls && toolCalls.length > 0 ? toolCalls : null,
             time: last.time,
           };
-          return { ...c, messages: c.messages.slice(0, -1).concat(newLast), updated_at: Date.now() };
+          return {
+            ...c,
+            messages: c.messages.slice(0, -1).concat(newLast),
+            updated_at: Date.now(),
+          };
         }),
       ),
     }));
@@ -204,10 +208,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
               rawContent += delta.content;
               touched = true;
             }
-            if (
-              typeof delta.reasoning_content === "string" &&
-              delta.reasoning_content.length > 0
-            ) {
+            if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
               streamedReasoning += delta.reasoning_content;
               touched = true;
             }
@@ -276,7 +277,14 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       "chat",
       `← ${usageTokens ?? "?"} tokens in ${elapsed.toFixed(2)}s, ${toolCalls.length} tool_calls`,
     );
-    return { content: split.content, reasoning, toolCalls, tokens: usageTokens, tps, error: streamError };
+    return {
+      content: split.content,
+      reasoning,
+      toolCalls,
+      tokens: usageTokens,
+      tps,
+      error: streamError,
+    };
   };
 
   const streamReply = async (session: ChatSession, baseMessages: StoredChatMessage[]) => {
@@ -360,12 +368,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           );
           break;
         }
-        if (
-          result.error &&
-          !result.content &&
-          !result.reasoning &&
-          result.toolCalls.length === 0
-        ) {
+        if (result.error && !result.content && !result.reasoning && result.toolCalls.length === 0) {
           finalizeAssistant(
             working.id,
             `⚠️ ${result.error}`,
