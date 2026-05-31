@@ -118,7 +118,7 @@ export function HardwareScreen() {
               <I.Gpu /> GPU utilization
             </div>
             <div className="big">
-              {gpu0?.util != null ? gpu0.util : "—"}
+              {gpu0?.util ?? "—"}
               <span className="unit">%</span>
             </div>
             <div className="util-bar">

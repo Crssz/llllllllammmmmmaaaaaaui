@@ -1,9 +1,9 @@
 import { vi } from "vitest";
-import { useAppStore, resetAppStore } from "./store";
+import { resetAppStore } from "./store";
 import { api, type Settings, type ChatSession } from "../lib/api";
 import { EMPTY_SETTINGS } from "./slices/settingsSlice";
 
-export { useAppStore, resetAppStore };
+export { useAppStore, resetAppStore } from "./store";
 
 export function freshStore() {
   resetAppStore();
