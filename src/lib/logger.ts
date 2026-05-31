@@ -151,7 +151,7 @@ export function logFailure(area: string, label: string) {
 }
 
 // Surface unhandled errors / rejections.
-if (typeof globalThis.window !== "undefined") {
+if (globalThis.window !== undefined) {
   globalThis.addEventListener("error", (ev) => {
     log.error("window", ev.message || "uncaught error", {
       filename: ev.filename,

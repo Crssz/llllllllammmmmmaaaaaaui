@@ -3,14 +3,21 @@ import { log, type Toast } from "../lib/logger";
 
 const DISMISS_MS = 6000;
 
+type SetToasts = React.Dispatch<React.SetStateAction<Toast[]>>;
+
+// Module-level helper so the dismissal closures don't nest past the function
+// depth limit inside the component's effect.
+function scheduleDismiss(setToasts: SetToasts, id: number) {
+  globalThis.setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), DISMISS_MS);
+}
+
 export function Toasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   useEffect(() => {
-    const dismiss = (id: number) => setToasts((prev) => prev.filter((x) => x.id !== id));
     const onToast = (t: Toast) => {
       setToasts((prev) => [...prev, t]);
-      globalThis.setTimeout(() => dismiss(t.id), DISMISS_MS);
+      scheduleDismiss(setToasts, t.id);
     };
     return log.subscribeToasts(onToast);
   }, []);
