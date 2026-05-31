@@ -151,8 +151,8 @@ export function ProfilesScreen() {
               borderRadius: "var(--radius-lg)",
             }}
           >
-            No saved profiles yet — set up flags on Configure, then click
-            <b style={{ color: "var(--text-2)" }}> Save current as profile</b>.
+            No saved profiles yet — set up flags on Configure, then click{" "}
+            <b style={{ color: "var(--text-2)" }}>Save current as profile</b>.
           </div>
         )}
 

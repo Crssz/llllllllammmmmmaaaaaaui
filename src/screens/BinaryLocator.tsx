@@ -50,13 +50,11 @@ export function BinaryLocator() {
           </span>
         ) : detected ? (
           <span className="badge green" style={{ marginLeft: 6 }}>
-            <span className="dot" />
-            detected · {okCount}/{totalCount}
+            <span className="dot" /> detected · {okCount}/{totalCount}
           </span>
         ) : (
           <span className="badge red" style={{ marginLeft: 6 }}>
-            <span className="dot" />
-            not found
+            <span className="dot" /> not found
           </span>
         )}
         {build?.version && (

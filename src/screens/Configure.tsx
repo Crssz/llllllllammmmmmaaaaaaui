@@ -318,8 +318,7 @@ export function ConfigureScreen({
             </span>
           ) : (
             <span className="badge ghost">
-              <span className="dot" />
-              stopped
+              <span className="dot" /> stopped
             </span>
           )}
           {server.running ? (
@@ -425,7 +424,15 @@ export function ConfigureScreen({
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
                       <div
                         className="cfg-section-head"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setOpen((s) => ({ ...s, [g.id]: !s[g.id] }));
+                          }
+                        }}
                       >
                         <IconCmp size={14} />
                         <span>{g.label}</span>

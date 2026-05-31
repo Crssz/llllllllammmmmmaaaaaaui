@@ -26,7 +26,7 @@ function Sparkline({
     .map((v, i) => `${i === 0 ? "M" : "L"} ${xs(i).toFixed(1)} ${ys(v).toFixed(1)}`)
     .join(" ");
   const area = `${path} L ${xs(data.length - 1).toFixed(1)} ${h} L ${pad} ${h} Z`;
-  const gid = `g-${color.replace(/[^a-z]/gi, "")}`;
+  const gid = `g-${color.replaceAll(/[^a-z]/gi, "")}`;
   return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: "100%", height }}>
       <defs>

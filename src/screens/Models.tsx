@@ -568,7 +568,7 @@ export function ExpandedRow({
                 checked={isAllLayers}
                 onChange={(e) => setFlag("ngl", e.target.checked ? 999 : 100)}
                 style={{ margin: 0 }}
-              />
+              />{" "}
               all
             </label>
             <input

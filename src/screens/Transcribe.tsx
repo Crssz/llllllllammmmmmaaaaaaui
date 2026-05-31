@@ -87,7 +87,7 @@ function NumField({
         min={min}
         placeholder={placeholder}
         disabled={disabled}
-        onChange={(e) => onChange(e.target.value === "" ? NaN : Number(e.target.value))}
+        onChange={(e) => onChange(e.target.value === "" ? Number.NaN : Number(e.target.value))}
       />
     </div>
   );
@@ -245,9 +245,11 @@ export function TranscribeScreen() {
           <div className="tr-banner red">
             <I.Info size={14} />
             <span>
-              <b>llama-mtmd-cli</b> was not found in the current build (
-              <span className="mono">{build?.resolved_path ?? "?"}</span>). Rebuild llama.cpp with
-              the multimodal tools, or point Configure at a build that includes it.
+              <b>llama-mtmd-cli</b> was not found in the current build{" ("}
+              <span className="mono">{build?.resolved_path ?? "?"}</span>
+              {
+                "). Rebuild llama.cpp with the multimodal tools, or point Configure at a build that includes it."
+              }
             </span>
           </div>
         ) : (
@@ -296,8 +298,9 @@ export function TranscribeScreen() {
             />
 
             <div className="tr-field">
-              <label>Prompt</label>
+              <label htmlFor="tr-prompt">Prompt</label>
               <textarea
+                id="tr-prompt"
                 className="input"
                 rows={2}
                 value={prompt}
@@ -416,8 +419,16 @@ export function TranscribeScreen() {
         <div className="panel tr-panel">
           <div
             className="panel-head"
+            role="button"
+            tabIndex={0}
             style={{ cursor: "pointer" }}
             onClick={() => setShowLog((v) => !v)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setShowLog((v) => !v);
+              }
+            }}
           >
             <I.Terminal size={13} />
             <span>Progress log</span>

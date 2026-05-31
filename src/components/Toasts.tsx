@@ -47,7 +47,16 @@ export function Toasts() {
             boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
             cursor: "pointer",
           }}
+          role="button"
+          tabIndex={0}
+          aria-label="Dismiss notification"
           onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setToasts((prev) => prev.filter((x) => x.id !== t.id));
+            }
+          }}
         >
           <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>
             {t.level.toUpperCase()} · {t.area}

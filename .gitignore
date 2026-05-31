@@ -20,6 +20,7 @@ src-tauri/gen/schemas
 # SonarQube scanner working artifacts
 .scannerwork/
 .sonar/
+src-tauri/clippy-report.json
 
 # design archive (kept locally as reference, not checked in)
 .design-archive/

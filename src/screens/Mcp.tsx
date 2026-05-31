@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
@@ -149,19 +149,23 @@ function ServerEditor({
 }) {
   const patch = (p: Partial<McpServerConfig>) => onChange({ ...draft, ...p });
   const argsString = (draft.args ?? []).join("\n");
+  const uid = useId();
+  const fid = (name: string) => `${uid}-${name}`;
   return (
     <div className="mcp-editor">
       <div className="mcp-field">
-        <label>Name</label>
+        <label htmlFor={fid("name")}>Name</label>
         <input
+          id={fid("name")}
           className="input"
           value={draft.name}
           onChange={(e) => patch({ name: e.target.value })}
         />
       </div>
       <div className="mcp-field">
-        <label>Transport</label>
+        <label htmlFor={fid("transport")}>Transport</label>
         <select
+          id={fid("transport")}
           className="select mono"
           value={draft.transport}
           onChange={(e) => patch({ transport: e.target.value as McpTransport })}
@@ -175,8 +179,9 @@ function ServerEditor({
       {draft.transport === "stdio" ? (
         <>
           <div className="mcp-field">
-            <label>Command</label>
+            <label htmlFor={fid("command")}>Command</label>
             <input
+              id={fid("command")}
               className="input mono"
               placeholder="e.g. npx or python or /path/to/server"
               value={draft.command ?? ""}
@@ -184,8 +189,9 @@ function ServerEditor({
             />
           </div>
           <div className="mcp-field">
-            <label>Arguments (one per line)</label>
+            <label htmlFor={fid("args")}>Arguments (one per line)</label>
             <textarea
+              id={fid("args")}
               className="input mono"
               rows={Math.max(3, (draft.args?.length ?? 0) + 1)}
               placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/some/path"}
@@ -202,8 +208,9 @@ function ServerEditor({
             />
           </div>
           <div className="mcp-field">
-            <label>Working directory (optional)</label>
+            <label htmlFor={fid("cwd")}>Working directory (optional)</label>
             <input
+              id={fid("cwd")}
               className="input mono"
               placeholder="(inherits app cwd)"
               value={draft.cwd ?? ""}
@@ -221,8 +228,9 @@ function ServerEditor({
       ) : (
         <>
           <div className="mcp-field">
-            <label>URL</label>
+            <label htmlFor={fid("url")}>URL</label>
             <input
+              id={fid("url")}
               className="input mono"
               placeholder="https://example.com/mcp"
               value={draft.url ?? ""}
@@ -245,7 +253,7 @@ function ServerEditor({
             type="checkbox"
             checked={draft.enabled}
             onChange={(e) => patch({ enabled: e.target.checked })}
-          />
+          />{" "}
           Enabled (eligible for chat sessions)
         </label>
         <label className="mcp-check">
@@ -253,7 +261,7 @@ function ServerEditor({
             type="checkbox"
             checked={draft.autostart}
             onChange={(e) => patch({ autostart: e.target.checked })}
-          />
+          />{" "}
           Connect automatically on app start
         </label>
       </div>

@@ -117,7 +117,7 @@ export function LogsPanel({ open, onClose }: { open: boolean; onClose: () => voi
             type="checkbox"
             checked={autoScroll}
             onChange={(e) => setAutoScroll(e.target.checked)}
-          />
+          />{" "}
           auto-scroll
         </label>
         <button className="btn ghost" onClick={() => log.clear()} title="Clear logs">

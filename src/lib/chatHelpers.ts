@@ -105,6 +105,6 @@ export function mcpResultToText(raw: unknown): string {
 export function deriveTitle(messages: StoredChatMessage[]): string {
   const first = messages.find((m) => m.role === "user");
   if (!first) return "New chat";
-  const t = first.content.trim().replace(/\s+/g, " ");
+  const t = first.content.trim().replaceAll(/\s+/g, " ");
   return t.length > 48 ? t.slice(0, 47) + "…" : t || "New chat";
 }

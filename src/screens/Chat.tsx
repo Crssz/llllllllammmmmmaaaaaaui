@@ -911,9 +911,22 @@ export function ChatScreen({ agency }: { agency: Agency }) {
       {pendingToolApproval && (
         <div
           className="tool-approval-overlay"
-          onClick={() => approveTool(pendingToolApproval.id, "deny")}
+          role="button"
+          tabIndex={0}
+          aria-label="Dismiss and deny tool call"
+          onClick={(e) => {
+            // Only the backdrop itself dismisses; clicks bubbling up from the
+            // card are ignored, so the card needs no stopPropagation handler.
+            if (e.target === e.currentTarget) approveTool(pendingToolApproval.id, "deny");
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              approveTool(pendingToolApproval.id, "deny");
+            }
+          }}
         >
-          <div className="tool-approval-card" onClick={(e) => e.stopPropagation()}>
+          <div className="tool-approval-card" role="dialog" aria-modal="true" tabIndex={-1}>
             <div className="tool-approval-head">
               <I.Lock size={14} />
               <span>Approve tool call?</span>
@@ -955,7 +968,7 @@ function ApprovalFooter({
   return (
     <div className="tool-approval-foot">
       <label className="mcp-check" style={{ marginRight: "auto" }}>
-        <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+        <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />{" "}
         Remember for this session
       </label>
       <button className="btn" onClick={() => onDecide("deny", remember)}>
