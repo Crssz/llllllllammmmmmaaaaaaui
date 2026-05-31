@@ -140,6 +140,7 @@ export function ChatScreen({ agency }: { agency: Agency }) {
   };
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const approvalRef = useRef<HTMLDialogElement | null>(null);
   const atBottomRef = useRef(true);
   // Mirror of atBottomRef for use in render. Scroll handler updates the ref
   // every event but only flips state when the threshold is actually crossed,
@@ -155,6 +156,15 @@ export function ChatScreen({ agency }: { agency: Agency }) {
     const id = window.setInterval(() => setNowTick(Date.now()), 250);
     return () => window.clearInterval(id);
   }, [chatPending]);
+
+  // Drive the tool-approval modal as a native <dialog>: showModal() gives us
+  // the backdrop, Escape-to-close, and focus trapping for free.
+  useEffect(() => {
+    const dlg = approvalRef.current;
+    if (!dlg) return;
+    if (pendingToolApproval && !dlg.open) dlg.showModal();
+    else if (!pendingToolApproval && dlg.open) dlg.close();
+  }, [pendingToolApproval]);
 
   useEffect(() => {
     const ta = taRef.current;
@@ -908,16 +918,19 @@ export function ChatScreen({ agency }: { agency: Agency }) {
         </div>
       </div>
       <ChatSidebar open={sideOpen} onToggle={() => setSideOpen((o) => !o)} />
-      {pendingToolApproval && (
-        <div
-          className="tool-approval-overlay"
-          onClick={(e) => {
-            // Only the backdrop itself dismisses; clicks bubbling up from the
-            // card are ignored, so the card needs no stopPropagation handler.
-            if (e.target === e.currentTarget) approveTool(pendingToolApproval.id, "deny");
-          }}
-        >
-          <dialog open className="tool-approval-card" aria-modal="true">
+      <dialog
+        ref={approvalRef}
+        className="tool-approval-card"
+        onCancel={(e) => {
+          // Escape key: treat as deny rather than a bare close. Approval is a
+          // deliberate choice, so there is no click-outside-to-dismiss — the
+          // explicit Deny button and Escape are the two ways out.
+          e.preventDefault();
+          if (pendingToolApproval) approveTool(pendingToolApproval.id, "deny");
+        }}
+      >
+        {pendingToolApproval && (
+          <>
             <div className="tool-approval-head">
               <I.Lock size={14} />
               <span>Approve tool call?</span>
@@ -943,9 +956,9 @@ export function ChatScreen({ agency }: { agency: Agency }) {
                 approveTool(pendingToolApproval.id, decision, remember)
               }
             />
-          </dialog>
-        </div>
-      )}
+          </>
+        )}
+      </dialog>
     </div>
   );
 }

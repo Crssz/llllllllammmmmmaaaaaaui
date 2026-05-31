@@ -2399,18 +2399,16 @@ button {
 }
 
 /* ───────── Tool approval modal ───────── */
-.tool-approval-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-}
+/* Rendered as a native <dialog> opened with showModal(): the browser centers
+   it and supplies ::backdrop, so no wrapper/flex-centering is needed. Reset the
+   UA dialog box styles (padding/max-width) that would otherwise show through. */
 .tool-approval-card {
+  margin: auto;
+  padding: 0;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
   width: min(560px, 100%);
+  color: var(--text);
   background: var(--bg-elev);
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-lg);
@@ -2418,6 +2416,9 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.tool-approval-card::backdrop {
+  background: rgba(0, 0, 0, 0.55);
 }
 .tool-approval-head {
   display: flex;
