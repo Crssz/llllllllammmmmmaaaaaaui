@@ -7,13 +7,12 @@ export function Toasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   useEffect(() => {
-    const unsub = log.subscribeToasts((t) => {
+    const dismiss = (id: number) => setToasts((prev) => prev.filter((x) => x.id !== id));
+    const onToast = (t: Toast) => {
       setToasts((prev) => [...prev, t]);
-      window.setTimeout(() => {
-        setToasts((prev) => prev.filter((x) => x.id !== t.id));
-      }, DISMISS_MS);
-    });
-    return unsub;
+      globalThis.setTimeout(() => dismiss(t.id), DISMISS_MS);
+    };
+    return log.subscribeToasts(onToast);
   }, []);
 
   if (toasts.length === 0) return null;

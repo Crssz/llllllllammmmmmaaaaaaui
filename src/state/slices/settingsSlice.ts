@@ -1,6 +1,5 @@
 import type { StateCreator } from "zustand";
 import { api, type Settings } from "../../lib/api";
-import { persistSettings } from "../persist";
 import type { AppStore } from "../store";
 
 export const EMPTY_SETTINGS: Settings = {
@@ -48,4 +47,4 @@ export const createSettingsSlice: StateCreator<AppStore, [], [], SettingsSlice> 
   },
 });
 
-export { persistSettings };
+export { persistSettings } from "../persist";

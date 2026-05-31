@@ -9,12 +9,12 @@ function Section({
   icon,
   children,
   defaultOpen = true,
-}: {
+}: Readonly<{
   title: string;
   icon: keyof typeof I;
   children: React.ReactNode;
   defaultOpen?: boolean;
-}) {
+}>) {
   const [open, setOpen] = useState(defaultOpen);
   const IconCmp = I[icon];
   return (
@@ -40,11 +40,11 @@ function ToolPermSelect({
   value,
   onChange,
   compact = false,
-}: {
+}: Readonly<{
   value: ToolPermission;
   onChange: (v: ToolPermission) => void;
   compact?: boolean;
-}) {
+}>) {
   return (
     <select
       className="select mono"
@@ -59,7 +59,7 @@ function ToolPermSelect({
   );
 }
 
-export function ChatSidebar({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onToggle: () => void }>) {
   const currentChat = useCurrentChat();
   const {
     updateSessionConfig,

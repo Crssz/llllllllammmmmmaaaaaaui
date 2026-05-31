@@ -17,11 +17,11 @@ export function ModelLibraryOverlay({
   open,
   onClose,
   onOpenModelsTab,
-}: {
+}: Readonly<{
   open: boolean;
   onClose: () => void;
   onOpenModelsTab: () => void;
-}) {
+}>) {
   const {
     flags,
     setFlag,
@@ -78,11 +78,11 @@ export function ModelLibraryOverlay({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    window.addEventListener("mousedown", onDocMouseDown);
-    window.addEventListener("keydown", onKey);
+    globalThis.addEventListener("mousedown", onDocMouseDown);
+    globalThis.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("mousedown", onDocMouseDown);
-      window.removeEventListener("keydown", onKey);
+      globalThis.removeEventListener("mousedown", onDocMouseDown);
+      globalThis.removeEventListener("keydown", onKey);
     };
   }, [open, onClose]);
 

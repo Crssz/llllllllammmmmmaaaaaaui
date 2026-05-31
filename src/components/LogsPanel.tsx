@@ -11,7 +11,7 @@ const LEVEL_BADGE: Record<LogLevel, string> = {
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
-export function LogsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function LogsPanel({ open, onClose }: Readonly<{ open: boolean; onClose: () => void }>) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [minLevel, setMinLevel] = useState<LogLevel>("debug");
   const [filter, setFilter] = useState("");

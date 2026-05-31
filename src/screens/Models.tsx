@@ -49,7 +49,6 @@ export function ModelsScreen() {
     loadModelPath,
     setFlag,
     server,
-    startServer,
     stopServer,
   } = useAppStore(
     useShallow((s) => ({
@@ -65,7 +64,6 @@ export function ModelsScreen() {
       loadModelPath: s.loadModelPath,
       setFlag: s.setFlag,
       server: s.server,
-      startServer: s.startServer,
       stopServer: s.stopServer,
     })),
   );
@@ -134,7 +132,6 @@ export function ModelsScreen() {
       // Note: we deliberately don't auto-start here — startServer needs the
       // assembled argv, which lives in Configure's args builder. The user
       // can press Start on Configure.
-      void startServer;
     }
   };
 

@@ -21,6 +21,12 @@ const CONSOLE_STYLE_BY_LEVEL: Record<LogLevel, string> = {
   warn: "color:#e7b15b",
   error: "color:#e57792;font-weight:600",
 };
+const CONSOLE_FN_BY_LEVEL: Record<LogLevel, (...args: unknown[]) => void> = {
+  debug: console.debug,
+  info: console.log,
+  warn: console.warn,
+  error: console.error,
+};
 
 export type Toast = {
   id: number;
@@ -33,9 +39,9 @@ export type Toast = {
 class Logger {
   private buffer: LogEntry[] = [];
   private nextId = 1;
-  private subs = new Set<(entries: LogEntry[]) => void>();
+  private readonly subs = new Set<(entries: LogEntry[]) => void>();
   private enabledLevel: LogLevel = "debug";
-  private toastSubs = new Set<(toast: Toast) => void>();
+  private readonly toastSubs = new Set<(toast: Toast) => void>();
 
   setLevel(level: LogLevel) {
     this.enabledLevel = level;
@@ -102,25 +108,19 @@ class Logger {
       time: Date.now(),
       meta,
     };
-    this.buffer =
-      this.buffer.length >= MAX
-        ? [...this.buffer.slice(this.buffer.length - MAX + 1), entry]
-        : [...this.buffer, entry];
+    if (this.buffer.length >= MAX) {
+      this.buffer = [...this.buffer.slice(this.buffer.length - MAX + 1), entry];
+    } else {
+      this.buffer = [...this.buffer, entry];
+    }
     this.notifySubs();
 
     const style = CONSOLE_STYLE_BY_LEVEL[level];
-    const fn =
-      level === "error"
-        ? console.error
-        : level === "warn"
-          ? console.warn
-          : level === "debug"
-            ? console.debug
-            : console.log;
-    if (meta !== undefined) {
-      fn(CONSOLE_PREFIX, style, `[${area}]`, message, meta);
-    } else {
+    const fn = CONSOLE_FN_BY_LEVEL[level];
+    if (meta === undefined) {
       fn(CONSOLE_PREFIX, style, `[${area}]`, message);
+    } else {
+      fn(CONSOLE_PREFIX, style, `[${area}]`, message, meta);
     }
   }
 
@@ -151,14 +151,14 @@ export function logFailure(area: string, label: string) {
 }
 
 // Surface unhandled errors / rejections.
-if (typeof window !== "undefined") {
-  window.addEventListener("error", (ev) => {
+if (typeof globalThis.window !== "undefined") {
+  globalThis.addEventListener("error", (ev) => {
     log.error("window", ev.message || "uncaught error", {
       filename: ev.filename,
       line: ev.lineno,
     });
   });
-  window.addEventListener("unhandledrejection", (ev) => {
+  globalThis.addEventListener("unhandledrejection", (ev) => {
     log.error("promise", "unhandled rejection", {
       reason: ev.reason instanceof Error ? ev.reason.message : String(ev.reason),
     });
