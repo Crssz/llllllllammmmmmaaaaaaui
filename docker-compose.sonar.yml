@@ -1,0 +1,27 @@
+# Local SonarQube server for running analysis on your own machine.
+#
+#   docker compose -f docker-compose.sonar.yml up -d
+#   # open http://localhost:9000  (first login: admin / admin)
+#
+# Uses the free Community Build image, which includes the Rust analyzer
+# (via Clippy) and the JS/TS analyzer — so it covers this whole repo.
+# The embedded H2 database is fine for local use; Sonar will warn it is not
+# for production, which is expected here.
+services:
+  sonarqube:
+    image: sonarqube:community
+    container_name: lm-st-sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      # Single-node local dev: skip the Elasticsearch production bootstrap checks.
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+
+volumes:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:

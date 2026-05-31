@@ -7,7 +7,7 @@ export default defineConfig({
     exclude: ["src-tauri/**", "node_modules/**", "dist/**"],
     setupFiles: ["./src/test/setup.ts"],
     coverage: {
-      reporter: ["text", "html"],
+      reporter: ["text", "html", "lcov"],
       include: ["src/lib/**/*.ts", "src/state/**/*.ts"],
       exclude: [
         "src/lib/api.ts", // thin Tauri IPC wrapper, no logic

@@ -15,6 +15,10 @@
     "lint:fix": "eslint src --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,json,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,json,css}\"",
+    "check:rust": "cd src-tauri && cargo fmt --check && cargo clippy --lib --tests -- -D warnings && cargo test --lib",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run coverage && npm run check:rust",
+    "sonar:local": "sonar-scanner -Dsonar.host.url=http://localhost:9000",
+    "code-check": "npm run check && npm run sonar:local",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

@@ -17,6 +17,10 @@ src-tauri/gen/schemas
 .claude/
 .codegraph/
 
+# SonarQube scanner working artifacts
+.scannerwork/
+.sonar/
+
 # design archive (kept locally as reference, not checked in)
 .design-archive/
 .design-archive-v2/
