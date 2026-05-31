@@ -10,6 +10,14 @@ function fmtN(n: number | undefined | null): string {
   return String(n);
 }
 
+// Render an arbitrary saved-flag value as a short string. Objects are
+// JSON-stringified rather than coerced to "[object Object]".
+function fmtFlag(v: unknown): string {
+  if (v == null) return "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
 function basename(p: string): string {
   const sep = p.includes("\\") ? "\\" : "/";
   return p.split(sep).pop() || p;
@@ -207,31 +215,19 @@ export function ProfilesScreen() {
                     </span>
                   </span>
                   <span>
-                    ngl{" "}
-                    <span style={{ color: "var(--text-2)" }}>
-                      {f.ngl != null ? String(f.ngl) : "—"}
-                    </span>
+                    ngl <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.ngl)}</span>
                   </span>
                   <span>
                     fa <span style={{ color: "var(--text-2)" }}>{f.fa ? "on" : "off"}</span>
                   </span>
                   <span>
-                    ctk{" "}
-                    <span style={{ color: "var(--text-2)" }}>
-                      {f.ctk != null ? String(f.ctk) : "—"}
-                    </span>
+                    ctk <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.ctk)}</span>
                   </span>
                   <span>
-                    ctv{" "}
-                    <span style={{ color: "var(--text-2)" }}>
-                      {f.ctv != null ? String(f.ctv) : "—"}
-                    </span>
+                    ctv <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.ctv)}</span>
                   </span>
                   <span>
-                    batch{" "}
-                    <span style={{ color: "var(--text-2)" }}>
-                      {f.batch != null ? String(f.batch) : "—"}
-                    </span>
+                    batch <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.batch)}</span>
                   </span>
                 </div>
 
