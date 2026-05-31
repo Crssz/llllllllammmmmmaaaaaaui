@@ -28,7 +28,7 @@ libloading = "0.8"
 ureq = { version = "2", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
-wmi = "0.14"
+wmi = "0.18"
 
 [target.'cfg(windows)'.dev-dependencies]
 # Used only by hw.rs tests to force an STA apartment and prove the WMI/MTA
