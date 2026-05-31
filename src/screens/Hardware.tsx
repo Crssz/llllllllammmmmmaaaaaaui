@@ -53,9 +53,10 @@ export function HardwareScreen() {
   const noGpu = !gpu0;
   const backend = hw?.gpu_backend ?? "—";
   const isHipBackend = backend.startsWith("HIP");
-  // Tooltip for fields that HIP/WMI can't report
+  // Tooltip for the one field still unavailable on AMD: power draw in watts
+  // (the WDDM kernel exposes temperature and clock, but not absolute watts).
   const tipMissing = isHipBackend
-    ? "HIP runtime + WMI don't expose this on AMD. Install ROCm-SMI on PATH (or wire ADLX) to populate it."
+    ? "Power draw in watts isn't exposed for these GPUs via the WDDM kernel. Install amd-smi to populate it."
     : undefined;
 
   return (
@@ -70,7 +71,7 @@ export function HardwareScreen() {
             className="badge ghost mono"
             title={
               isHipBackend
-                ? "AMD GPU detected via HIP runtime. WMI fills utilization."
+                ? "AMD GPU detected. VRAM via HIP, utilization via WMI, temperature & clock via the WDDM kernel."
                 : backend === "NVML"
                   ? "NVIDIA GPU detected via NVML."
                   : "No GPU backend available."
@@ -228,16 +229,22 @@ export function HardwareScreen() {
                   }}
                 >
                   <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-                  {backend === "HIP + WMI" ? (
+                  {backend.includes("WDDM") ? (
+                    <>
+                      AMD detected. VRAM via HIP runtime, utilization via WMI, and{" "}
+                      <strong>temperature &amp; clock via the WDDM kernel</strong> — the same source
+                      Task Manager uses. Only power draw in watts is unavailable; install amd-smi
+                      for it.
+                    </>
+                  ) : backend === "HIP + WMI" ? (
                     <>
                       AMD detected. VRAM via HIP runtime, utilization via WMI perf counters.{" "}
-                      <strong>Temperature, power, and clock</strong> need ROCm-SMI on your PATH or
-                      an ADLX bundle.
+                      <strong>Temperature, power, and clock</strong> need amd-smi on this machine.
                     </>
                   ) : (
                     <>
-                      AMD detected via HIP runtime. Only VRAM is exposed; install ROCm-SMI (or wire
-                      ADLX) for utilization, temperature, power, and clock readings.
+                      AMD detected via HIP runtime. Only VRAM is exposed; install amd-smi for
+                      utilization, temperature, power, and clock readings.
                     </>
                   )}
                 </div>

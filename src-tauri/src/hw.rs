@@ -13,6 +13,8 @@ use crate::util::lock_or_poisoned;
 mod gpu_perf {
     use serde::Deserialize;
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::Duration;
     use wmi::{COMLibrary, WMIConnection};
 
     #[derive(Deserialize, Debug)]
@@ -22,24 +24,67 @@ mod gpu_perf {
         utilization_percentage: u64,
     }
 
-    /// Returns a map of LUID-token → highest engine utilization (%) seen for
-    /// that physical adapter. Empty on any failure (WMI unavailable, query
-    /// rejected, etc.).
+    /// Latest per-LUID utilization (%), refreshed by a dedicated background
+    /// thread. See [`util_cache`] for why the sampling can't run inline.
+    type UtilCache = Arc<Mutex<HashMap<String, u32>>>;
+    static UTIL_CACHE: OnceLock<UtilCache> = OnceLock::new();
+
+    /// How often the background thread re-queries WMI.
+    const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
+
+    /// Returns the most recent map of LUID-token → highest engine utilization
+    /// (%) for each physical adapter. The first call spawns the background
+    /// sampler and returns an empty map until the first sample lands; every
+    /// later call returns instantly from cache.
+    ///
+    /// Sampling happens on a dedicated thread, not inline, because WMI requires
+    /// a multithreaded (MTA) COM apartment. `hw_snapshot` is a *synchronous*
+    /// Tauri command, so it runs on the STA main thread — there
+    /// `CoInitializeEx(COINIT_MULTITHREADED)` fails with `RPC_E_CHANGED_MODE`
+    /// and the query returns nothing, which is what left GPU utilization frozen
+    /// at "—". A dedicated thread owns its own MTA apartment, sidestepping the
+    /// conflict, and keeps the (~hundreds-of-ms) query off the UI thread.
     pub fn query_util_by_luid() -> HashMap<String, u32> {
-        let com = match COMLibrary::new() {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("wmi: COM init failed: {e}");
-                return HashMap::new();
+        util_cache().lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    fn util_cache() -> &'static UtilCache {
+        UTIL_CACHE.get_or_init(|| {
+            let cache: UtilCache = Arc::new(Mutex::new(HashMap::new()));
+            let worker = Arc::clone(&cache);
+            let spawned = std::thread::Builder::new()
+                .name("gpu-util-wmi".into())
+                .spawn(move || sampler_loop(worker));
+            if let Err(e) = spawned {
+                log::warn!("wmi: failed to spawn GPU util sampler: {e}");
             }
-        };
-        let wmi = match WMIConnection::new(com) {
+            cache
+        })
+    }
+
+    /// Owns an MTA apartment + WMI connection for the process lifetime and
+    /// refreshes the shared cache every [`SAMPLE_INTERVAL`].
+    fn sampler_loop(cache: UtilCache) {
+        let wmi = match COMLibrary::new().and_then(WMIConnection::new) {
             Ok(w) => w,
             Err(e) => {
-                log::debug!("wmi: connection failed: {e}");
-                return HashMap::new();
+                // No MTA / WMI here means no utilization readings this session
+                // (e.g. the WMI service is disabled). VRAM via HIP still works.
+                log::debug!("wmi: GPU util sampler init failed: {e}");
+                return;
             }
         };
+        loop {
+            let snapshot = query_once(&wmi);
+            if let Ok(mut guard) = cache.lock() {
+                *guard = snapshot;
+            }
+            std::thread::sleep(SAMPLE_INTERVAL);
+        }
+    }
+
+    /// Runs the perf-counter query once and folds it to a per-adapter maximum.
+    fn query_once(wmi: &WMIConnection) -> HashMap<String, u32> {
         let rows: Vec<GpuEngine> = match wmi.raw_query(
             "SELECT Name, UtilizationPercentage \
              FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine",
@@ -78,14 +123,70 @@ mod gpu_perf {
 
         #[test]
         fn extract_luid_handles_typical_name() {
-            let s =
-                "pid_1234_luid_0x00000000_0x0000ABCD_phys_0_eng_3_engtype_3D";
-            assert_eq!(extract_luid(s).as_deref(), Some("luid_0x00000000_0x0000ABCD"));
+            let s = "pid_1234_luid_0x00000000_0x0000ABCD_phys_0_eng_3_engtype_3D";
+            assert_eq!(
+                extract_luid(s).as_deref(),
+                Some("luid_0x00000000_0x0000ABCD")
+            );
         }
 
         #[test]
         fn extract_luid_none_for_unrelated_string() {
             assert!(extract_luid("nothing here").is_none());
+        }
+
+        // Regression guard: GPU utilization once sat frozen at "—" because the
+        // synchronous `hw_snapshot` command runs on Tauri's STA main thread,
+        // where the wmi crate's MTA `CoInitializeEx` fails. The sampler must
+        // therefore run on its own thread. This pins both halves of that fact.
+        #[test]
+        fn wmi_mta_init_fails_on_sta_but_works_on_a_worker_thread() {
+            use windows::Win32::System::Com::{
+                CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+            };
+            let (sta_failed, worker_ok) = std::thread::spawn(|| {
+                // Stand in for the STA main thread the command actually runs on.
+                unsafe {
+                    CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+                        .ok()
+                        .expect("STA init");
+                }
+                // wmi forces COINIT_MULTITHREADED → RPC_E_CHANGED_MODE here.
+                let sta_failed = COMLibrary::without_security().is_err();
+                // A dedicated worker owns a fresh MTA apartment → succeeds.
+                let worker_ok = std::thread::spawn(|| COMLibrary::without_security().is_ok())
+                    .join()
+                    .unwrap_or(false);
+                unsafe { CoUninitialize() };
+                (sta_failed, worker_ok)
+            })
+            .join()
+            .unwrap();
+
+            assert!(sta_failed, "WMI MTA init must fail on the STA main thread");
+            assert!(
+                worker_ok,
+                "WMI MTA init must succeed on a dedicated worker thread"
+            );
+        }
+
+        // Manual smoke test — needs a real GPU exposing WMI engine counters, so
+        // it's ignored by default. Run with:
+        //   cargo test --lib gpu_perf -- --ignored --nocapture
+        #[test]
+        #[ignore = "requires a GPU with WMI engine counters"]
+        fn sampler_populates_live_utilization() {
+            // First call spawns the sampler; cache is empty until it warms up.
+            assert!(query_util_by_luid().is_empty());
+            for i in 0..3 {
+                std::thread::sleep(Duration::from_millis(1200));
+                let map = query_util_by_luid();
+                println!("sample {i}: {map:?}");
+            }
+            assert!(
+                !query_util_by_luid().is_empty(),
+                "sampler should have populated per-LUID utilization by now"
+            );
         }
     }
 }
@@ -247,6 +348,169 @@ pub mod hip {
                     vram_free: free,
                 })
             }
+        }
+    }
+}
+
+// ── WDDM kernel telemetry (Windows) ──────────────────────────────────────────
+// The D3DKMT graphics-kernel interface in gdi32.dll — the same source Task
+// Manager reads. Unlike ADL/ADLX (display-oriented), it enumerates *every*
+// adapter the kernel knows about, including headless compute GPUs, and reports
+// temperature + engine clock. It does not expose power in watts (the Power
+// field is a percentage of TDP and is frequently zero), so we read temp+clock
+// only and leave power to a future amd-smi integration.
+#[cfg(windows)]
+mod kmt {
+    use std::collections::HashMap;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Luid {
+        low: u32,
+        high: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct AdapterInfo {
+        h_adapter: u32,
+        luid: Luid,
+        num_sources: u32,
+        b_precise_present: i32,
+    }
+    #[repr(C)]
+    struct EnumAdapters2 {
+        num_adapters: u32,
+        p_adapters: *mut AdapterInfo,
+    }
+    #[repr(C)]
+    struct QueryAdapterInfo {
+        h_adapter: u32,
+        type_: i32,
+        p_data: *mut std::ffi::c_void,
+        data_size: u32,
+    }
+    // Layout must match d3dkmthk.h exactly; the kernel validates DataSize.
+    #[repr(C)]
+    #[derive(Default)]
+    struct AdapterPerfData {
+        physical_adapter_index: u32,
+        memory_frequency: u64,
+        max_memory_frequency: u64,
+        max_memory_frequency_oc: u64,
+        memory_bandwidth: u64,
+        pcie_bandwidth: u64,
+        fan_rpm: u32,
+        power: u32,
+        temperature: u32, // deci-Celsius (1 = 0.1 °C)
+        power_state_override: u8,
+    }
+    #[repr(C)]
+    #[derive(Default)]
+    struct NodePerfData {
+        node_ordinal: u32,
+        physical_adapter_index: u32,
+        frequency: u64, // engine clock in Hz
+        max_frequency: u64,
+        max_frequency_oc: u64,
+        voltage: u32,
+        voltage_max: u32,
+        voltage_max_oc: u32,
+        max_transition_latency: u64,
+    }
+
+    const KMTQAITYPE_NODEPERFDATA: i32 = 61;
+    const KMTQAITYPE_ADAPTERPERFDATA: i32 = 62;
+
+    // Documented as available in Gdi32.lib.
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn D3DKMTEnumAdapters2(p: *mut EnumAdapters2) -> i32;
+        fn D3DKMTQueryAdapterInfo(p: *mut QueryAdapterInfo) -> i32;
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub struct Telemetry {
+        pub temp_c: Option<u32>,
+        pub clock_mhz: Option<u32>,
+    }
+
+    /// Returns a map of LUID-token → temperature/clock for every adapter the
+    /// WDDM kernel reports perf data for. The token is lowercase and matches
+    /// the shape of [`gpu_perf::extract_luid`] (lowercased) so the two sources
+    /// can be joined per physical adapter. Empty on any failure.
+    pub fn query_by_luid() -> HashMap<String, Telemetry> {
+        let mut out = HashMap::new();
+        const CAP: usize = 16;
+        let mut adapters = [AdapterInfo {
+            h_adapter: 0,
+            luid: Luid { low: 0, high: 0 },
+            num_sources: 0,
+            b_precise_present: 0,
+        }; CAP];
+        let mut e = EnumAdapters2 {
+            num_adapters: CAP as u32,
+            p_adapters: adapters.as_mut_ptr(),
+        };
+        // SAFETY: `adapters` outlives the call and is sized to `num_adapters`.
+        if unsafe { D3DKMTEnumAdapters2(&mut e) } != 0 {
+            return out;
+        }
+        let n = (e.num_adapters as usize).min(CAP);
+        for a in &adapters[..n] {
+            let mut pd = AdapterPerfData::default();
+            let mut q = QueryAdapterInfo {
+                h_adapter: a.h_adapter,
+                type_: KMTQAITYPE_ADAPTERPERFDATA,
+                p_data: &mut pd as *mut _ as *mut std::ffi::c_void,
+                data_size: std::mem::size_of::<AdapterPerfData>() as u32,
+            };
+            // SAFETY: `pd` matches the kernel's struct and outlives the call.
+            if unsafe { D3DKMTQueryAdapterInfo(&mut q) } != 0 {
+                continue; // non-GPU / non-perf adapter (e.g. Basic Render)
+            }
+            let temp_c = (pd.temperature > 0).then_some(pd.temperature / 10);
+            // Engine clock lives per-node; take the busiest node's frequency.
+            let mut best_hz = 0u64;
+            for node in 0..8u32 {
+                let mut nd = NodePerfData {
+                    node_ordinal: node,
+                    ..Default::default()
+                };
+                let mut nq = QueryAdapterInfo {
+                    h_adapter: a.h_adapter,
+                    type_: KMTQAITYPE_NODEPERFDATA,
+                    p_data: &mut nd as *mut _ as *mut std::ffi::c_void,
+                    data_size: std::mem::size_of::<NodePerfData>() as u32,
+                };
+                // SAFETY: `nd` matches the kernel's struct and outlives the call.
+                if unsafe { D3DKMTQueryAdapterInfo(&mut nq) } == 0 && nd.frequency > best_hz {
+                    best_hz = nd.frequency;
+                }
+            }
+            let clock_mhz = (best_hz > 0).then_some((best_hz / 1_000_000) as u32);
+            let luid = format!("luid_0x{:08x}_0x{:08x}", a.luid.high as u32, a.luid.low);
+            out.insert(luid, Telemetry { temp_c, clock_mhz });
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // Manual smoke test — needs a real GPU. Run with:
+        //   cargo test --lib kmt -- --ignored --nocapture
+        #[test]
+        #[ignore = "requires a GPU the WDDM kernel reports perf data for"]
+        fn d3dkmt_reads_temperature_and_clock() {
+            let map = query_by_luid();
+            for (luid, t) in &map {
+                println!("{luid}: temp={:?}C clock={:?}MHz", t.temp_c, t.clock_mhz);
+            }
+            assert!(
+                map.values().any(|t| t.temp_c.is_some()),
+                "expected at least one adapter to report a temperature"
+            );
         }
     }
 }
@@ -415,23 +679,75 @@ fn read_gpus(state: &State<'_, HwState>) -> (Vec<GpuInfo>, &'static str) {
             }
 
             if !out.is_empty() {
-                // Layer in WMI engine utilization. We can't reliably map LUID
-                // → HIP device index, so we sort the per-adapter maxima
-                // descending and assign them to detected GPUs in order. For
-                // single-AMD-GPU machines (the common case) this is exact.
-                let util_map = gpu_perf::query_util_by_luid();
-                let mut have_wmi = false;
-                if !util_map.is_empty() {
-                    let mut utils: Vec<u32> = util_map.into_values().collect();
-                    utils.sort_unstable_by(|a, b| b.cmp(a));
-                    for (idx, gpu) in out.iter_mut().enumerate() {
-                        if let Some(u) = utils.get(idx) {
-                            gpu.util = Some((*u).min(100));
-                            have_wmi = true;
-                        }
-                    }
+                // Layer in per-adapter telemetry from two sources that the HIP
+                // runtime can't provide, joined by LUID token so each card's
+                // utilization (WMI) and temperature/clock (WDDM kernel) stay
+                // together: utilization via WMI engine counters, temperature +
+                // engine clock via the D3DKMT kernel interface (the source Task
+                // Manager uses — it sees headless compute GPUs that ADL/ADLX
+                // can't). We still can't map a LUID to a specific HIP device
+                // index, so the merged records are ordered (cards with a kernel
+                // temperature first, then by utilization) and assigned to the
+                // detected GPUs in that order. For single-AMD-GPU machines (the
+                // common case) this is exact.
+                struct Tel {
+                    util: Option<u32>,
+                    temp_c: Option<u32>,
+                    clock_mhz: Option<u32>,
                 }
-                let label: &'static str = if have_wmi { "HIP + WMI" } else { "HIP" };
+                let util_map = gpu_perf::query_util_by_luid();
+                let kmt_map = kmt::query_by_luid();
+                let mut by_luid: std::collections::HashMap<String, Tel> =
+                    std::collections::HashMap::new();
+                for (luid, u) in &util_map {
+                    by_luid
+                        .entry(luid.to_lowercase())
+                        .or_insert(Tel {
+                            util: None,
+                            temp_c: None,
+                            clock_mhz: None,
+                        })
+                        .util = Some((*u).min(100));
+                }
+                for (luid, t) in &kmt_map {
+                    let e = by_luid.entry(luid.to_lowercase()).or_insert(Tel {
+                        util: None,
+                        temp_c: None,
+                        clock_mhz: None,
+                    });
+                    e.temp_c = t.temp_c;
+                    e.clock_mhz = t.clock_mhz;
+                }
+
+                let mut tel: Vec<Tel> = by_luid.into_values().collect();
+                // Real GPUs (those the kernel reports a temperature for) first,
+                // then busiest first, so the active card maps to GPU 0.
+                tel.sort_by(|a, b| {
+                    b.temp_c
+                        .is_some()
+                        .cmp(&a.temp_c.is_some())
+                        .then(b.util.unwrap_or(0).cmp(&a.util.unwrap_or(0)))
+                });
+
+                let mut have_wmi = false;
+                let mut have_kmt = false;
+                for (gpu, t) in out.iter_mut().zip(tel.iter()) {
+                    if t.util.is_some() {
+                        have_wmi = true;
+                    }
+                    if t.temp_c.is_some() || t.clock_mhz.is_some() {
+                        have_kmt = true;
+                    }
+                    gpu.util = t.util;
+                    gpu.temp_c = t.temp_c;
+                    gpu.clock_mhz = t.clock_mhz;
+                }
+                let label: &'static str = match (have_wmi, have_kmt) {
+                    (true, true) => "HIP + WMI + WDDM",
+                    (true, false) => "HIP + WMI",
+                    (false, true) => "HIP + WDDM",
+                    (false, false) => "HIP",
+                };
                 return (out, label);
             }
         }

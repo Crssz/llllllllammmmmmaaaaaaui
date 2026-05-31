@@ -30,6 +30,12 @@ ureq = { version = "2", features = ["json"] }
 [target.'cfg(windows)'.dependencies]
 wmi = "0.14"
 
+[target.'cfg(windows)'.dev-dependencies]
+# Used only by hw.rs tests to force an STA apartment and prove the WMI/MTA
+# apartment behaviour the GPU-util sampler depends on. Pinned to the version
+# wmi already resolves so no extra crate is compiled.
+windows = { version = "0.59", features = ["Win32_System_Com"] }
+
 [features]
 default = ["nvml"]
 nvml = ["dep:nvml-wrapper"]
