@@ -9,7 +9,7 @@ import { ChatSidebar } from "../components/ChatSidebar";
 // Custom <pre> wrapper for code blocks: hides streamdown's built-in icons
 // (we disable those via `controls={{ code: false }}` on the Streamdown root)
 // and shows a hover-revealed Copy button instead.
-function CodeBlockPre(props: HTMLAttributes<HTMLPreElement>) {
+function CodeBlockPre(props: Readonly<HTMLAttributes<HTMLPreElement>>) {
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
   // Pull the language hint from the child <code className="language-xyz">.
@@ -25,7 +25,7 @@ function CodeBlockPre(props: HTMLAttributes<HTMLPreElement>) {
       ?.writeText(text)
       .then(() => {
         setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
+        globalThis.setTimeout(() => setCopied(false), 1500);
       })
       .catch(() => {});
   };
@@ -68,7 +68,7 @@ function fmtTime(ts: number): string {
   return d.toTimeString().slice(0, 5);
 }
 
-export function ChatScreen({ agency }: { agency: Agency }) {
+export function ChatScreen({ agency }: Readonly<{ agency: Agency }>) {
   const chatMessages = useChatMessages();
   const currentChat = useCurrentChat();
   const {
@@ -122,7 +122,8 @@ export function ChatScreen({ agency }: { agency: Agency }) {
   }, [chatPending]);
   // Reference phaseTick so the linter doesn't strip it; it triggers re-renders
   // for the time-elapsed labels below.
-  void phaseTick;
+  // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+  phaseTick;
   // Tag is "<idx>" for message, "<idx>:think" for reasoning. Cleared after 1.5s.
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -132,7 +133,7 @@ export function ChatScreen({ agency }: { agency: Agency }) {
       ?.writeText(text)
       .then(() => {
         setCopiedKey(key);
-        window.setTimeout(() => {
+        globalThis.setTimeout(() => {
           setCopiedKey((cur) => (cur === key ? null : cur));
         }, 1500);
       })
@@ -153,8 +154,8 @@ export function ChatScreen({ agency }: { agency: Agency }) {
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     if (!chatPending) return;
-    const id = window.setInterval(() => setNowTick(Date.now()), 250);
-    return () => window.clearInterval(id);
+    const id = globalThis.setInterval(() => setNowTick(Date.now()), 250);
+    return () => globalThis.clearInterval(id);
   }, [chatPending]);
 
   // Drive the tool-approval modal as a native <dialog>: showModal() gives us
@@ -262,7 +263,7 @@ export function ChatScreen({ agency }: { agency: Agency }) {
   // for English; can be wired to llama-server's /tokenize later for accuracy.
   const approxTokens = (s: string) => Math.ceil((s?.length ?? 0) / 4);
   const ROLE_TAG_OVERHEAD = 4;
-  const ctxMax = typeof flags.ctx === "number" && flags.ctx > 0 ? (flags.ctx as number) : 4096;
+  const ctxMax = typeof flags.ctx === "number" && flags.ctx > 0 ? flags.ctx : 4096;
   const historyTokens = chatMessages.reduce(
     (n, m) => n + approxTokens(m.content) + ROLE_TAG_OVERHEAD,
     0,
@@ -965,9 +966,9 @@ export function ChatScreen({ agency }: { agency: Agency }) {
 
 function ApprovalFooter({
   onDecide,
-}: {
+}: Readonly<{
   onDecide: (decision: "allow" | "deny", remember: boolean) => void;
-}) {
+}>) {
   const [remember, setRemember] = useState(false);
   return (
     <div className="tool-approval-foot">
