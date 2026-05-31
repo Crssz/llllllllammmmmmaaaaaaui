@@ -14,8 +14,9 @@ function fmtN(n: number | undefined | null): string {
 // JSON-stringified rather than coerced to "[object Object]".
 function fmtFlag(v: unknown): string {
   if (v == null) return "—";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return v.toString();
+  return JSON.stringify(v);
 }
 
 function basename(p: string): string {
