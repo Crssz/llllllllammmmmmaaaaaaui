@@ -67,7 +67,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     set((s) => ({
       chats: s.chats.map((c) => {
         if (c.id !== chatId) return c;
-        const last = c.messages[c.messages.length - 1];
+        const last = c.messages.at(-1);
         if (!last || last.role !== "assistant") return c;
         return {
           ...c,
@@ -90,7 +90,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       chats: mutateChats(s, (chats) =>
         chats.map((c) => {
           if (c.id !== chatId) return c;
-          const last = c.messages[c.messages.length - 1];
+          const last = c.messages.at(-1);
           if (!last || last.role !== "assistant") return c;
           const newLast: StoredChatMessage = {
             ...last,
@@ -161,7 +161,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     if (useTemplateKwargs) {
       body.chat_template_kwargs = { enable_thinking: reasoningEnabled };
     }
-    if (chatTemplate && chatTemplate.trim()) {
+    if (chatTemplate?.trim()) {
       body.chat_template = chatTemplate;
     }
 
@@ -301,7 +301,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
 
     const cfg = session.config ?? null;
     const composedMessages: StoredChatMessage[] = [];
-    if (cfg?.system_prompt && cfg.system_prompt.trim()) {
+    if (cfg?.system_prompt?.trim()) {
       composedMessages.push({
         role: "system",
         content: cfg.system_prompt.trim(),

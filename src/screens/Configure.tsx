@@ -29,7 +29,7 @@ function FlagRow({
     const min = f.min ?? 0;
     const max = f.max ?? 1;
     const alias = f.maxAlias;
-    const isAlias = alias !== undefined && v === alias.value;
+    const isAlias = v === alias?.value;
     // Clamp display value to [min, max] so the slider track stays sensible
     // when the underlying value is a sentinel like 999.
     const displayVal = isAlias ? max : Math.max(min, Math.min(max, v));
