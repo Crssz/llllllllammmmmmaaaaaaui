@@ -34,9 +34,14 @@ export function Toasts() {
       }}
     >
       {toasts.map((t) => (
-        <div
+        <button
           key={t.id}
+          type="button"
+          aria-label="Dismiss notification"
           style={{
+            textAlign: "left",
+            font: "inherit",
+            appearance: "none",
             background: t.level === "error" ? "var(--red, #2a1414)" : "var(--surface, #2a2418)",
             border: `1px solid ${t.level === "error" ? "var(--red-edge, #e57792)" : "var(--yellow, #e7b15b)"}`,
             color: "var(--text, #e6e6e6)",
@@ -47,22 +52,13 @@ export function Toasts() {
             boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
             cursor: "pointer",
           }}
-          role="button"
-          tabIndex={0}
-          aria-label="Dismiss notification"
           onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setToasts((prev) => prev.filter((x) => x.id !== t.id));
-            }
-          }}
         >
           <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>
             {t.level.toUpperCase()} · {t.area}
           </div>
           <div>{t.message}</div>
-        </div>
+        </button>
       ))}
     </div>
   );

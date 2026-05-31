@@ -911,22 +911,13 @@ export function ChatScreen({ agency }: { agency: Agency }) {
       {pendingToolApproval && (
         <div
           className="tool-approval-overlay"
-          role="button"
-          tabIndex={0}
-          aria-label="Dismiss and deny tool call"
           onClick={(e) => {
             // Only the backdrop itself dismisses; clicks bubbling up from the
             // card are ignored, so the card needs no stopPropagation handler.
             if (e.target === e.currentTarget) approveTool(pendingToolApproval.id, "deny");
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              approveTool(pendingToolApproval.id, "deny");
-            }
-          }}
         >
-          <div className="tool-approval-card" role="dialog" aria-modal="true" tabIndex={-1}>
+          <dialog open className="tool-approval-card" aria-modal="true">
             <div className="tool-approval-head">
               <I.Lock size={14} />
               <span>Approve tool call?</span>
@@ -952,7 +943,7 @@ export function ChatScreen({ agency }: { agency: Agency }) {
                 approveTool(pendingToolApproval.id, decision, remember)
               }
             />
-          </div>
+          </dialog>
         </div>
       )}
     </div>

@@ -417,18 +417,11 @@ export function TranscribeScreen() {
         </div>
 
         <div className="panel tr-panel">
-          <div
+          <button
+            type="button"
             className="panel-head"
-            role="button"
-            tabIndex={0}
             style={{ cursor: "pointer" }}
             onClick={() => setShowLog((v) => !v)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setShowLog((v) => !v);
-              }
-            }}
           >
             <I.Terminal size={13} />
             <span>Progress log</span>
@@ -443,7 +436,7 @@ export function TranscribeScreen() {
                 transition: "transform .15s",
               }}
             />
-          </div>
+          </button>
           {showLog && (
             <div className="panel-body">
               {trLog.length === 0 ? (

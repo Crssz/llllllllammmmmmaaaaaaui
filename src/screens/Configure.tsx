@@ -422,17 +422,10 @@ export function ConfigureScreen({
                   const IconCmp = I[g.icon];
                   return (
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
-                      <div
+                      <button
+                        type="button"
                         className="cfg-section-head"
-                        role="button"
-                        tabIndex={0}
                         onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setOpen((s) => ({ ...s, [g.id]: !s[g.id] }));
-                          }
-                        }}
                       >
                         <IconCmp size={14} />
                         <span>{g.label}</span>
@@ -452,7 +445,7 @@ export function ConfigureScreen({
                           {flags.length} flag{flags.length === 1 ? "" : "s"}
                         </span>
                         <I.Chevron size={14} />
-                      </div>
+                      </button>
                       <div className="cfg-rows">
                         {flags.map((f) => {
                           const isModelPath =
