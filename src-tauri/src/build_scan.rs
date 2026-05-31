@@ -31,6 +31,7 @@ pub struct BuildInfo {
 const BINARY_DESCRIPTIONS: &[(&str, &str)] = &[
     ("llama-server", "HTTP/WebSocket server"),
     ("llama-cli", "Interactive REPL"),
+    ("llama-mtmd-cli", "Multimodal CLI (audio/image → text)"),
     ("llama-bench", "Throughput benchmark"),
     ("llama-quantize", "Convert / quantize GGUFs"),
     ("llama-perplexity", "Eval perplexity"),

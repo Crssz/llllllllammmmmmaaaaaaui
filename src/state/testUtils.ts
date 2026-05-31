@@ -87,8 +87,11 @@ export function stubApi() {
     ready: false,
     info: null,
   });
+  vi.spyOn(api, "transcribeAudio").mockResolvedValue({ pid: 7, gen: 1, started_at: 1 });
+  vi.spyOn(api, "cancelTranscribe").mockResolvedValue(undefined);
   vi.spyOn(api, "pickFolder").mockResolvedValue(null);
   vi.spyOn(api, "pickFile").mockResolvedValue(null);
+  vi.spyOn(api, "pickAudio").mockResolvedValue(null);
   vi.spyOn(api, "mcpConnect").mockResolvedValue({
     id: "x",
     connected: true,

@@ -2636,3 +2636,100 @@ button {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+
+/* ── Audio → Text transcription screen ─────────────────────────────────── */
+.page-body > .tr-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.tr-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.tr-banner.red {
+  background: var(--red-soft);
+  border-color: oklch(0.55 0.16 25 / 0.45);
+  color: var(--red);
+}
+.tr-banner.red svg {
+  color: var(--red);
+}
+.tr-panel {
+  margin-bottom: 16px;
+}
+.tr-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.tr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tr-field > label {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tr-field .tr-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--subtle);
+}
+.tr-path-row {
+  display: flex;
+  gap: 8px;
+}
+.tr-path-row .input {
+  flex: 1;
+  min-width: 0;
+}
+.tr-path-row .btn {
+  flex-shrink: 0;
+}
+.tr-num-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.tr-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.tr-output {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+  user-select: text;
+}
+.tr-empty {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12.5px;
+}
+.tr-log {
+  max-height: 280px;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.tr-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

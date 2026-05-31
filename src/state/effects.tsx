@@ -49,7 +49,9 @@ export function useAppEffects(initialFlags: FlagValues) {
           useAppStore.setState({ reasoningEnabled: s.reasoning_enabled });
         }
         if (s.model_path) {
-          useAppStore.setState((prev) => ({ flags: { ...prev.flags, model: s.model_path as string } }));
+          useAppStore.setState((prev) => ({
+            flags: { ...prev.flags, model: s.model_path as string },
+          }));
         }
         if (s.build_dir) await useAppStore.getState().scanBuild(s.build_dir);
         if (s.models_dir) await useAppStore.getState().scanModels(s.models_dir);
@@ -168,6 +170,29 @@ export function useAppEffects(initialFlags: FlagValues) {
         log.warn("server", "failed to subscribe to server-log events", {
           error: String(e),
         });
+      });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Subscribe to llama-mtmd-cli transcription events (output / log / done).
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    listen<{ gen: number; kind: "output" | "log" | "done"; text: string; code: number | null }>(
+      "mtmd-event",
+      (event) => {
+        useAppStore.getState()._trOnEvent(event.payload);
+      },
+    )
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch((e) => {
+        log.warn("mtmd", "failed to subscribe to mtmd-event", { error: String(e) });
       });
     return () => {
       cancelled = true;

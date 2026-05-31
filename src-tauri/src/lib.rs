@@ -6,6 +6,7 @@ mod mcp;
 mod models_scan;
 mod server;
 mod settings;
+mod transcribe;
 mod util;
 
 use std::sync::Mutex;
@@ -21,6 +22,7 @@ use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
 use crate::server::{server_status, start_server, stop_server, ServerState};
 use crate::settings::{load_settings, save_settings, Settings};
+use crate::transcribe::{cancel_transcribe, transcribe_audio, TranscribeState};
 use crate::util::{chrono_now_millis, lock_or_poisoned, push_recent};
 
 // ── Glue commands ───────────────────────────────────────────────────────────
@@ -131,6 +133,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ServerState::default())
+        .manage(TranscribeState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -149,6 +152,8 @@ pub fn run() {
             start_server,
             stop_server,
             server_status,
+            transcribe_audio,
+            cancel_transcribe,
             add_recent_dir,
             add_recent_models_dir,
             hw_snapshot,
@@ -164,6 +169,12 @@ pub fn run() {
             if let tauri::WindowEvent::Destroyed = event {
                 info!("window destroyed — cleaning up child server");
                 if let Some(state) = window.try_state::<ServerState>() {
+                    let mut child = lock_or_poisoned(&state.child);
+                    if let Some(mut c) = child.take() {
+                        let _ = c.kill();
+                    }
+                }
+                if let Some(state) = window.try_state::<TranscribeState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
                         let _ = c.kill();

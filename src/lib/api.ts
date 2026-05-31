@@ -138,6 +138,12 @@ export type ServerStatus = {
   info: RunningInfo | null;
 };
 
+export type TranscribeStarted = {
+  pid: number;
+  gen: number;
+  started_at: number;
+};
+
 export type QuantFile = {
   tag: string;
   filename: string;
@@ -233,6 +239,10 @@ export const api = {
   stopServer: () => invoke<void>("stop_server"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
 
+  transcribeAudio: (buildDir: string, args: string[]) =>
+    invoke<TranscribeStarted>("transcribe_audio", { buildDir, args }),
+  cancelTranscribe: () => invoke<void>("cancel_transcribe"),
+
   loadChats: () => invoke<ChatSession[]>("load_chats"),
   saveChats: (chats: ChatSession[]) => invoke<void>("save_chats", { chats }),
 
@@ -251,5 +261,14 @@ export const api = {
       multiple: false,
       title,
       filters: [{ name: "GGUF model", extensions }],
+    }) as Promise<string | null>,
+  pickAudio: (title = "Select an audio file") =>
+    open({
+      directory: false,
+      multiple: false,
+      title,
+      filters: [
+        { name: "Audio", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac", "opus", "webm"] },
+      ],
     }) as Promise<string | null>,
 };
