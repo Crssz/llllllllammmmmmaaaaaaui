@@ -68,7 +68,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       chats: s.chats.map((c) => {
         if (c.id !== chatId) return c;
         const last = c.messages.at(-1);
-        if (!last || last.role !== "assistant") return c;
+        if (last?.role !== "assistant") return c;
         return {
           ...c,
           messages: c.messages.slice(0, -1).concat({ ...last, content, reasoning }),
@@ -91,7 +91,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         chats.map((c) => {
           if (c.id !== chatId) return c;
           const last = c.messages.at(-1);
-          if (!last || last.role !== "assistant") return c;
+          if (last?.role !== "assistant") return c;
           const newLast: StoredChatMessage = {
             ...last,
             content,
@@ -605,7 +605,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       const session = get().chats.find((c) => c.id === chatId);
       if (!session) return;
       const msg = session.messages[index];
-      if (!msg || msg.role !== "user") {
+      if (msg?.role !== "user") {
         log.warn("chat", "resend ignored: target is not a user message");
         return;
       }
