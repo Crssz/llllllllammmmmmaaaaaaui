@@ -17,7 +17,10 @@ import { log } from "./lib/logger";
 
 type Tab = "chat" | "models" | "configure" | "hardware" | "profiles" | "mcp" | "audio";
 
-function ModePills({ value, onChange }: Readonly<{ value: Agency; onChange: (a: Agency) => void }>) {
+function ModePills({
+  value,
+  onChange,
+}: Readonly<{ value: Agency; onChange: (a: Agency) => void }>) {
   return (
     <div className="mode-pills" role="tablist" aria-label="Pilot mode">
       {(Object.entries(AGENCY_LABELS) as [Agency, (typeof AGENCY_LABELS)[Agency]][]).map(

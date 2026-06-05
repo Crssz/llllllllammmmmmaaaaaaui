@@ -11,6 +11,7 @@ export default defineConfig({
       include: ["src/lib/**/*.ts", "src/state/**/*.ts"],
       exclude: [
         "src/lib/api.ts", // thin Tauri IPC wrapper, no logic
+        "src/lib/useAudioRecorder.ts", // browser Web Audio capture, no node-testable logic
         "src/state/effects.tsx", // React side-effects, exercised via integration only
         "src/state/index.ts", // re-exports + thin React-only hooks
         "src/state/testUtils.ts", // test helpers, not production code

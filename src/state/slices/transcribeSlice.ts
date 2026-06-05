@@ -3,125 +3,172 @@ import { api } from "../../lib/api";
 import { log } from "../../lib/logger";
 import type { AppStore } from "../store";
 
-/** Payload of the backend `mtmd-event`. `kind` discriminates the three phases. */
-export type MtmdEvent = {
-  gen: number;
-  kind: "output" | "log" | "done";
-  text: string;
-  code: number | null;
+export type TranscribeParams = {
+  /** Path to the audio file (a saved recording or a picked wav/mp3). */
+  audioPath: string;
+  prompt: string;
+  /** Sampling temperature; null/undefined → server default. */
+  temperature?: number | null;
+  /** Cap on generated tokens; <= 0 / null → server default. */
+  maxTokens?: number | null;
 };
 
-const MAX_LOG_LINES = 600;
-
 export type TranscribeSlice = {
-  /** Generation id of the active run; 0 = nothing has run yet. */
-  trGen: number;
   trRunning: boolean;
-  trPid: number | null;
   trStartedAt: number | null;
-  /** Accumulated stdout — the transcription text. */
+  /** Transcript text streamed back from llama-server. */
   trOutput: string;
-  /** stderr progress / error lines (model load, audio encode, failures). */
-  trLog: string[];
   trError: string | null;
-  trExitCode: number | null;
+  /** Abort handle for the in-flight request; null when idle. */
+  _trAbort: AbortController | null;
 
-  startTranscribe: (args: string[]) => Promise<void>;
-  cancelTranscribe: () => Promise<void>;
+  startTranscribe: (params: TranscribeParams) => Promise<void>;
+  cancelTranscribe: () => void;
   clearTranscribe: () => void;
-  /** Wired to the global `mtmd-event` listener in effects.tsx. */
-  _trOnEvent: (e: MtmdEvent) => void;
 };
 
 export const createTranscribeSlice: StateCreator<AppStore, [], [], TranscribeSlice> = (
   set,
   get,
 ) => ({
-  trGen: 0,
   trRunning: false,
-  trPid: null,
   trStartedAt: null,
   trOutput: "",
-  trLog: [],
   trError: null,
-  trExitCode: null,
+  _trAbort: null,
 
-  startTranscribe: async (args) => {
-    const buildDir = get().settings.build_dir;
-    if (!buildDir) {
-      set({ trError: "Pick a llama.cpp build directory on Configure first." });
-      return;
-    }
+  // Transcribe by streaming an `input_audio` chat-completion off the running
+  // llama-server — mirrors chatSlice.runChatRound. No model reload per clip.
+  startTranscribe: async ({ audioPath, prompt, temperature, maxTokens }) => {
     if (get().trRunning) {
-      log.warn("mtmd", "start ignored: a transcription is already running");
+      log.warn("transcribe", "start ignored: already running");
       return;
     }
-    // Reset the canvas for the new run before we know its generation.
-    set({
-      trRunning: true,
-      trOutput: "",
-      trLog: [],
-      trError: null,
-      trExitCode: null,
-      trPid: null,
-      trStartedAt: null,
-    });
-    log.info("mtmd", "starting transcription", { build_dir: buildDir, arg_count: args.length });
-    log.debug("mtmd", `argv: ${args.join(" ")}`);
+    const { server } = get();
+    if (!server.running || !server.ready || !server.info) {
+      set({ trError: "Start llama-server with an audio model + projector on Configure first." });
+      return;
+    }
+
+    set({ trRunning: true, trOutput: "", trError: null, trStartedAt: Date.now() });
+
+    // Recordings and picked files both arrive as a path; read + base64 here.
+    let audio: { data: string; format: string };
     try {
-      const started = await api.transcribeAudio(buildDir, args);
-      set({
-        trGen: started.gen,
-        trPid: started.pid,
-        trStartedAt: started.started_at,
-      });
-      log.info("mtmd", `spawned pid=${started.pid} gen=${started.gen}`);
+      audio = await api.readAudioBase64(audioPath);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      log.error("mtmd", "start failed", { error: msg });
+      log.error("transcribe", "read audio failed", { error: msg });
       set({ trRunning: false, trError: msg });
+      return;
+    }
+
+    const url = `http://127.0.0.1:${server.info.port}/v1/chat/completions`;
+    const abort = new AbortController();
+    set({ _trAbort: abort });
+
+    const body: Record<string, unknown> = {
+      model: "local",
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "input_audio", input_audio: { data: audio.data, format: audio.format } },
+          ],
+        },
+      ],
+    };
+    if (temperature !== null && temperature !== undefined && temperature >= 0) {
+      body.temperature = temperature;
+    }
+    if (maxTokens !== null && maxTokens !== undefined && maxTokens > 0) {
+      body.max_tokens = maxTokens;
+    }
+
+    log.info("transcribe", `→ ${url} (${audio.format})`);
+
+    let aborted = false;
+    let streamError: string | null = null;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: abort.signal,
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}${errBody ? `: ${errBody}` : ""}`);
+      }
+      if (!res.body) throw new Error("response has no body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const raw = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          const line = raw.trim();
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(payload);
+            if (chunk.error) {
+              streamError =
+                typeof chunk.error === "string"
+                  ? chunk.error
+                  : chunk.error.message || JSON.stringify(chunk.error);
+              continue;
+            }
+            const delta = chunk.choices?.[0]?.delta ?? {};
+            if (typeof delta.content === "string" && delta.content.length > 0) {
+              const text = delta.content;
+              set((s) => ({ trOutput: s.trOutput + text }));
+            }
+          } catch {
+            // Malformed SSE line — log and skip rather than failing the run.
+            log.warn("transcribe", "skipped unparseable SSE line", { line });
+          }
+        }
+      }
+    } catch (e: unknown) {
+      if ((e as { name?: string })?.name === "AbortError") {
+        aborted = true;
+        log.info("transcribe", "aborted by user");
+      } else {
+        streamError = e instanceof Error ? e.message : String(e);
+        log.error("transcribe", "request failed", { error: streamError, url });
+      }
+    } finally {
+      set({ trRunning: false, _trAbort: null });
+    }
+
+    // Only surface an error when nothing usable came back — a server error that
+    // still produced a partial transcript stays visible without an alarm.
+    if (!aborted && streamError && !get().trOutput.trim()) {
+      set({ trError: streamError });
     }
   },
 
-  cancelTranscribe: async () => {
-    if (!get().trRunning) return;
-    log.info("mtmd", "cancel requested");
-    // Advance the generation locally so any in-flight events are ignored, and
-    // flip running off immediately — the backend won't emit `done` on cancel.
-    set((s) => ({ trRunning: false, trGen: s.trGen + 1 }));
-    try {
-      await api.cancelTranscribe();
-    } catch (e: unknown) {
-      log.warn("mtmd", "cancel failed", { error: String(e) });
+  cancelTranscribe: () => {
+    const abort = get()._trAbort;
+    if (abort) {
+      log.info("transcribe", "cancel requested");
+      abort.abort();
     }
+    set({ trRunning: false, _trAbort: null });
   },
 
   clearTranscribe: () => {
     if (get().trRunning) return;
-    set({ trOutput: "", trLog: [], trError: null, trExitCode: null });
-  },
-
-  _trOnEvent: (e) => {
-    // Drop events from superseded / cancelled runs.
-    if (e.gen !== get().trGen) return;
-    if (e.kind === "output") {
-      set((s) => ({ trOutput: s.trOutput + e.text }));
-    } else if (e.kind === "log") {
-      set((s) => {
-        const next = s.trLog.length >= MAX_LOG_LINES ? s.trLog.slice(-MAX_LOG_LINES + 1) : s.trLog;
-        return { trLog: [...next, e.text] };
-      });
-    } else if (e.kind === "done") {
-      const failed = e.code !== null && e.code !== 0;
-      set((s) => ({
-        trRunning: false,
-        trExitCode: e.code,
-        // Only surface an error when nothing was produced; a non-zero code with
-        // text usually still carries a usable (if truncated) transcription.
-        trError:
-          failed && !s.trOutput.trim() ? `llama-mtmd-cli exited with code ${e.code}` : s.trError,
-      }));
-      log.info("mtmd", `done (exit ${e.code ?? "?"})`);
-    }
+    set({ trOutput: "", trError: null });
   },
 });

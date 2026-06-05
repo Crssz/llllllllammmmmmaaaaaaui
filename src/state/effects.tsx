@@ -177,29 +177,6 @@ export function useAppEffects(initialFlags: FlagValues) {
     };
   }, []);
 
-  // Subscribe to llama-mtmd-cli transcription events (output / log / done).
-  useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    let cancelled = false;
-    listen<{ gen: number; kind: "output" | "log" | "done"; text: string; code: number | null }>(
-      "mtmd-event",
-      (event) => {
-        useAppStore.getState()._trOnEvent(event.payload);
-      },
-    )
-      .then((u) => {
-        if (cancelled) u();
-        else unlisten = u;
-      })
-      .catch((e) => {
-        log.warn("mtmd", "failed to subscribe to mtmd-event", { error: String(e) });
-      });
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
-
   // Poll server status. While the readiness probe is racing (running but not
   // yet ready) we tick faster so the dot turns green promptly.
   useEffect(() => {

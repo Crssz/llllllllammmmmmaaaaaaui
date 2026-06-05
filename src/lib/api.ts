@@ -138,10 +138,10 @@ export type ServerStatus = {
   info: RunningInfo | null;
 };
 
-export type TranscribeStarted = {
-  pid: number;
-  gen: number;
-  started_at: number;
+/** Base64-encoded audio clip for an `input_audio` content part. */
+export type AudioPayload = {
+  data: string;
+  format: string;
 };
 
 export type QuantFile = {
@@ -239,9 +239,13 @@ export const api = {
   stopServer: () => invoke<void>("stop_server"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
 
-  transcribeAudio: (buildDir: string, args: string[]) =>
-    invoke<TranscribeStarted>("transcribe_audio", { buildDir, args }),
-  cancelTranscribe: () => invoke<void>("cancel_transcribe"),
+  // Persist a mic recording (a complete WAV byte stream) to the app cache dir
+  // and get back its path, ready to read back as base64 like a picked file.
+  saveRecording: (bytes: Uint8Array) =>
+    invoke<string>("save_recording", { bytes: Array.from(bytes) }),
+  // Read a wav/mp3 file off disk and base64-encode it for an input_audio
+  // request to llama-server's /v1/chat/completions.
+  readAudioBase64: (path: string) => invoke<AudioPayload>("read_audio_base64", { path }),
 
   loadChats: () => invoke<ChatSession[]>("load_chats"),
   saveChats: (chats: ChatSession[]) => invoke<void>("save_chats", { chats }),
@@ -267,8 +271,7 @@ export const api = {
       directory: false,
       multiple: false,
       title,
-      filters: [
-        { name: "Audio", extensions: ["wav", "mp3", "flac", "ogg", "m4a", "aac", "opus", "webm"] },
-      ],
+      // llama-server's input_audio accepts wav/mp3 only.
+      filters: [{ name: "Audio", extensions: ["wav", "mp3"] }],
     }) as Promise<string | null>,
 };

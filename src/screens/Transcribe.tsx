@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { api } from "../lib/api";
-import { buildMtmdArgs } from "../lib/buildMtmdArgs";
+import { useAudioRecorder, type Recording } from "../lib/useAudioRecorder";
 
 const DEFAULT_PROMPT = "Transcribe the spoken audio into text. Output only the transcript.";
 
@@ -13,50 +13,10 @@ function basename(p: string): string {
   return p.split(sep).pop() || p;
 }
 
-/** Labelled path input with a Browse button. */
-function PathField({
-  label,
-  hint,
-  value,
-  placeholder,
-  onChange,
-  onBrowse,
-  disabled,
-}: Readonly<{
-  label: string;
-  hint?: string;
-  value: string;
-  placeholder: string;
-  onChange: (v: string) => void;
-  onBrowse: () => void;
-  disabled?: boolean;
-}>) {
-  return (
-    <div className="tr-field">
-      <label>
-        {label}
-        {hint && <span className="tr-hint"> · {hint}</span>}
-      </label>
-      <div className="tr-path-row">
-        <input
-          className="input mono"
-          value={value}
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={disabled}
-          spellCheck={false}
-        />
-        <button
-          className="btn ghost"
-          onClick={onBrowse}
-          disabled={disabled}
-          title={`Browse for ${label.toLowerCase()}`}
-        >
-          <I.Folder size={12} /> Browse
-        </button>
-      </div>
-    </div>
-  );
+/** `M:SS` clock for short recording durations. */
+function fmtDuration(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}`;
 }
 
 function NumField({
@@ -93,6 +53,61 @@ function NumField({
   );
 }
 
+/** Microphone capture control. Surfaces idle / requesting / recording states
+ *  and hands the finished clip to the parent, which saves + wires it up. */
+function Recorder({
+  disabled,
+  onClip,
+}: Readonly<{
+  disabled?: boolean;
+  onClip: (clip: Recording) => void;
+}>) {
+  const rec = useAudioRecorder();
+
+  if (rec.state === "recording" || rec.state === "requesting") {
+    const requesting = rec.state === "requesting";
+    return (
+      <div className="tr-rec live">
+        <span className="tr-rec-dot" />
+        <span className="tr-rec-time mono">
+          {requesting ? "starting…" : fmtDuration(rec.durationMs)}
+        </span>
+        <div className="tr-level" aria-hidden="true">
+          <div className="tr-level-bar" style={{ width: `${Math.min(100, rec.level * 140)}%` }} />
+        </div>
+        <button
+          className="btn primary"
+          onClick={() => {
+            const clip = rec.stop();
+            if (clip) onClip(clip);
+          }}
+          disabled={requesting}
+        >
+          <I.Stop size={12} /> Stop
+        </button>
+        <button className="btn ghost" onClick={rec.cancel} title="Discard recording">
+          <I.X size={12} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="tr-rec">
+      <button className="btn" onClick={() => rec.start().catch(() => {})} disabled={disabled}>
+        <I.Mic size={12} /> Record
+      </button>
+      <span className="tr-rec-hint">
+        {rec.state === "error" && rec.error ? (
+          <span className="tr-rec-err">{rec.error}</span>
+        ) : (
+          "Capture straight from your microphone — saved as a 16 kHz WAV."
+        )}
+      </span>
+    </div>
+  );
+}
+
 function elapsedLabel(startedAt: number | null, now: number): string {
   if (!startedAt) return "";
   const sec = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -105,9 +120,7 @@ export function TranscribeScreen() {
   const {
     trRunning,
     trOutput,
-    trLog,
     trError,
-    trExitCode,
     trStartedAt,
     startTranscribe,
     cancelTranscribe,
@@ -116,33 +129,38 @@ export function TranscribeScreen() {
     useShallow((s) => ({
       trRunning: s.trRunning,
       trOutput: s.trOutput,
-      trLog: s.trLog,
       trError: s.trError,
-      trExitCode: s.trExitCode,
       trStartedAt: s.trStartedAt,
       startTranscribe: s.startTranscribe,
       cancelTranscribe: s.cancelTranscribe,
       clearTranscribe: s.clearTranscribe,
     })),
   );
-  const build = useAppStore((s) => s.build);
-  const buildDir = useAppStore((s) => s.settings.build_dir);
+  const server = useAppStore((s) => s.server);
+  const modelName = useAppStore((s) => basename((s.flags.model as string) || ""));
+  const hasMmproj = useAppStore((s) => !!(s.flags.mmproj as string));
 
-  // Form state seeded from the configured server flags (model + projector are
-  // usually already pointed at the right bundle).
-  const flags = useAppStore.getState().flags;
-  const [model, setModel] = useState<string>((flags.model as string) || "");
-  const [mmproj, setMmproj] = useState<string>((flags.mmproj as string) || "");
   const [audio, setAudio] = useState<string>("");
   const [prompt, setPrompt] = useState<string>(DEFAULT_PROMPT);
-  const [ngl, setNgl] = useState<number>(typeof flags.ngl === "number" ? flags.ngl : 999);
-  const [threads, setThreads] = useState<number>(
-    typeof flags.threads === "number" ? flags.threads : 0,
-  );
-  const [ctx, setCtx] = useState<number>(0);
   const [temp, setTemp] = useState<number>(0.2);
+  const [maxTokens, setMaxTokens] = useState<number>(0);
   const [copied, setCopied] = useState(false);
-  const [showLog, setShowLog] = useState(false);
+
+  // Captured mic clip: playback URL, length, and the saved file path that gets
+  // fed to the transcription. Null until the user records something.
+  const [recording, setRecording] = useState<{ url: string; ms: number; path: string } | null>(
+    null,
+  );
+  const [savingRec, setSavingRec] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
+
+  // Free the playback object URL when it's replaced or the screen unmounts.
+  useEffect(() => {
+    const url = recording?.url;
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [recording?.url]);
 
   // Tick once a second while running so the elapsed clock advances.
   const [now, setNow] = useState(() => Date.now());
@@ -152,30 +170,16 @@ export function TranscribeScreen() {
     return () => clearInterval(id);
   }, [trRunning]);
 
-  // Keep the log scrolled to the newest line.
-  const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (showLog && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [trLog, showLog]);
-
-  const mtmd = build?.binaries.find((b) => b.name === "llama-mtmd-cli");
-  const mtmdOk = !!mtmd?.ok;
-
   const promptOk = prompt.trim().length > 0;
-  const canRun = !trRunning && mtmdOk && !!buildDir && !!model && !!mmproj && !!audio && promptOk;
+  const canRun = !trRunning && server.ready && !!audio && promptOk;
 
   const onTranscribe = () => {
-    const args = buildMtmdArgs({
-      model,
-      mmproj,
-      audio,
+    startTranscribe({
+      audioPath: audio,
       prompt: prompt.trim(),
-      ngl: Number.isFinite(ngl) ? ngl : null,
-      threads: Number.isFinite(threads) ? threads : null,
-      ctx: Number.isFinite(ctx) ? ctx : null,
-      temp: Number.isFinite(temp) ? temp : null,
-    });
-    startTranscribe(args).catch(() => {});
+      temperature: Number.isFinite(temp) ? temp : null,
+      maxTokens: Number.isFinite(maxTokens) ? maxTokens : null,
+    }).catch(() => {});
   };
 
   const onCopy = async () => {
@@ -188,21 +192,39 @@ export function TranscribeScreen() {
     }
   };
 
-  const pick = async (kind: "model" | "mmproj" | "audio") => {
+  const pickAudioFile = async () => {
     try {
-      if (kind === "audio") {
-        const p = await api.pickAudio("Select an audio file");
-        if (p) setAudio(p);
-      } else {
-        const p = await api.pickFile(
-          kind === "model" ? "Select model GGUF" : "Select audio projector (mmproj) GGUF",
-          ["gguf"],
-        );
-        if (p) (kind === "model" ? setModel : setMmproj)(p);
-      }
+      const p = await api.pickAudio("Select a wav/mp3 file");
+      if (p) setAudio(p);
     } catch {
       /* dialog cancelled — ignore */
     }
+  };
+
+  // Persist a fresh recording and point the audio input at it. The clip stays
+  // playable even if the save fails, but transcription needs the file on disk.
+  const handleClip = (clip: Recording) => {
+    setRecError(null);
+    setSavingRec(true);
+    const url = URL.createObjectURL(new Blob([clip.bytes], { type: "audio/wav" }));
+    api
+      .saveRecording(clip.bytes)
+      .then((path) => {
+        setAudio(path);
+        setRecording({ url, ms: clip.durationMs, path });
+      })
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        setRecording({ url, ms: clip.durationMs, path: "" });
+        setRecError(`Couldn't save the recording: ${msg}`);
+      })
+      .finally(() => setSavingRec(false));
+  };
+
+  const clearRecording = () => {
+    if (recording?.path && audio === recording.path) setAudio("");
+    setRecording(null);
+    setRecError(null);
   };
 
   const statusBadge = trRunning ? (
@@ -213,7 +235,7 @@ export function TranscribeScreen() {
     <span className="badge red" title={trError}>
       <span className="dot" /> error
     </span>
-  ) : trExitCode === 0 && trOutput ? (
+  ) : trOutput ? (
     <span className="badge green">
       <span className="dot" /> done
     </span>
@@ -234,31 +256,45 @@ export function TranscribeScreen() {
       </div>
 
       <div className="page-body">
-        {!buildDir ? (
+        {!server.running ? (
           <div className="tr-banner red">
             <I.Info size={14} />
             <span>
-              No llama.cpp build directory set. Pick one on <b>Configure → Binary</b> first.
+              llama-server isn&apos;t running. Start it on <b>Configure</b> with an{" "}
+              <b>audio-capable</b> model + its audio projector (e.g. Gemma 4 E2B/E4B, Voxtral,
+              Qwen2-Audio), then transcribe here.
             </span>
           </div>
-        ) : !mtmdOk ? (
-          <div className="tr-banner red">
+        ) : !server.ready ? (
+          <div className="tr-banner">
             <I.Info size={14} />
             <span>
-              <b>llama-mtmd-cli</b> was not found in the current build{" ("}
-              <span className="mono">{build?.resolved_path ?? "?"}</span>
-              {
-                "). Rebuild llama.cpp with the multimodal tools, or point Configure at a build that includes it."
-              }
+              Server is still loading the model on{" "}
+              <span className="mono">:{server.info?.port}</span>… the Transcribe button enables once
+              it&apos;s ready.
             </span>
           </div>
         ) : (
           <div className="tr-banner">
             <I.Info size={14} />
             <span>
-              Runs <span className="mono">llama-mtmd-cli</span> once per clip — it loads the model
-              fresh, so the first run takes a moment. Needs an <b>audio-capable</b> model + its
-              audio projector (e.g. Voxtral, Qwen2-Audio, Ultravox).
+              Transcribes through the running server
+              {modelName ? (
+                <>
+                  {" ("}
+                  <span className="mono">{modelName}</span>
+                  {") "}
+                </>
+              ) : (
+                " "
+              )}
+              — no per-clip model reload.{" "}
+              {!hasMmproj && (
+                <b>
+                  No audio projector (--mmproj) is configured, so the server may reject audio —
+                  start it with one.
+                </b>
+              )}
             </span>
           </div>
         )}
@@ -269,33 +305,50 @@ export function TranscribeScreen() {
             <span>Inputs</span>
           </div>
           <div className="panel-body tr-form">
-            <PathField
-              label="Model"
-              hint="GGUF"
-              value={model}
-              placeholder="path to the audio model .gguf"
-              onChange={setModel}
-              onBrowse={() => pick("model")}
-              disabled={trRunning}
-            />
-            <PathField
-              label="Audio projector"
-              hint="mmproj GGUF"
-              value={mmproj}
-              placeholder="path to mmproj-*.gguf (audio adapter)"
-              onChange={setMmproj}
-              onBrowse={() => pick("mmproj")}
-              disabled={trRunning}
-            />
-            <PathField
-              label="Audio file"
-              hint={audio ? basename(audio) : "wav / mp3 / flac / ogg / m4a"}
-              value={audio}
-              placeholder="path to the audio clip to transcribe"
-              onChange={setAudio}
-              onBrowse={() => pick("audio")}
-              disabled={trRunning}
-            />
+            <div className="tr-field">
+              <label>
+                Audio
+                <span className="tr-hint"> · record from the mic or pick a wav/mp3 file</span>
+              </label>
+              <Recorder disabled={trRunning || savingRec} onClip={handleClip} />
+              <div className="tr-path-row">
+                <input
+                  className="input mono"
+                  value={audio}
+                  placeholder="…or paste / browse a wav/mp3 file path"
+                  onChange={(e) => setAudio(e.target.value)}
+                  disabled={trRunning}
+                  spellCheck={false}
+                />
+                <button
+                  className="btn ghost"
+                  onClick={pickAudioFile}
+                  disabled={trRunning}
+                  title="Browse for an audio file"
+                >
+                  <I.Folder size={12} /> Browse
+                </button>
+              </div>
+              {savingRec && <div className="tr-rec-saving mono">saving recording…</div>}
+              {recError && <div className="tr-rec-err">{recError}</div>}
+              {recording && (
+                <div className="tr-rec-chip">
+                  <I.Mic size={12} />
+                  <span className="mono">recording.wav</span>
+                  <span className="tr-rec-chip-dur mono">{fmtDuration(recording.ms)}</span>
+                  <audio className="tr-rec-audio" controls src={recording.url} />
+                  <div style={{ flex: 1 }} />
+                  <button
+                    className="btn ghost"
+                    onClick={clearRecording}
+                    disabled={trRunning}
+                    title="Discard recording"
+                  >
+                    <I.X size={12} /> Clear
+                  </button>
+                </div>
+              )}
+            </div>
 
             <div className="tr-field">
               <label htmlFor="tr-prompt">Prompt</label>
@@ -313,31 +366,6 @@ export function TranscribeScreen() {
 
             <div className="tr-num-row">
               <NumField
-                label="GPU layers"
-                value={ngl}
-                onChange={setNgl}
-                disabled={trRunning}
-                min={0}
-                placeholder="auto"
-              />
-              <NumField
-                label="Threads"
-                value={threads}
-                onChange={setThreads}
-                disabled={trRunning}
-                min={0}
-                placeholder="auto"
-              />
-              <NumField
-                label="Context (0 = model)"
-                value={ctx}
-                onChange={setCtx}
-                disabled={trRunning}
-                min={0}
-                step={1024}
-                placeholder="model default"
-              />
-              <NumField
                 label="Temperature"
                 value={temp}
                 onChange={setTemp}
@@ -345,11 +373,20 @@ export function TranscribeScreen() {
                 min={0}
                 step={0.1}
               />
+              <NumField
+                label="Max tokens (0 = ∞)"
+                value={maxTokens}
+                onChange={setMaxTokens}
+                disabled={trRunning}
+                min={0}
+                step={32}
+                placeholder="unbounded"
+              />
             </div>
 
             <div className="tr-actions">
               {trRunning ? (
-                <button className="btn" onClick={() => cancelTranscribe().catch(() => {})}>
+                <button className="btn" onClick={() => cancelTranscribe()}>
                   <I.Stop size={12} /> Cancel
                 </button>
               ) : (
@@ -358,12 +395,12 @@ export function TranscribeScreen() {
                   onClick={onTranscribe}
                   disabled={!canRun}
                   title={
-                    !mtmdOk
-                      ? "llama-mtmd-cli not available"
-                      : !model || !mmproj
-                        ? "Pick a model and audio projector"
+                    !server.running
+                      ? "Start llama-server on Configure first"
+                      : !server.ready
+                        ? "Server is still loading the model"
                         : !audio
-                          ? "Pick an audio file"
+                          ? "Record or pick an audio file"
                           : !promptOk
                             ? "Enter a prompt"
                             : "Transcribe"
@@ -375,8 +412,8 @@ export function TranscribeScreen() {
               <button
                 className="btn ghost"
                 onClick={clearTranscribe}
-                disabled={trRunning || (!trOutput && trLog.length === 0 && !trError)}
-                title="Clear the result and log"
+                disabled={trRunning || (!trOutput && !trError)}
+                title="Clear the transcript"
               >
                 <I.Refresh size={12} /> Clear
               </button>
@@ -409,49 +446,11 @@ export function TranscribeScreen() {
             {trOutput ? (
               <div className="tr-output">{trOutput}</div>
             ) : trRunning ? (
-              <div className="tr-empty">Loading model and decoding audio…</div>
+              <div className="tr-empty">Transcribing…</div>
             ) : (
               <div className="tr-empty">The transcript will appear here.</div>
             )}
           </div>
-        </div>
-
-        <div className="panel tr-panel">
-          <button
-            type="button"
-            className="panel-head"
-            style={{ cursor: "pointer" }}
-            onClick={() => setShowLog((v) => !v)}
-          >
-            <I.Terminal size={13} />
-            <span>Progress log</span>
-            <span className="mono" style={{ color: "var(--subtle)", fontSize: 11 }}>
-              {trLog.length} line{trLog.length === 1 ? "" : "s"}
-            </span>
-            <div style={{ flex: 1 }} />
-            <I.Chevron
-              size={13}
-              style={{
-                transform: showLog ? "rotate(180deg)" : undefined,
-                transition: "transform .15s",
-              }}
-            />
-          </button>
-          {showLog && (
-            <div className="panel-body">
-              {trLog.length === 0 ? (
-                <div className="tr-empty">No output yet.</div>
-              ) : (
-                <div className="tr-log mono" ref={logRef}>
-                  {trLog.map((l, i) => (
-                    <div key={i} className="tr-log-line">
-                      {l}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </>
