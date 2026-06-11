@@ -14,6 +14,8 @@ export function toView(msgs: StoredChatMessage[]): ChatMessage[] {
     tool_calls: m.tool_calls ?? undefined,
     tool_call_id: m.tool_call_id ?? undefined,
     tool_name: m.tool_name ?? undefined,
+    audio: m.audio ?? undefined,
+    image: m.image ?? undefined,
   }));
 }
 
@@ -28,6 +30,8 @@ export function fromView(m: ChatMessage): StoredChatMessage {
     tool_calls: m.tool_calls ?? null,
     tool_call_id: m.tool_call_id ?? null,
     tool_name: m.tool_name ?? null,
+    audio: m.audio ?? null,
+    image: m.image ?? null,
   };
 }
 

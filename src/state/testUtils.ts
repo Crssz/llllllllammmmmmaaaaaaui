@@ -63,6 +63,8 @@ export function stubApi() {
     mtp_support: false,
     size_gb: 0,
     mmproj_siblings: [],
+    supports_thinking: false,
+    thinking_style: null,
   });
   vi.spyOn(api, "hwSnapshot").mockResolvedValue({
     cpu_util: 0,
@@ -89,9 +91,15 @@ export function stubApi() {
   });
   vi.spyOn(api, "saveRecording").mockResolvedValue("/cache/recordings/recording.wav");
   vi.spyOn(api, "readAudioBase64").mockResolvedValue({ data: "AAAA", format: "wav" });
+  vi.spyOn(api, "readImageBase64").mockResolvedValue({
+    data: "AAAA",
+    format: "png",
+    mime: "image/png",
+  });
   vi.spyOn(api, "pickFolder").mockResolvedValue(null);
   vi.spyOn(api, "pickFile").mockResolvedValue(null);
   vi.spyOn(api, "pickAudio").mockResolvedValue(null);
+  vi.spyOn(api, "pickImage").mockResolvedValue(null);
   vi.spyOn(api, "mcpConnect").mockResolvedValue({
     id: "x",
     connected: true,

@@ -216,6 +216,16 @@ button {
 .modelpicker .name {
   font-family: var(--font-mono);
   font-size: 12px;
+  /* Truncate long .gguf names to one line when the bar is tight, instead of
+     wrapping. Only the name shrinks; the dot, status and chevron stay put. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modelpicker > * {
+  flex-shrink: 0;
 }
 .modelpicker .meta {
   color: var(--muted);
@@ -542,6 +552,33 @@ button {
   display: flex;
   gap: 12px;
   align-items: center;
+  min-width: 0;
+}
+/* Keep the header to a single line when space is tight: the long model-name
+   badge truncates (full name on hover) instead of wrapping, while short badges
+   and the action buttons keep their size. */
+.page-head > :first-child {
+  min-width: 0;
+}
+.page-head h1 {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-head .head-meta > * {
+  flex-shrink: 0;
+}
+.page-head .head-meta .badge.accent {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.page-head .head-meta .badge.accent .dot {
+  flex-shrink: 0;
+}
+.page-head .head-meta .model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .section-tabs {
@@ -2809,4 +2846,96 @@ button {
 .tr-rec-audio {
   height: 30px;
   max-width: 240px;
+}
+
+/* Audio attachment row inside the chat composer. Holds the mic button, file
+   picker, and the attachment-chip preview. Sits above .composer-foot. */
+.composer-attachments {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px 0;
+}
+.composer-attachments .tr-rec-chip {
+  flex: 1;
+  min-width: 220px;
+  padding: 6px 10px;
+}
+.composer-attachments .tr-rec-audio {
+  max-width: 200px;
+  height: 26px;
+}
+/* Inline audio playback rendered inside a user-message bubble. */
+.msg-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.msg-audio audio {
+  height: 28px;
+  max-width: 260px;
+}
+.msg-audio-dur {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* Inline image attachment rendered inside a user-message bubble. */
+.msg-image {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.msg-image-thumb-btn {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  cursor: zoom-in;
+  line-height: 0;
+  overflow: hidden;
+}
+.msg-image-thumb {
+  display: block;
+  max-width: 220px;
+  max-height: 160px;
+  object-fit: contain;
+}
+/* Full-size overlay shown when a thumbnail is clicked. */
+.msg-image-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  border: 0;
+  background: oklch(0 0 0 / 0.78);
+  cursor: zoom-out;
+}
+.msg-image-overlay img {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+/* Tiny thumbnail in the composer's pending-image chip. */
+.composer-img-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
 }

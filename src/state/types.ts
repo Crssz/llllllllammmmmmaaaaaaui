@@ -1,4 +1,4 @@
-import type { ToolCall } from "../lib/api";
+import type { AudioAttachment, ImageAttachment, ToolCall } from "../lib/api";
 
 export type FlagValues = Record<string, string | number | boolean>;
 
@@ -13,6 +13,8 @@ export type ChatMessage = {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   tool_name?: string;
+  audio?: AudioAttachment;
+  image?: ImageAttachment;
 };
 
 export type PendingToolApproval = {

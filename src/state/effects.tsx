@@ -101,7 +101,9 @@ export function useAppEffects(initialFlags: FlagValues) {
           useAppStore.getState().setModelInfo(info, null);
           log.info(
             "model",
-            `${info.architecture ?? "?"} · MTP ${info.mtp_support ? "yes" : "no"} · mmproj ${info.mmproj_siblings.length}`,
+            `${info.architecture ?? "?"} · MTP ${info.mtp_support ? "yes" : "no"} · mmproj ${info.mmproj_siblings.length} · thinking ${
+              info.supports_thinking ? (info.thinking_style ?? "yes") : "no"
+            }`,
           );
           const flags = useAppStore.getState().flags;
           if (!info.mtp_support && flags.spec_type === "draft-mtp") {

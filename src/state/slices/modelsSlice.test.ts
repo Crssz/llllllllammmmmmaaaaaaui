@@ -73,6 +73,8 @@ describe("models slice", () => {
         mtp_support: true,
         size_gb: 1,
         mmproj_siblings: ["mm.gguf"],
+        supports_thinking: false,
+        thinking_style: null,
       },
       null,
     );

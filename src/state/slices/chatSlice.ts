@@ -2,6 +2,8 @@ import type { StateCreator } from "zustand";
 import {
   api,
   defaultSessionConfig,
+  type AudioAttachment,
+  type ImageAttachment,
   type ChatPreset,
   type ChatSession,
   type ChatSessionConfig,
@@ -32,7 +34,11 @@ export type ChatSlice = {
   editMessage: (chatId: string, index: number, content: string) => void;
   deleteMessage: (chatId: string, index: number) => void;
   resendFromMessage: (chatId: string, index: number) => Promise<void>;
-  sendChat: (content: string) => Promise<void>;
+  sendChat: (
+    content: string,
+    audio?: AudioAttachment | null,
+    image?: ImageAttachment | null,
+  ) => Promise<void>;
   cancelChat: () => void;
 
   updateSessionConfig: (chatId: string, patch: Partial<ChatSessionConfig>) => void;
@@ -130,7 +136,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     }>,
     chatTemplate?: string | null,
   ): Promise<RoundResult> => {
-    const { server, flags, reasoningEnabled } = get();
+    const { server, flags, reasoningEnabled, modelInfo } = get();
     if (!server.running || !server.info) throw new Error("server not running");
     const url = `http://127.0.0.1:${server.info.port}/v1/chat/completions`;
     const t0 = performance.now();
@@ -144,13 +150,65 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     const toolCallBuf: Map<number, ToolCall> = new Map();
 
     const useTemplateKwargs = flags.jinja === true;
-    const apiMessages: Array<Record<string, unknown>> = messages.map((m) => {
-      const out: Record<string, unknown> = { role: m.role, content: m.content };
-      if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls;
-      if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
-      if (m.tool_name) out.name = m.tool_name;
-      return out;
-    });
+    // Resolve image/audio attachments to base64 just before sending. Done in
+    // one pass (await Promise.all) so the round still streams sequentially but
+    // reads overlap if multiple messages carry media (rare — usually the last).
+    const apiMessages: Array<Record<string, unknown>> = await Promise.all(
+      messages.map(async (m) => {
+        const out: Record<string, unknown> = { role: m.role };
+        if (m.role === "user" && (m.image?.path || m.audio?.path)) {
+          // Multi-part content: text first (if any), then image, then audio —
+          // an empty text part can confuse some templates, so it's omitted
+          // when the user attached media without typing anything. Each read is
+          // best-effort: a vanished file falls back to text so the round still
+          // runs rather than hard-failing mid-stream.
+          const parts: Array<Record<string, unknown>> = [];
+          if (m.content) parts.push({ type: "text", text: m.content });
+          if (m.image?.path) {
+            try {
+              const payload = await api.readImageBase64(m.image.path);
+              parts.push({
+                type: "image_url",
+                image_url: { url: `data:${payload.mime};base64,${payload.data}` },
+              });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              log.warn("chat", `image read failed, skipping attachment`, {
+                path: m.image.path,
+                error: msg,
+              });
+            }
+          }
+          if (m.audio?.path) {
+            try {
+              const payload = await api.readAudioBase64(m.audio.path);
+              parts.push({
+                type: "input_audio",
+                input_audio: { data: payload.data, format: payload.format },
+              });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              log.warn("chat", `audio read failed, skipping attachment`, {
+                path: m.audio.path,
+                error: msg,
+              });
+            }
+          }
+          // If every media read failed and there was no text, send a marker so
+          // the message isn't an empty content array.
+          if (parts.length === 0) {
+            parts.push({ type: "text", text: `[attached media unavailable]` });
+          }
+          out.content = parts;
+        } else {
+          out.content = m.content;
+        }
+        if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls;
+        if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+        if (m.tool_name) out.name = m.tool_name;
+        return out;
+      }),
+    );
     const body: Record<string, unknown> = {
       model: "local",
       stream: true,
@@ -158,7 +216,19 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       messages: apiMessages,
     };
     if (tools.length > 0) body.tools = tools;
-    if (useTemplateKwargs) {
+    // Decide whether to attach chat_template_kwargs. Two guards:
+    //   1) OMIT on multimodal turns: with an audio/image part, passing
+    //      `chat_template_kwargs` (e.g. enable_thinking:false) makes some
+    //      llama.cpp builds crash right after media processing (observed on
+    //      b9529, gemma "peg-gemma4" → server dies → "network error"). The
+    //      Audio/Transcribe tab works precisely because it never sends it.
+    //   2) OMIT when the loaded model's chat template doesn't reference
+    //      `enable_thinking` (supports_thinking === false) — the field would
+    //      be a no-op at best and risky at worst. Unknown (null modelInfo) →
+    //      keep sending, matching prior behaviour.
+    const hasMedia = messages.some((m) => m.role === "user" && (m.audio?.path || m.image?.path));
+    const modelLacksThinking = modelInfo?.supports_thinking === false;
+    if (useTemplateKwargs && !hasMedia && !modelLacksThinking) {
       body.chat_template_kwargs = { enable_thinking: reasoningEnabled };
     }
     if (chatTemplate?.trim()) {
@@ -616,9 +686,11 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       await streamReply(session, truncated);
     },
 
-    sendChat: async (content) => {
+    sendChat: async (content, audio, image) => {
       const text = content.trim();
-      if (!text) return;
+      // Allow media-only messages: a blank prompt is fine if a clip or image
+      // is attached.
+      if (!text && !audio?.path && !image?.path) return;
       const { server, chats, currentChatId } = get();
       if (!server.running || !server.info) {
         set({ chatError: "Start llama-server on the Configure tab first." });
@@ -641,6 +713,8 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         role: "user",
         content: text,
         time: Date.now(),
+        audio: audio ?? null,
+        image: image ?? null,
       };
       const baseMessages = [...targetSession.messages, userMsg];
       await streamReply(targetSession, baseMessages);

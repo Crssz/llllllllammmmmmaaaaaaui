@@ -57,6 +57,8 @@ describe("toView / fromView", () => {
       tool_calls: null,
       tool_call_id: null,
       tool_name: null,
+      audio: null,
+      image: null,
     });
   });
 

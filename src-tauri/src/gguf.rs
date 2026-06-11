@@ -29,6 +29,31 @@ pub struct GgufInfo {
     /// Sibling mmproj-*.gguf files in the same directory as this model.
     /// Lets the UI auto-set `--mmproj` for vision-capable bundles.
     pub mmproj_siblings: Vec<String>,
+    /// True when the embedded chat template references `enable_thinking` —
+    /// i.e. it's meaningful to pass `chat_template_kwargs:{enable_thinking}`.
+    /// Lets the UI gate the reasoning toggle per model instead of guessing.
+    pub supports_thinking: bool,
+    /// Coarse classification of HOW the template renders reasoning:
+    /// `"channel"` (gemma-style `<|channel>thought`/`<|think|>`),
+    /// `"think_tags"` (`<think>…</think>`), `"other"` (toggle present but
+    /// unrecognised markup), or `None` (no thinking mechanism detected).
+    pub thinking_style: Option<String>,
+}
+
+/// Classify a chat template's thinking mechanism. Pure + string-based so it's
+/// cheap and unit-testable. See `GgufInfo::supports_thinking`/`thinking_style`.
+fn classify_thinking(template: &str) -> (bool, Option<String>) {
+    let supports = template.contains("enable_thinking");
+    let style = if template.contains("<|channel") || template.contains("<|think|>") {
+        Some("channel".to_string())
+    } else if template.contains("<think>") {
+        Some("think_tags".to_string())
+    } else if supports {
+        Some("other".to_string())
+    } else {
+        None
+    };
+    (supports, style)
 }
 
 pub fn gguf_read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
@@ -137,6 +162,7 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
     let mut architecture: Option<String> = None;
     let mut general_name: Option<String> = None;
     let mut context_length: Option<u64> = None;
+    let mut chat_template: Option<String> = None;
 
     for i in 0..metadata_count {
         let key = gguf_read_string(&mut r).map_err(|e| format!("read kv key at {i}: {e}"))?;
@@ -150,6 +176,12 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
                 general_name =
                     Some(gguf_read_string(&mut r).map_err(|e| format!("read general.name: {e}"))?);
             }
+            // Capture only the DEFAULT template (exact key). Named variants like
+            // `tokenizer.chat_template.tool_use` fall through to skip.
+            "tokenizer.chat_template" if ty == 8 => {
+                chat_template =
+                    Some(gguf_read_string(&mut r).map_err(|e| format!("read chat_template: {e}"))?);
+            }
             k if k.ends_with(".context_length") => {
                 context_length = gguf_read_u64_value(&mut r, ty)
                     .map_err(|e| format!("read context_length: {e}"))?;
@@ -159,6 +191,11 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
             }
         }
     }
+
+    let (supports_thinking, thinking_style) = match chat_template.as_deref() {
+        Some(t) => classify_thinking(t),
+        None => (false, None),
+    };
 
     // MTP support is signalled by an "-MTP" token in the filename (case-
     // insensitive). Cheaper and just as reliable as scanning the tensor table,
@@ -204,14 +241,18 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
         mtp_support,
         size_gb,
         mmproj_siblings,
+        supports_thinking,
+        thinking_style,
     };
     log::info!(
-        "inspect_gguf: arch={:?} mtp={} ctx={:?} size={:.2} GB mmproj={}",
+        "inspect_gguf: arch={:?} mtp={} ctx={:?} size={:.2} GB mmproj={} thinking={}({:?})",
         info.architecture,
         info.mtp_support,
         info.context_length,
         info.size_gb,
         info.mmproj_siblings.len(),
+        info.supports_thinking,
+        info.thinking_style,
     );
     Ok(info)
 }
@@ -296,5 +337,42 @@ mod tests {
     fn inspect_gguf_rejects_missing_file() {
         let err = inspect_gguf("Z:/no-such-file.gguf".into()).unwrap_err();
         assert!(err.contains("not a file"));
+    }
+
+    #[test]
+    fn classify_thinking_detects_gemma_channel_format() {
+        // Real gemma-4 snippet: enable_thinking guard + <|channel>thought markup.
+        let t = "{%- if enable_thinking is defined and enable_thinking -%}{{- '<|think|>\\n' -}}\
+                 {%- if not enable_thinking | default(false) -%}{{- '<|channel>thought\\n<channel|>' -}}";
+        let (supports, style) = classify_thinking(t);
+        assert!(supports);
+        assert_eq!(style.as_deref(), Some("channel"));
+    }
+
+    #[test]
+    fn classify_thinking_detects_qwen_think_tags() {
+        // Real Qwen3.6 snippet: enable_thinking guard + <think>…</think>.
+        let t = "{%- if enable_thinking is defined and enable_thinking is false %}\
+                 {{- '<think>\\n\\n</think>\\n\\n' }}{%- else %}{{- '<think>\\n' }}";
+        let (supports, style) = classify_thinking(t);
+        assert!(supports);
+        assert_eq!(style.as_deref(), Some("think_tags"));
+    }
+
+    #[test]
+    fn classify_thinking_handles_no_thinking_template() {
+        // A plain template (no enable_thinking, no think markup).
+        let t = "{% for m in messages %}{{ m.role }}: {{ m.content }}\n{% endfor %}";
+        let (supports, style) = classify_thinking(t);
+        assert!(!supports);
+        assert_eq!(style, None);
+    }
+
+    #[test]
+    fn classify_thinking_marks_toggle_without_known_markup_as_other() {
+        let t = "{%- if enable_thinking %}reason now{%- endif %}";
+        let (supports, style) = classify_thinking(t);
+        assert!(supports);
+        assert_eq!(style.as_deref(), Some("other"));
     }
 }

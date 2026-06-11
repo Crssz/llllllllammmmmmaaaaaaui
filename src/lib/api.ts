@@ -20,6 +20,27 @@ export type BuildInfo = {
   binaries: DetectedBinary[];
 };
 
+/** Audio clip attached to a chat message (mirrors Rust `AudioAttachment`). */
+export type AudioAttachment = {
+  /** Absolute path to a wav/mp3 file on disk. */
+  path: string;
+  /** `"wav"` or `"mp3"` — what llama-server's `input_audio.format` expects. */
+  format: string;
+  /** Capture/playback length in ms, when known. Pure UX hint. */
+  duration_ms?: number | null;
+};
+
+/** Image attached to a chat message (mirrors Rust `ImageAttachment`). */
+export type ImageAttachment = {
+  /** Absolute path to an image file on disk. */
+  path: string;
+  /** Canonical extension: `jpeg` | `png` | `gif` | `webp`. */
+  format: string;
+  /** Pixel dimensions, when known. Pure UX hints. */
+  width?: number | null;
+  height?: number | null;
+};
+
 export type StoredChatMessage = {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
@@ -33,6 +54,10 @@ export type StoredChatMessage = {
   tool_call_id?: string | null;
   /** Set on `tool` role messages — display name of the tool. */
   tool_name?: string | null;
+  /** Audio clip attached by the user (mic recording or picked file). */
+  audio?: AudioAttachment | null;
+  /** Image attached by the user (picked file) for a vision model. */
+  image?: ImageAttachment | null;
 };
 
 export type ToolCall = {
@@ -144,6 +169,14 @@ export type AudioPayload = {
   format: string;
 };
 
+/** Base64-encoded image for an `image_url` content part. */
+export type ImagePayload = {
+  data: string;
+  format: string;
+  /** `image/<format>` — ready to prefix a `data:` URL. */
+  mime: string;
+};
+
 export type QuantFile = {
   tag: string;
   filename: string;
@@ -187,6 +220,10 @@ export type GgufInfo = {
   mtp_support: boolean;
   size_gb: number;
   mmproj_siblings: string[];
+  /** True when the embedded chat template references `enable_thinking`. */
+  supports_thinking: boolean;
+  /** How reasoning is rendered: "channel" | "think_tags" | "other" | null. */
+  thinking_style: string | null;
 };
 
 export type GpuInfo = {
@@ -241,11 +278,15 @@ export const api = {
 
   // Persist a mic recording (a complete WAV byte stream) to the app cache dir
   // and get back its path, ready to read back as base64 like a picked file.
-  saveRecording: (bytes: Uint8Array) =>
-    invoke<string>("save_recording", { bytes: Array.from(bytes) }),
+  // `name` is an optional filename — Transcribe omits it (single overwriting
+  // `recording.wav`); Chat passes a unique name per clip.
+  saveRecording: (bytes: Uint8Array, name?: string) =>
+    invoke<string>("save_recording", { bytes: Array.from(bytes), name: name ?? null }),
   // Read a wav/mp3 file off disk and base64-encode it for an input_audio
   // request to llama-server's /v1/chat/completions.
   readAudioBase64: (path: string) => invoke<AudioPayload>("read_audio_base64", { path }),
+  // Read an image file off disk and base64-encode it for an image_url request.
+  readImageBase64: (path: string) => invoke<ImagePayload>("read_image_base64", { path }),
 
   loadChats: () => invoke<ChatSession[]>("load_chats"),
   saveChats: (chats: ChatSession[]) => invoke<void>("save_chats", { chats }),
@@ -273,5 +314,13 @@ export const api = {
       title,
       // llama-server's input_audio accepts wav/mp3 only.
       filters: [{ name: "Audio", extensions: ["wav", "mp3"] }],
+    }) as Promise<string | null>,
+  pickImage: (title = "Select an image file") =>
+    open({
+      directory: false,
+      multiple: false,
+      title,
+      // Formats llama.cpp's vision projectors decode.
+      filters: [{ name: "Image", extensions: ["jpg", "jpeg", "png", "gif", "webp"] }],
     }) as Promise<string | null>,
 };

@@ -176,6 +176,128 @@ describe("chat slice — streaming roundtrip", () => {
     vi.unstubAllGlobals();
   });
 
+  it("sends an audio-only user message as input_audio multi-part content", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    vi.spyOn(api, "readAudioBase64").mockResolvedValue({ data: "BASE64==", format: "wav" });
+    await useAppStore
+      .getState()
+      .sendChat("", { path: "/tmp/clip.wav", format: "wav", duration_ms: 1200 });
+    const chat = useAppStore.getState().chats[0];
+    const user = chat.messages.find((m) => m.role === "user")!;
+    expect(user.audio?.path).toBe("/tmp/clip.wav");
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const parts = body.messages.at(-1).content;
+    expect(Array.isArray(parts)).toBe(true);
+    expect(parts).toContainEqual({
+      type: "input_audio",
+      input_audio: { data: "BASE64==", format: "wav" },
+    });
+    // Empty draft → no text part to confuse templates.
+    expect(parts.some((p: { type: string }) => p.type === "text")).toBe(false);
+  });
+
+  it("combines text + audio into a two-part content array", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    vi.spyOn(api, "readAudioBase64").mockResolvedValue({ data: "MP3DATA==", format: "mp3" });
+    await useAppStore.getState().sendChat("transcribe this", { path: "/tmp/a.mp3", format: "mp3" });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const parts = body.messages.at(-1).content;
+    expect(parts).toEqual([
+      { type: "text", text: "transcribe this" },
+      { type: "input_audio", input_audio: { data: "MP3DATA==", format: "mp3" } },
+    ]);
+  });
+
+  it("sends an image-only user message as image_url multi-part content", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    vi.spyOn(api, "readImageBase64").mockResolvedValue({
+      data: "IMGDATA==",
+      format: "png",
+      mime: "image/png",
+    });
+    await useAppStore
+      .getState()
+      .sendChat("", null, { path: "/tmp/pic.png", format: "png", width: 32, height: 32 });
+    const chat = useAppStore.getState().chats[0];
+    const user = chat.messages.find((m) => m.role === "user")!;
+    expect(user.image?.path).toBe("/tmp/pic.png");
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const parts = body.messages.at(-1).content;
+    expect(Array.isArray(parts)).toBe(true);
+    expect(parts).toContainEqual({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,IMGDATA==" },
+    });
+    expect(parts.some((p: { type: string }) => p.type === "text")).toBe(false);
+  });
+
+  it("combines text + image into a two-part content array", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    vi.spyOn(api, "readImageBase64").mockResolvedValue({
+      data: "JPEGDATA==",
+      format: "jpeg",
+      mime: "image/jpeg",
+    });
+    await useAppStore
+      .getState()
+      .sendChat("what is this?", null, { path: "/tmp/a.jpg", format: "jpeg" });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const parts = body.messages.at(-1).content;
+    expect(parts).toEqual([
+      { type: "text", text: "what is this?" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,JPEGDATA==" } },
+    ]);
+  });
+
+  it("orders text, image, then audio when all three are attached", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    vi.spyOn(api, "readImageBase64").mockResolvedValue({
+      data: "IMG==",
+      format: "png",
+      mime: "image/png",
+    });
+    vi.spyOn(api, "readAudioBase64").mockResolvedValue({ data: "AUD==", format: "wav" });
+    await useAppStore
+      .getState()
+      .sendChat(
+        "look + listen",
+        { path: "/tmp/a.wav", format: "wav" },
+        { path: "/tmp/a.png", format: "png" },
+      );
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const parts = body.messages.at(-1).content;
+    expect(parts.map((p: { type: string }) => p.type)).toEqual([
+      "text",
+      "image_url",
+      "input_audio",
+    ]);
+  });
+
   it("streams a plain assistant reply and finalises with tps", async () => {
     fetchMock.mockResolvedValueOnce(
       sseResponse([
@@ -543,6 +665,69 @@ describe("chat slice — request body + edge SSE", () => {
     const sentBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(sentBody.chat_template_kwargs).toEqual({ enable_thinking: true });
     expect(sentBody.chat_template).toBe("tmpl-x");
+  });
+
+  it("OMITS chat_template_kwargs on multimodal turns even with jinja on (crash guard)", async () => {
+    // Regression: sending chat_template_kwargs alongside an audio/image part
+    // crashes some llama.cpp builds (b9529, gemma peg-gemma4) → "network
+    // error". Media turns must mirror the Audio tab, which omits the field.
+    useAppStore.getState().resetFlags({ jinja: true });
+    useAppStore.setState({ reasoningEnabled: true });
+    vi.spyOn(api, "readAudioBase64").mockResolvedValue({ data: "AUD==", format: "mp3" });
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    await useAppStore.getState().sendChat("transcribe", { path: "/tmp/a.mp3", format: "mp3" });
+    const sentBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(sentBody.chat_template_kwargs).toBeUndefined();
+  });
+
+  it("still sends chat_template_kwargs on text-only turns when jinja on", async () => {
+    useAppStore.getState().resetFlags({ jinja: true });
+    useAppStore.setState({ reasoningEnabled: false });
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    await useAppStore.getState().sendChat("plain text");
+    const sentBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(sentBody.chat_template_kwargs).toEqual({ enable_thinking: false });
+  });
+
+  it("OMITS chat_template_kwargs when the model's template lacks thinking support", async () => {
+    useAppStore.getState().resetFlags({ jinja: true });
+    useAppStore.setState({ reasoningEnabled: true });
+    useAppStore.getState().setModelInfo(
+      {
+        path: "/m/x.gguf",
+        gguf_version: 3,
+        tensor_count: 0,
+        metadata_count: 0,
+        architecture: "llama",
+        general_name: null,
+        context_length: null,
+        mtp_support: false,
+        size_gb: 1,
+        mmproj_siblings: [],
+        supports_thinking: false,
+        thinking_style: null,
+      },
+      null,
+    );
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    await useAppStore.getState().sendChat("plain text");
+    const sentBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(sentBody.chat_template_kwargs).toBeUndefined();
   });
 
   it("falls back to _raw when tool-call arguments aren't valid JSON", async () => {

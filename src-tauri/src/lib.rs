@@ -22,7 +22,7 @@ use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
 use crate::server::{server_status, start_server, stop_server, ServerState};
 use crate::settings::{load_settings, save_settings, Settings};
-use crate::transcribe::{read_audio_base64, save_recording};
+use crate::transcribe::{read_audio_base64, read_image_base64, save_recording};
 use crate::util::{chrono_now_millis, lock_or_poisoned, push_recent};
 
 // ── Glue commands ───────────────────────────────────────────────────────────
@@ -153,6 +153,7 @@ pub fn run() {
             server_status,
             save_recording,
             read_audio_base64,
+            read_image_base64,
             add_recent_dir,
             add_recent_models_dir,
             hw_snapshot,

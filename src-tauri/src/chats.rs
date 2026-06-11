@@ -6,6 +6,31 @@ use tauri::{AppHandle, Manager};
 
 use crate::settings::ChatSessionConfig;
 
+/// Audio clip attached to a chat message. `path` points at a file on disk
+/// (either a saved mic recording or a user-picked wav/mp3); `format` is what
+/// llama-server expects in `input_audio.format`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioAttachment {
+    pub path: String,
+    pub format: String,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+}
+
+/// Image attached to a chat message. `path` points at a user-picked image
+/// file on disk; `format` is the canonical extension (`jpeg`/`png`/`gif`/
+/// `webp`) used to build the `image_url` data URL. `width`/`height` are pure
+/// UX hints filled in opportunistically by the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    pub path: String,
+    pub format: String,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -17,6 +42,16 @@ pub struct ChatMessage {
     pub tokens: Option<u32>,
     #[serde(default)]
     pub reasoning: Option<String>,
+    /// Audio clip(s) attached to this message. Used on user messages so the
+    /// composer can send `input_audio` to the model and the chat can still
+    /// play the clip back after a reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioAttachment>,
+    /// Image attached to this message. Used on user messages so the composer
+    /// can send `image_url` to a vision model and re-render the picture after
+    /// a reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,12 +109,64 @@ mod tests {
             tps: Some(12.5),
             tokens: Some(3),
             reasoning: Some("think".into()),
+            audio: None,
+            image: None,
         };
         let encoded = serde_json::to_string(&m).unwrap();
         let decoded: ChatMessage = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.role, "assistant");
         assert_eq!(decoded.tps, Some(12.5));
         assert_eq!(decoded.reasoning.as_deref(), Some("think"));
+    }
+
+    #[test]
+    fn chat_message_roundtrip_preserves_audio_attachment() {
+        let m = ChatMessage {
+            role: "user".into(),
+            content: "".into(),
+            time: 1,
+            tps: None,
+            tokens: None,
+            reasoning: None,
+            audio: Some(AudioAttachment {
+                path: "C:/tmp/clip.wav".into(),
+                format: "wav".into(),
+                duration_ms: Some(2400),
+            }),
+            image: None,
+        };
+        let encoded = serde_json::to_string(&m).unwrap();
+        let decoded: ChatMessage = serde_json::from_str(&encoded).unwrap();
+        let audio = decoded.audio.expect("audio survives roundtrip");
+        assert_eq!(audio.path, "C:/tmp/clip.wav");
+        assert_eq!(audio.format, "wav");
+        assert_eq!(audio.duration_ms, Some(2400));
+    }
+
+    #[test]
+    fn chat_message_roundtrip_preserves_image_attachment() {
+        let m = ChatMessage {
+            role: "user".into(),
+            content: "what is this?".into(),
+            time: 1,
+            tps: None,
+            tokens: None,
+            reasoning: None,
+            audio: None,
+            image: Some(ImageAttachment {
+                path: "C:/tmp/pic.png".into(),
+                format: "png".into(),
+                width: Some(640),
+                height: Some(480),
+            }),
+        };
+        let encoded = serde_json::to_string(&m).unwrap();
+        let decoded: ChatMessage = serde_json::from_str(&encoded).unwrap();
+        let image = decoded.image.expect("image survives roundtrip");
+        assert_eq!(image.path, "C:/tmp/pic.png");
+        assert_eq!(image.format, "png");
+        assert_eq!(image.width, Some(640));
+        assert_eq!(image.height, Some(480));
     }
 
     #[test]
@@ -112,6 +199,8 @@ mod tests {
                 tps: None,
                 tokens: None,
                 reasoning: None,
+                audio: None,
+                image: None,
             }],
             config: Some(ChatSessionConfig::default()),
         };
