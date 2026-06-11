@@ -24,10 +24,25 @@ mod gpu_perf {
         utilization_percentage: u64,
     }
 
-    /// Latest per-LUID utilization (%), refreshed by a dedicated background
-    /// thread. See [`util_cache`] for why the sampling can't run inline.
-    type UtilCache = Arc<Mutex<HashMap<String, u32>>>;
-    static UTIL_CACHE: OnceLock<UtilCache> = OnceLock::new();
+    #[derive(Deserialize, Debug)]
+    #[serde(rename_all = "PascalCase")]
+    struct GpuAdapterMemory {
+        name: String,
+        dedicated_usage: u64,
+    }
+
+    /// Latest per-LUID telemetry, refreshed by a dedicated background thread.
+    /// `util` is the highest engine utilization (%) per physical adapter;
+    /// `mem_used` is dedicated VRAM in bytes per physical adapter — the global,
+    /// all-process figure Task Manager labels "Dedicated GPU memory". See
+    /// [`cache`] for why the sampling can't run inline.
+    #[derive(Default, Clone)]
+    struct Sample {
+        util: HashMap<String, u32>,
+        mem_used: HashMap<String, u64>,
+    }
+    type Cache = Arc<Mutex<Sample>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
 
     /// How often the background thread re-queries WMI.
     const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
@@ -45,18 +60,31 @@ mod gpu_perf {
     /// at "—". A dedicated thread owns its own MTA apartment, sidestepping the
     /// conflict, and keeps the (~hundreds-of-ms) query off the UI thread.
     pub fn query_util_by_luid() -> HashMap<String, u32> {
-        util_cache().lock().map(|m| m.clone()).unwrap_or_default()
+        cache().lock().map(|s| s.util.clone()).unwrap_or_default()
     }
 
-    fn util_cache() -> &'static UtilCache {
-        UTIL_CACHE.get_or_init(|| {
-            let cache: UtilCache = Arc::new(Mutex::new(HashMap::new()));
+    /// Per-LUID dedicated VRAM usage in bytes, from the WDDM "GPU Adapter
+    /// Memory" perf counter — the same global, all-process figure Task Manager
+    /// reports. Unlike HIP's `hipMemGetInfo`, which under WDDM only sees the
+    /// calling process's own context, this reflects VRAM a *separate*
+    /// llama-server holds, so the readout tracks a loaded model. Empty until
+    /// the first sample lands or if the perf counter is unavailable.
+    pub fn query_mem_used_by_luid() -> HashMap<String, u64> {
+        cache()
+            .lock()
+            .map(|s| s.mem_used.clone())
+            .unwrap_or_default()
+    }
+
+    fn cache() -> &'static Cache {
+        CACHE.get_or_init(|| {
+            let cache: Cache = Arc::new(Mutex::new(Sample::default()));
             let worker = Arc::clone(&cache);
             let spawned = std::thread::Builder::new()
-                .name("gpu-util-wmi".into())
+                .name("gpu-telemetry-wmi".into())
                 .spawn(move || sampler_loop(worker));
             if let Err(e) = spawned {
-                log::warn!("wmi: failed to spawn GPU util sampler: {e}");
+                log::warn!("wmi: failed to spawn GPU telemetry sampler: {e}");
             }
             cache
         })
@@ -64,27 +92,32 @@ mod gpu_perf {
 
     /// Owns an MTA apartment + WMI connection for the process lifetime and
     /// refreshes the shared cache every [`SAMPLE_INTERVAL`].
-    fn sampler_loop(cache: UtilCache) {
+    fn sampler_loop(cache: Cache) {
         let wmi = match COMLibrary::new().and_then(WMIConnection::new) {
             Ok(w) => w,
             Err(e) => {
-                // No MTA / WMI here means no utilization readings this session
-                // (e.g. the WMI service is disabled). VRAM via HIP still works.
-                log::debug!("wmi: GPU util sampler init failed: {e}");
+                // No MTA / WMI here means no utilization or VRAM-usage readings
+                // this session (e.g. the WMI service is disabled). VRAM total
+                // via HIP still works; usage falls back to HIP's own context.
+                log::debug!("wmi: GPU telemetry sampler init failed: {e}");
                 return;
             }
         };
         loop {
-            let snapshot = query_once(&wmi);
+            let sample = Sample {
+                util: query_util_once(&wmi),
+                mem_used: query_mem_once(&wmi),
+            };
             if let Ok(mut guard) = cache.lock() {
-                *guard = snapshot;
+                *guard = sample;
             }
             std::thread::sleep(SAMPLE_INTERVAL);
         }
     }
 
-    /// Runs the perf-counter query once and folds it to a per-adapter maximum.
-    fn query_once(wmi: &WMIConnection) -> HashMap<String, u32> {
+    /// Runs the engine perf-counter query once and folds it to a per-adapter
+    /// maximum utilization.
+    fn query_util_once(wmi: &WMIConnection) -> HashMap<String, u32> {
         let rows: Vec<GpuEngine> = match wmi.raw_query(
             "SELECT Name, UtilizationPercentage \
              FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine",
@@ -105,6 +138,33 @@ mod gpu_perf {
                 if v > *entry {
                     *entry = v;
                 }
+            }
+        }
+        by_luid
+    }
+
+    /// Runs the adapter-memory perf-counter query once and sums dedicated VRAM
+    /// usage (bytes) per physical adapter. Instances are per-adapter
+    /// (`luid_..._phys_N`), not per-process, so the value already aggregates
+    /// every process's allocations on that card — including a model held by a
+    /// separate llama-server, which HIP's per-process view can't see.
+    fn query_mem_once(wmi: &WMIConnection) -> HashMap<String, u64> {
+        let rows: Vec<GpuAdapterMemory> = match wmi.raw_query(
+            "SELECT Name, DedicatedUsage \
+             FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory",
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                log::debug!("wmi: GPUAdapterMemory query failed: {e}");
+                return HashMap::new();
+            }
+        };
+        let mut by_luid: HashMap<String, u64> = HashMap::new();
+        for row in rows {
+            // Name format: "luid_0xXXXXXXXX_0xXXXXXXXX_phys_X" — already
+            // per-adapter, so reuse extract_luid and sum across phys indices.
+            if let Some(luid) = extract_luid(&row.name) {
+                *by_luid.entry(luid).or_insert(0) += row.dedicated_usage;
             }
         }
         by_luid
@@ -133,6 +193,18 @@ mod gpu_perf {
         #[test]
         fn extract_luid_none_for_unrelated_string() {
             assert!(extract_luid("nothing here").is_none());
+        }
+
+        #[test]
+        fn extract_luid_handles_adapter_memory_name() {
+            // GPU Adapter Memory instances are LUID-prefixed (no pid_), unlike
+            // GPU Engine instances. extract_luid must handle both shapes so the
+            // per-adapter VRAM usage joins with utilization by the same token.
+            let s = "luid_0x00000000_0x0001D34E_phys_0";
+            assert_eq!(
+                extract_luid(s).as_deref(),
+                Some("luid_0x00000000_0x0001D34E")
+            );
         }
 
         // Regression guard: GPU utilization once sat frozen at "—" because the
@@ -180,12 +252,22 @@ mod gpu_perf {
             assert!(query_util_by_luid().is_empty());
             for i in 0..3 {
                 std::thread::sleep(Duration::from_millis(1200));
-                let map = query_util_by_luid();
-                println!("sample {i}: {map:?}");
+                let util = query_util_by_luid();
+                let mem = query_mem_used_by_luid();
+                let mem_gb: std::collections::HashMap<_, _> = mem
+                    .iter()
+                    .map(|(k, v)| (k.clone(), *v as f64 / 1024.0 / 1024.0 / 1024.0))
+                    .collect();
+                println!("sample {i}: util={util:?}");
+                println!("sample {i}: mem_gb={mem_gb:?}");
             }
             assert!(
                 !query_util_by_luid().is_empty(),
                 "sampler should have populated per-LUID utilization by now"
+            );
+            assert!(
+                !query_mem_used_by_luid().is_empty(),
+                "sampler should have populated per-LUID dedicated VRAM usage"
             );
         }
     }
@@ -679,69 +761,15 @@ fn read_gpus(state: &State<'_, HwState>) -> (Vec<GpuInfo>, &'static str) {
             }
 
             if !out.is_empty() {
-                // Layer in per-adapter telemetry from two sources that the HIP
-                // runtime can't provide, joined by LUID token so each card's
-                // utilization (WMI) and temperature/clock (WDDM kernel) stay
-                // together: utilization via WMI engine counters, temperature +
-                // engine clock via the D3DKMT kernel interface (the source Task
-                // Manager uses — it sees headless compute GPUs that ADL/ADLX
-                // can't). We still can't map a LUID to a specific HIP device
-                // index, so the merged records are ordered (cards with a kernel
-                // temperature first, then by utilization) and assigned to the
-                // detected GPUs in that order. For single-AMD-GPU machines (the
-                // common case) this is exact.
-                struct Tel {
-                    util: Option<u32>,
-                    temp_c: Option<u32>,
-                    clock_mhz: Option<u32>,
-                }
-                let util_map = gpu_perf::query_util_by_luid();
-                let kmt_map = kmt::query_by_luid();
-                let mut by_luid: std::collections::HashMap<String, Tel> =
-                    std::collections::HashMap::new();
-                for (luid, u) in &util_map {
-                    by_luid
-                        .entry(luid.to_lowercase())
-                        .or_insert(Tel {
-                            util: None,
-                            temp_c: None,
-                            clock_mhz: None,
-                        })
-                        .util = Some((*u).min(100));
-                }
-                for (luid, t) in &kmt_map {
-                    let e = by_luid.entry(luid.to_lowercase()).or_insert(Tel {
-                        util: None,
-                        temp_c: None,
-                        clock_mhz: None,
-                    });
-                    e.temp_c = t.temp_c;
-                    e.clock_mhz = t.clock_mhz;
-                }
-
-                let mut tel: Vec<Tel> = by_luid.into_values().collect();
-                // Real GPUs (those the kernel reports a temperature for) first,
-                // then busiest first, so the active card maps to GPU 0.
-                tel.sort_by(|a, b| {
-                    b.temp_c
-                        .is_some()
-                        .cmp(&a.temp_c.is_some())
-                        .then(b.util.unwrap_or(0).cmp(&a.util.unwrap_or(0)))
-                });
-
-                let mut have_wmi = false;
-                let mut have_kmt = false;
-                for (gpu, t) in out.iter_mut().zip(tel.iter()) {
-                    if t.util.is_some() {
-                        have_wmi = true;
-                    }
-                    if t.temp_c.is_some() || t.clock_mhz.is_some() {
-                        have_kmt = true;
-                    }
-                    gpu.util = t.util;
-                    gpu.temp_c = t.temp_c;
-                    gpu.clock_mhz = t.clock_mhz;
-                }
+                // Layer in per-adapter telemetry the HIP runtime can't provide
+                // (utilization, dedicated VRAM usage, temperature, clock),
+                // joined by LUID. See `merge_gpu_telemetry` for the details.
+                let (have_wmi, have_kmt) = merge_gpu_telemetry(
+                    &mut out,
+                    &gpu_perf::query_util_by_luid(),
+                    &kmt::query_by_luid(),
+                    &gpu_perf::query_mem_used_by_luid(),
+                );
                 let label: &'static str = match (have_wmi, have_kmt) {
                     (true, true) => "HIP + WMI + WDDM",
                     (true, false) => "HIP + WMI",
@@ -754,4 +782,239 @@ fn read_gpus(state: &State<'_, HwState>) -> (Vec<GpuInfo>, &'static str) {
     }
 
     (vec![], "unavailable")
+}
+
+/// Merges per-LUID telemetry onto the HIP-detected `gpus`, in place, and
+/// returns `(have_wmi, have_kmt)` for backend labeling.
+///
+/// Each card's records are joined by LUID token: utilization and dedicated
+/// VRAM usage from the WMI perf counters (`util_map`/`mem_map`), temperature +
+/// engine clock from the D3DKMT kernel interface (`kmt_map`). VRAM usage comes
+/// from WMI rather than HIP because HIP's `hipMemGetInfo` reports only this
+/// process's context under WDDM, not a model a separate llama-server loads, so
+/// it overwrites HIP's per-process baseline already on each `GpuInfo`.
+///
+/// Adapters are ordered by LUID — the stable per-boot ID the system enumerates
+/// by, the same fixed numbering Task Manager uses — never by load, so a card
+/// keeps its GPU 0/1 slot as utilization changes. Software adapters (the
+/// "Microsoft Basic Render Driver" / WARP, which surface in the WMI counters
+/// but have no kernel perf data) are dropped, unless no adapter has kernel perf
+/// data at all, in which case every record is kept so WMI utilization still
+/// shows. We still can't tie a LUID to a specific HIP device index, so among
+/// identical cards the slot↔card pairing follows LUID order; single-GPU is
+/// exact.
+#[cfg(windows)]
+fn merge_gpu_telemetry(
+    gpus: &mut [GpuInfo],
+    util_map: &std::collections::HashMap<String, u32>,
+    kmt_map: &std::collections::HashMap<String, kmt::Telemetry>,
+    mem_map: &std::collections::HashMap<String, u64>,
+) -> (bool, bool) {
+    struct Tel {
+        util: Option<u32>,
+        temp_c: Option<u32>,
+        clock_mhz: Option<u32>,
+        vram_used_bytes: Option<u64>,
+        // True when the WDDM kernel has hardware perf data for this LUID — i.e.
+        // it's a physical GPU, not a software adapter like the "Microsoft Basic
+        // Render Driver" (WARP), which still shows up in the WMI counters.
+        is_gpu: bool,
+    }
+    let blank = || Tel {
+        util: None,
+        temp_c: None,
+        clock_mhz: None,
+        vram_used_bytes: None,
+        is_gpu: false,
+    };
+    let mut by_luid: std::collections::HashMap<String, Tel> = std::collections::HashMap::new();
+    for (luid, u) in util_map {
+        by_luid
+            .entry(luid.to_lowercase())
+            .or_insert_with(blank)
+            .util = Some((*u).min(100));
+    }
+    for (luid, t) in kmt_map {
+        let e = by_luid.entry(luid.to_lowercase()).or_insert_with(blank);
+        e.temp_c = t.temp_c;
+        e.clock_mhz = t.clock_mhz;
+        // Presence in the kernel perf map is the GPU/software-adapter
+        // discriminator — D3DKMT returns no perf data for WARP.
+        e.is_gpu = true;
+    }
+    // VRAM usage attaches by LUID to whatever record already exists. The
+    // desktop-driving card's large allocation is genuine, so it rides along
+    // correctly; the software adapter is excluded by the retain below.
+    for (luid, bytes) in mem_map {
+        if let Some(e) = by_luid.get_mut(&luid.to_lowercase()) {
+            e.vram_used_bytes = Some(*bytes);
+        }
+    }
+
+    let mut tel: Vec<(String, Tel)> = by_luid.into_iter().collect();
+    if tel.iter().any(|(_, t)| t.is_gpu) {
+        tel.retain(|(_, t)| t.is_gpu);
+    }
+    // The LUID token is fixed-width zero-padded hex, so a lexicographic sort
+    // equals numeric adapter order.
+    tel.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut have_wmi = false;
+    let mut have_kmt = false;
+    for (gpu, (_, t)) in gpus.iter_mut().zip(tel.iter()) {
+        if t.util.is_some() {
+            have_wmi = true;
+        }
+        if t.temp_c.is_some() || t.clock_mhz.is_some() {
+            have_kmt = true;
+        }
+        gpu.util = t.util;
+        gpu.temp_c = t.temp_c;
+        gpu.clock_mhz = t.clock_mhz;
+        // Prefer the WDDM/WMI dedicated-usage figure (all processes, matches
+        // Task Manager) over HIP's per-process context size.
+        if let Some(bytes) = t.vram_used_bytes {
+            have_wmi = true;
+            gpu.vram_used_gb = bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+        }
+    }
+    (have_wmi, have_kmt)
+}
+
+#[cfg(all(test, windows))]
+mod merge_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    /// A HIP-detected card before telemetry is layered in: 32 GB total, with
+    /// HIP's per-process VRAM baseline (~0.3 GB) that the WMI figure replaces.
+    fn hip_gpu() -> GpuInfo {
+        GpuInfo {
+            name: "AMD Radeon AI PRO R9700".into(),
+            vram_total_gb: 32.0,
+            vram_used_gb: 0.3,
+            util: None,
+            temp_c: None,
+            power_w: None,
+            clock_mhz: None,
+        }
+    }
+
+    fn tel(temp_c: Option<u32>, clock_mhz: Option<u32>) -> kmt::Telemetry {
+        kmt::Telemetry { temp_c, clock_mhz }
+    }
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn orders_by_luid_not_by_load() {
+        // The higher-LUID card is busier and hotter; ordering must still follow
+        // LUID ascending so each card keeps a fixed GPU slot regardless of load.
+        let lo = "luid_0x00000000_0x00019d9d"; // idle/cool
+        let hi = "luid_0x00000000_0x0001d34e"; // busy/hot
+        let mut gpus = vec![hip_gpu(), hip_gpu()];
+        let util = HashMap::from([(lo.into(), 0u32), (hi.into(), 95u32)]);
+        let kmt = HashMap::from([
+            (lo.to_string(), tel(Some(40), Some(150))),
+            (hi.to_string(), tel(Some(80), Some(2400))),
+        ]);
+        let mem = HashMap::from([(lo.into(), 3 * GB), (hi.into(), 20 * GB)]);
+
+        let (have_wmi, have_kmt) = merge_gpu_telemetry(&mut gpus, &util, &kmt, &mem);
+
+        assert!(have_wmi && have_kmt);
+        // GPU 0 = lowest LUID, even though it's the idle/cool one.
+        assert_eq!(gpus[0].util, Some(0));
+        assert_eq!(gpus[0].temp_c, Some(40));
+        assert!(approx(gpus[0].vram_used_gb, 3.0));
+        // GPU 1 = higher LUID, the busy card.
+        assert_eq!(gpus[1].util, Some(95));
+        assert_eq!(gpus[1].temp_c, Some(80));
+        assert!(approx(gpus[1].vram_used_gb, 20.0));
+    }
+
+    #[test]
+    fn excludes_software_adapter_even_when_its_luid_sorts_first() {
+        // WARP has no kernel perf data and the lowest LUID, but it must never
+        // take the real card's slot.
+        let warp = "luid_0x00000000_0x00000abc";
+        let card = "luid_0x00000000_0x0001d34e";
+        let mut gpus = vec![hip_gpu()];
+        let util = HashMap::from([(warp.into(), 0u32), (card.into(), 50u32)]);
+        let kmt = HashMap::from([(card.to_string(), tel(Some(55), Some(2000)))]);
+        let mem = HashMap::from([(warp.into(), 0u64), (card.into(), 8 * GB)]);
+
+        merge_gpu_telemetry(&mut gpus, &util, &kmt, &mem);
+
+        assert_eq!(gpus[0].util, Some(50));
+        assert_eq!(gpus[0].temp_c, Some(55));
+        assert!(approx(gpus[0].vram_used_gb, 8.0));
+    }
+
+    #[test]
+    fn vram_usage_overrides_hip_per_process_baseline() {
+        let card = "luid_0x00000000_0x00000001";
+        let mut gpus = vec![hip_gpu()];
+        let util = HashMap::new();
+        let kmt = HashMap::from([(card.to_string(), tel(None, None))]);
+        let mem = HashMap::from([(card.into(), 12 * GB)]);
+
+        let (have_wmi, _) = merge_gpu_telemetry(&mut gpus, &util, &kmt, &mem);
+
+        assert!(have_wmi, "VRAM usage from WMI should set have_wmi");
+        assert!(approx(gpus[0].vram_used_gb, 12.0));
+    }
+
+    #[test]
+    fn keeps_all_records_when_no_kernel_perf_data() {
+        // WMI-only machine: with no kmt entries we can't distinguish GPUs from
+        // software adapters, so keep every record rather than dropping them all.
+        let card = "luid_0x00000000_0x00000001";
+        let mut gpus = vec![hip_gpu()];
+        let util = HashMap::from([(card.into(), 30u32)]);
+        let kmt: HashMap<String, kmt::Telemetry> = HashMap::new();
+        let mem = HashMap::new();
+
+        let (have_wmi, have_kmt) = merge_gpu_telemetry(&mut gpus, &util, &kmt, &mem);
+
+        assert!(have_wmi);
+        assert!(!have_kmt);
+        assert_eq!(gpus[0].util, Some(30));
+    }
+
+    #[test]
+    fn joins_luid_case_insensitively() {
+        // WMI returns uppercase hex LUIDs; the kernel map is lowercase. They
+        // must join to the same physical card.
+        let mut gpus = vec![hip_gpu()];
+        let util = HashMap::from([("luid_0x00000000_0x0001D34E".to_string(), 42u32)]);
+        let kmt = HashMap::from([(
+            "luid_0x00000000_0x0001d34e".to_string(),
+            tel(Some(60), None),
+        )]);
+        let mem = HashMap::from([("luid_0x00000000_0x0001D34E".to_string(), 5 * GB)]);
+
+        merge_gpu_telemetry(&mut gpus, &util, &kmt, &mem);
+
+        assert_eq!(gpus[0].util, Some(42));
+        assert_eq!(gpus[0].temp_c, Some(60));
+        assert!(approx(gpus[0].vram_used_gb, 5.0));
+    }
+
+    #[test]
+    fn clamps_utilization_to_100() {
+        let card = "luid_0x00000000_0x00000001";
+        let mut gpus = vec![hip_gpu()];
+        let util = HashMap::from([(card.into(), 250u32)]);
+        let kmt = HashMap::from([(card.to_string(), tel(None, None))]);
+        let mem = HashMap::new();
+
+        merge_gpu_telemetry(&mut gpus, &util, &kmt, &mem);
+
+        assert_eq!(gpus[0].util, Some(100));
+    }
 }

@@ -71,7 +71,7 @@ export function HardwareScreen() {
             className="badge ghost mono"
             title={
               isHipBackend
-                ? "AMD GPU detected. VRAM via HIP, utilization via WMI, temperature & clock via the WDDM kernel."
+                ? "AMD GPU detected. VRAM total via HIP; usage & utilization via WMI; temperature & clock via the WDDM kernel."
                 : backend === "NVML"
                   ? "NVIDIA GPU detected via NVML."
                   : "No GPU backend available."
@@ -231,15 +231,16 @@ export function HardwareScreen() {
                   <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
                   {backend.includes("WDDM") ? (
                     <>
-                      AMD detected. VRAM via HIP runtime, utilization via WMI, and{" "}
+                      AMD detected. VRAM total via the HIP runtime; usage &amp; utilization via WMI;{" "}
                       <strong>temperature &amp; clock via the WDDM kernel</strong> — the same source
                       Task Manager uses. Only power draw in watts is unavailable; install amd-smi
                       for it.
                     </>
                   ) : backend === "HIP + WMI" ? (
                     <>
-                      AMD detected. VRAM via HIP runtime, utilization via WMI perf counters.{" "}
-                      <strong>Temperature, power, and clock</strong> need amd-smi on this machine.
+                      AMD detected. VRAM total via HIP runtime; usage &amp; utilization via WMI perf
+                      counters. <strong>Temperature, power, and clock</strong> need amd-smi on this
+                      machine.
                     </>
                   ) : (
                     <>
