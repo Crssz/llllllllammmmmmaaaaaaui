@@ -27,6 +27,7 @@ function baseVals(overrides: Partial<Values> = {}): Values {
     spec_type: "none",
     spec_n_max: 8,
     spec_n_min: 0,
+    model_draft_mtp: "",
     model_draft: "",
     ngld: 0,
     ctx_draft: 4096,
@@ -99,6 +100,23 @@ describe("buildArgs", () => {
   it("emits --no-mmap only when mmap is false", () => {
     expect(buildArgs(baseVals({ mmap: true }), "manual")).not.toContain("--no-mmap");
     expect(buildArgs(baseVals({ mmap: false }), "manual")).toContain("--no-mmap");
+  });
+
+  it("draft-mtp without a drafter omits --model-draft", () => {
+    const args = buildArgs(baseVals({ spec_type: "draft-mtp" }), "manual");
+    expect(args).toContain("--spec-type");
+    expect(args[args.indexOf("--spec-type") + 1]).toBe("draft-mtp");
+    expect(args).not.toContain("--model-draft");
+  });
+
+  it("draft-mtp with an explicit drafter emits --model-draft", () => {
+    const args = buildArgs(
+      baseVals({ spec_type: "draft-mtp", model_draft_mtp: "/mtp/heads.gguf", spec_n_max: 4 }),
+      "manual",
+    );
+    expect(args[args.indexOf("--spec-type") + 1]).toBe("draft-mtp");
+    expect(args[args.indexOf("--model-draft") + 1]).toBe("/mtp/heads.gguf");
+    expect(args[args.indexOf("--spec-draft-n-max") + 1]).toBe("4");
   });
 
   it("draft-simple only emits when model_draft is set", () => {

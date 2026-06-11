@@ -106,7 +106,9 @@ export function useAppEffects(initialFlags: FlagValues) {
             }`,
           );
           const flags = useAppStore.getState().flags;
-          if (!info.mtp_support && flags.spec_type === "draft-mtp") {
+          // An explicit MTP drafter GGUF supplies the heads, so the main
+          // model not advertising MTP is fine in that case.
+          if (!info.mtp_support && flags.spec_type === "draft-mtp" && !flags.model_draft_mtp) {
             log.warn("model", "model lacks MTP heads — disabling speculative decoding");
             useAppStore.getState().setFlag("spec_type", "none");
           }

@@ -225,6 +225,13 @@ export function ConfigureScreen({
     return { total: total.toFixed(2), kv: kv.toFixed(2), weights: w.toFixed(2) };
   }, [vals]);
 
+  // Browse for a GGUF and store it under the given flag key. The store's
+  // pickModel() is only correct for the main "model" flag.
+  const pickGgufFor = async (key: string) => {
+    const picked = await api.pickFile();
+    if (picked) set(key, picked);
+  };
+
   const pickTemplateFile = async () => {
     const picked = await api.pickFile("Select chat template file", [
       "jinja",
@@ -420,6 +427,10 @@ export function ConfigureScreen({
                       ? g.flags.filter((f) => !f.only || f.only === vals.spec_type)
                       : g.flags;
                   const IconCmp = I[g.icon];
+                  // With an explicit MTP drafter GGUF the heads come from the
+                  // drafter, so the main model not having them is fine.
+                  const mtpDrafter = Boolean(vals.model_draft_mtp);
+                  const mtpMissing = !!modelInfo && !modelInfo.mtp_support && !mtpDrafter;
                   return (
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
                       <button
@@ -449,13 +460,19 @@ export function ConfigureScreen({
                       <div className="cfg-rows">
                         {flags.map((f) => {
                           const isModelPath =
-                            f.key === "model" || f.key === "model_draft" || f.key === "mmproj";
+                            f.key === "model" ||
+                            f.key === "model_draft" ||
+                            f.key === "model_draft_mtp" ||
+                            f.key === "mmproj";
                           const isTemplatePath = f.key === "chat_template_file";
-                          const onBrowse = isModelPath
-                            ? () => pickModel().catch(() => {})
-                            : isTemplatePath
-                              ? () => pickTemplateFile().catch(() => {})
-                              : undefined;
+                          const onBrowse =
+                            f.key === "model"
+                              ? () => pickModel().catch(() => {})
+                              : isModelPath
+                                ? () => pickGgufFor(f.key).catch(() => {})
+                                : isTemplatePath
+                                  ? () => pickTemplateFile().catch(() => {})
+                                  : undefined;
                           return (
                             <FlagRow
                               key={f.key}
@@ -472,13 +489,9 @@ export function ConfigureScreen({
                             style={{
                               padding: "10px 16px",
                               borderTop: "1px solid var(--border)",
-                              background:
-                                modelInfo && !modelInfo.mtp_support
-                                  ? "var(--red-soft)"
-                                  : "var(--surface)",
+                              background: mtpMissing ? "var(--red-soft)" : "var(--surface)",
                               fontSize: 11.5,
-                              color:
-                                modelInfo && !modelInfo.mtp_support ? "var(--red)" : "var(--muted)",
+                              color: mtpMissing ? "var(--red)" : "var(--muted)",
                               display: "flex",
                               gap: 10,
                               alignItems: "flex-start",
@@ -488,20 +501,23 @@ export function ConfigureScreen({
                               size={13}
                               style={{
                                 marginTop: 1,
-                                color:
-                                  modelInfo && !modelInfo.mtp_support
-                                    ? "var(--red)"
-                                    : "var(--accent)",
+                                color: mtpMissing ? "var(--red)" : "var(--accent)",
                               }}
                             />
                             <div>
-                              {modelInfo && !modelInfo.mtp_support ? (
+                              {mtpMissing ? (
                                 <>
                                   The selected GGUF does <strong>not</strong> contain MTP heads —
                                   llama-server will refuse to start with{" "}
-                                  <span className="mono">--spec-type draft-mtp</span>. Switch to{" "}
+                                  <span className="mono">--spec-type draft-mtp</span>. Set an MTP
+                                  drafter GGUF above, or switch to{" "}
                                   <span className="mono">none</span> or{" "}
                                   <span className="mono">draft-simple</span>.
+                                </>
+                              ) : mtpDrafter ? (
+                                <>
+                                  Explicit MTP drafter — heads load from the drafter GGUF via{" "}
+                                  <span className="mono">--model-draft</span>.
                                 </>
                               ) : modelInfo?.mtp_support ? (
                                 <>

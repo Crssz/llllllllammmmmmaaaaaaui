@@ -394,11 +394,20 @@ export const FLAG_GROUPS: FlagGroup[] = [
       {
         key: "spec_type",
         label: "Speculator type",
-        desc: "none · draft-simple (separate draft GGUF) · draft-mtp (MTP heads in same GGUF) · draft-eagle3",
+        desc: "none · draft-simple (separate draft GGUF) · draft-mtp (MTP heads in model GGUF or explicit drafter) · draft-eagle3",
         flag: "--spec-type",
         type: "select",
         value: "draft-mtp",
         options: ["none", "draft-simple", "draft-mtp", "draft-eagle3"],
+      },
+      {
+        key: "model_draft_mtp",
+        label: "MTP drafter",
+        desc: "Optional GGUF holding the MTP heads. Leave empty when the model GGUF already contains them.",
+        flag: "-md, --model-draft",
+        type: "path",
+        value: "",
+        only: "draft-mtp",
       },
       {
         key: "spec_n_max",

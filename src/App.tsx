@@ -110,11 +110,12 @@ function TopBar({
           }}
         />
         <span className="name">{modelName}</span>
-        {modelInfo?.mtp_support && flags.spec_type === "draft-mtp" && (
-          <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
-            + MTP
-          </span>
-        )}
+        {(modelInfo?.mtp_support || Boolean(flags.model_draft_mtp)) &&
+          flags.spec_type === "draft-mtp" && (
+            <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
+              + MTP
+            </span>
+          )}
         <span className="meta mono">{serverStatusLabel(server)}</span>
         <I.Chevron
           size={12}

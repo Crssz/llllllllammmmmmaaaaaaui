@@ -41,6 +41,8 @@ export function buildArgs(vals: Values, agency: Agency): string[] {
   const specType = M("spec_type") as string;
   if (specType === "draft-mtp") {
     push("--spec-type", "draft-mtp");
+    // MTP heads usually live in the model GGUF; an explicit drafter GGUF is optional.
+    if (truthy(M("model_draft_mtp"))) push("--model-draft", M("model_draft_mtp") as string);
     push("--spec-draft-n-max", M("spec_n_max") as number);
     if ((M("spec_n_min") as number) > 0) push("--spec-draft-n-min", M("spec_n_min") as number);
   } else if (specType === "draft-simple" && truthy(M("model_draft"))) {
