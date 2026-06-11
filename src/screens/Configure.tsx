@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
-import { FLAG_GROUPS, MODEL, type Agency, type FlagDef } from "../data";
+import { FLAG_GROUPS, MODEL, type FlagDef } from "../data";
 import { BinaryLocator } from "./BinaryLocator";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
@@ -11,18 +11,13 @@ function FlagRow({
   f,
   value,
   onChange,
-  agency,
   onBrowse,
 }: Readonly<{
   f: FlagDef;
   value: FlagValue;
   onChange: (v: FlagValue) => void;
-  agency: Agency;
   onBrowse?: () => void;
 }>) {
-  const showSuggestion = agency === "suggest" && f.suggest !== undefined && f.suggest !== value;
-  const lockedByAuto = agency === "auto" && f.suggest !== undefined;
-
   let ctl: React.ReactNode = null;
   if (f.type === "slider") {
     const v = value as number;
@@ -34,7 +29,6 @@ function FlagRow({
     // when the underlying value is a sentinel like 999.
     const displayVal = isAlias ? max : Math.max(min, Math.min(max, v));
     const pct = ((displayVal - min) / (max - min)) * 100;
-    const fallback = typeof f.suggest === "number" ? f.suggest : max;
     ctl = (
       <>
         {alias && (
@@ -45,7 +39,7 @@ function FlagRow({
               gap: 5,
               fontSize: 11,
               color: isAlias ? "var(--accent)" : "var(--muted)",
-              cursor: lockedByAuto ? "default" : "pointer",
+              cursor: "pointer",
               userSelect: "none",
               whiteSpace: "nowrap",
               flexShrink: 0,
@@ -55,8 +49,7 @@ function FlagRow({
             <input
               type="checkbox"
               checked={isAlias}
-              disabled={lockedByAuto}
-              onChange={(e) => onChange(e.target.checked ? alias.value : fallback)}
+              onChange={(e) => onChange(e.target.checked ? alias.value : max)}
               style={{ margin: 0 }}
             />
             {alias.label}
@@ -71,36 +64,28 @@ function FlagRow({
             step={f.step}
             value={displayVal}
             onChange={(e) => onChange(Number(e.target.value))}
-            disabled={lockedByAuto || isAlias}
+            disabled={isAlias}
           />
         </div>
         <input
           className="input num mono"
-          value={lockedByAuto ? String(f.suggest) : isAlias ? alias.label.toLowerCase() : String(v)}
+          value={isAlias ? alias.label.toLowerCase() : String(v)}
           onChange={(e) => {
             const n = Number(e.target.value);
             if (Number.isFinite(n)) onChange(n);
           }}
-          disabled={lockedByAuto || isAlias}
+          disabled={isAlias}
         />
-        {showSuggestion && <span className="ghost-hint">→ {String(f.suggest)}</span>}
       </>
     );
   } else if (f.type === "toggle") {
-    ctl = (
-      <button
-        className={"toggle" + (value ? " on" : "")}
-        onClick={() => !lockedByAuto && onChange(!value)}
-        disabled={lockedByAuto}
-      />
-    );
+    ctl = <button className={"toggle" + (value ? " on" : "")} onClick={() => onChange(!value)} />;
   } else if (f.type === "select") {
     ctl = (
       <select
         className="select mono"
         value={String(value)}
         onChange={(e) => onChange(e.target.value)}
-        disabled={lockedByAuto}
       >
         {f.options?.map((o) => (
           <option key={o} value={o}>
@@ -117,14 +102,12 @@ function FlagRow({
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
           style={{ flex: 1, minWidth: 0 }}
-          disabled={lockedByAuto}
           placeholder={f.type === "path" ? "(none)" : ""}
         />
         {onBrowse && (
           <button
             className="btn ghost"
             onClick={onBrowse}
-            disabled={lockedByAuto}
             title="Browse…"
             style={{ flexShrink: 0 }}
           >
@@ -138,14 +121,7 @@ function FlagRow({
   return (
     <div className="cfg-row">
       <div className="lbl">
-        <span className="name">
-          {f.label}
-          {lockedByAuto && (
-            <span className="badge accent" style={{ fontSize: 9.5, padding: "1px 5px" }}>
-              <I.Lock size={9} /> auto
-            </span>
-          )}
-        </span>
+        <span className="name">{f.label}</span>
         <span className="desc">{f.desc}</span>
       </div>
       <div className="ctl">{ctl}</div>
@@ -155,11 +131,9 @@ function FlagRow({
 }
 
 export function ConfigureScreen({
-  agency,
   initialTab,
   onTabConsumed,
 }: {
-  agency: Agency;
   initialTab?: string | null;
   onTabConsumed?: () => void;
 }) {
@@ -208,7 +182,7 @@ export function ConfigureScreen({
 
   const set = (k: string, v: FlagValue) => setFlag(k, v);
 
-  const args = useMemo(() => buildArgs(vals, agency), [vals, agency]);
+  const args = useMemo(() => buildArgs(vals), [vals]);
 
   // For the live command preview, render with the resolved binary path.
   const binaryDisplay = "llama-server";
@@ -415,7 +389,7 @@ export function ConfigureScreen({
         </div>
       </div>
 
-      <div className="page-body" data-agency={agency}>
+      <div className="page-body">
         <div className="cfg-grid">
           <div>
             {(tab === "all" || tab === "binary") && <BinaryLocator />}
@@ -479,7 +453,6 @@ export function ConfigureScreen({
                               f={f}
                               value={vals[f.key] ?? f.value}
                               onChange={(v) => set(f.key, v)}
-                              agency={agency}
                               onBrowse={onBrowse}
                             />
                           );
@@ -563,8 +536,7 @@ export function ConfigureScreen({
               </div>
               <div className="cmd-foot">
                 <span>
-                  <I.Info size={11} style={{ verticalAlign: -1 }} /> {args.length} tokens ·{" "}
-                  {agency === "auto" ? "pilot-controlled" : "you control these"}
+                  <I.Info size={11} style={{ verticalAlign: -1 }} /> {args.length} tokens
                 </span>
               </div>
             </div>

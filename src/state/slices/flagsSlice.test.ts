@@ -30,11 +30,6 @@ describe("flags slice", () => {
     expect(api.saveSettings).toHaveBeenCalled();
   });
 
-  it("setAgency updates agency only", () => {
-    useAppStore.getState().setAgency("auto");
-    expect(useAppStore.getState().agency).toBe("auto");
-  });
-
   it("setReasoningEnabled flips the bit AND persists", async () => {
     useAppStore.getState().setReasoningEnabled(false);
     await flush();

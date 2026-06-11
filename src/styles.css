@@ -330,33 +330,6 @@ button {
   background: var(--red-soft);
 }
 
-.mode-pills {
-  display: inline-flex;
-  padding: 2px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  gap: 1px;
-}
-.mode-pill {
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--muted);
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.mode-pill.active {
-  background: var(--surface-2);
-  color: var(--text);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
-}
-.mode-pill svg {
-  width: 13px;
-  height: 13px;
-}
-
 .top-actions {
   margin-left: auto;
   display: flex;
@@ -1646,26 +1619,6 @@ button {
   background: var(--accent-hi);
 }
 
-.empty-hint {
-  margin: 8px 28px 0;
-  padding: 12px 14px;
-  background: linear-gradient(180deg, var(--accent-soft), transparent);
-  border: 1px solid var(--accent-line);
-  border-radius: var(--radius);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12.5px;
-  color: var(--text-2);
-}
-.empty-hint b {
-  color: var(--text);
-  font-weight: 600;
-}
-.empty-hint svg {
-  color: var(--accent);
-}
-
 /* ───────── Configure ───────── */
 .cfg-grid {
   display: grid;
@@ -1765,26 +1718,6 @@ button {
   color: var(--muted);
   text-align: right;
   white-space: nowrap;
-}
-
-[data-agency="auto"] .cfg-row .ctl input,
-[data-agency="auto"] .cfg-row .ctl select,
-[data-agency="auto"] .cfg-row .ctl button.toggle {
-  pointer-events: none;
-  opacity: 0.7;
-}
-[data-agency="auto"] .cfg-row::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  background: var(--accent);
-  border-radius: 2px;
-}
-[data-agency="auto"] .cfg-row {
-  position: relative;
 }
 
 .input {
@@ -1917,13 +1850,6 @@ button {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
-}
-
-.ghost-hint {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--accent);
-  padding-left: 8px;
 }
 
 /* command preview panel */

@@ -1,11 +1,9 @@
-import type { Agency } from "../data";
-
 export type FlagValue = string | number | boolean;
 export type Values = Record<string, FlagValue>;
 
 // Build the llama-server argv list (no "llama-server" prefix, no line-break "\").
 // Returns flat strings ready for std::process::Command's args().
-export function buildArgs(vals: Values, agency: Agency): string[] {
+export function buildArgs(vals: Values): string[] {
   const out: string[] = [];
   const push = (flag: string, val?: string | number | boolean | null) => {
     out.push(flag);
@@ -24,8 +22,7 @@ export function buildArgs(vals: Values, agency: Agency): string[] {
   push("--batch-size", M("batch") as number);
   push("--ubatch-size", M("ubatch") as number);
   if ((M("parallel") as number) > 1) push("--parallel", M("parallel") as number);
-  const ngl = agency === "auto" ? 100 : (M("ngl") as number);
-  push("--n-gpu-layers", ngl);
+  push("--n-gpu-layers", M("ngl") as number);
   push("--threads", M("threads") as number);
   push("--threads-batch", M("tb") as number);
   if (M("split") !== "layer") push("--split-mode", M("split") as string);

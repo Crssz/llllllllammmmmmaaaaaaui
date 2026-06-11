@@ -104,7 +104,6 @@ export type SavedProfile = {
   created_at: number;
   flags: Record<string, unknown>;
   model_path: string | null;
-  agency: string | null;
 };
 
 export type McpTransport = "stdio" | "http" | "sse";

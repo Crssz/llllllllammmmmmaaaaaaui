@@ -58,13 +58,13 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     }
   },
 
-  // Restart the server with the current flags + agency so a freshly switched
-  // model takes effect. Stops a running server first, then starts; if it was
+  // Restart the server with the current flags so a freshly switched model
+  // takes effect. Stops a running server first, then starts; if it was
   // already stopped this just starts it. Builds the same argv the Configure
   // tab does, so callers (the model picker, Models tab) don't have to.
   reloadServer: async () => {
-    const { flags, agency } = get();
-    const args = buildArgs(flags, agency);
+    const { flags } = get();
+    const args = buildArgs(flags);
     if (get().server.running) {
       await get().stopServer();
     }

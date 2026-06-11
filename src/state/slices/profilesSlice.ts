@@ -11,14 +11,13 @@ export type ProfilesSlice = {
 
 export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> = (_set, get) => ({
   saveProfile: async (name) => {
-    const { flags, settings, agency } = get();
+    const { flags, settings } = get();
     const profile: SavedProfile = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: name || "Untitled profile",
       created_at: Date.now(),
       flags: flags as Record<string, unknown>,
       model_path: (flags.model as string) || settings.model_path || null,
-      agency,
     };
     const updated: Settings = {
       ...settings,
@@ -29,15 +28,12 @@ export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> 
   },
 
   loadProfile: (id) => {
-    const { settings, flags, resetFlags, setAgency } = get();
+    const { settings, flags, resetFlags } = get();
     const p = settings.profiles.find((pr) => pr.id === id);
     if (!p) return;
     const f: FlagValues = { ...flags, ...(p.flags as FlagValues) };
     if (p.model_path) f.model = p.model_path;
     resetFlags(f);
-    if (p.agency === "manual" || p.agency === "suggest" || p.agency === "auto") {
-      setAgency(p.agency);
-    }
   },
 
   deleteProfile: async (id) => {

@@ -179,7 +179,6 @@ export function ProfilesScreen() {
                     <div className="prof-name">{p.name}</div>
                     <div className="prof-meta mono" title={p.model_path ?? ""}>
                       {modelDisplay}
-                      {p.agency ? ` · ${p.agency}` : ""}
                     </div>
                   </div>
                   <button

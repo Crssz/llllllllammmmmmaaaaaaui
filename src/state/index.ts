@@ -7,7 +7,7 @@
 //   const { a, b } = useAppStore(useShallow((s) => ({ a: s.a, b: s.b })));
 export { useAppStore, resetAppStore, type AppStore } from "./store";
 export { AppEffects, useAppEffects } from "./effects";
-export type { ChatMessage, PendingToolApproval, FlagValues, Agency } from "./types";
+export type { ChatMessage, PendingToolApproval, FlagValues } from "./types";
 
 // Re-export pure helpers so consumers don't need to know where they live.
 export { splitThink, mcpResultToText, deriveTitle, toView, fromView } from "../lib/chatHelpers";

@@ -100,8 +100,6 @@ pub struct SavedProfile {
     pub flags: serde_json::Value,
     #[serde(default)]
     pub model_path: Option<String>,
-    #[serde(default)]
-    pub agency: Option<String>,
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -237,11 +235,19 @@ mod tests {
             created_at: 1,
             flags: serde_json::json!({}),
             model_path: None,
-            agency: Some("auto".into()),
         };
         let encoded = serde_json::to_string(&p).unwrap();
         let decoded: SavedProfile = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded.agency.as_deref(), Some("auto"));
+        assert_eq!(decoded.id, "id");
         assert!(decoded.model_path.is_none());
+    }
+
+    #[test]
+    fn saved_profile_tolerates_legacy_agency_key() {
+        // Profiles saved before the pilot-mode feature was removed carry an
+        // "agency" key; loading them must not fail.
+        let legacy = r#"{"id":"id","name":"n","created_at":1,"flags":{},"model_path":null,"agency":"auto"}"#;
+        let decoded: SavedProfile = serde_json::from_str(legacy).unwrap();
+        assert_eq!(decoded.id, "id");
     }
 }

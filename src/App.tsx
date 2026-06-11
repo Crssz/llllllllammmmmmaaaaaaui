@@ -1,6 +1,5 @@
 ﻿import { useEffect, useState } from "react";
 import { I } from "./icons";
-import { AGENCY_LABELS, type Agency } from "./data";
 import { ChatScreen } from "./screens/Chat";
 import { ConfigureScreen } from "./screens/Configure";
 import { HardwareScreen } from "./screens/Hardware";
@@ -17,32 +16,6 @@ import { log } from "./lib/logger";
 
 type Tab = "chat" | "models" | "configure" | "hardware" | "profiles" | "mcp" | "audio";
 
-function ModePills({
-  value,
-  onChange,
-}: Readonly<{ value: Agency; onChange: (a: Agency) => void }>) {
-  return (
-    <div className="mode-pills" role="tablist" aria-label="Pilot mode">
-      {(Object.entries(AGENCY_LABELS) as [Agency, (typeof AGENCY_LABELS)[Agency]][]).map(
-        ([k, m]) => {
-          const IconCmp = I[m.icon];
-          return (
-            <button
-              key={k}
-              className={"mode-pill" + (value === k ? " active" : "")}
-              onClick={() => onChange(k)}
-              title={m.desc}
-            >
-              <IconCmp size={12} />
-              {m.name}
-            </button>
-          );
-        },
-      )}
-    </div>
-  );
-}
-
 function basename(p: string): string {
   if (!p) return "";
   const sep = p.includes("\\") ? "\\" : "/";
@@ -58,16 +31,12 @@ function serverStatusLabel(server: ServerLike): string {
 }
 
 function TopBar({
-  agency,
-  onAgency,
   onSwitchToBinary,
   onToggleLogs,
   logsOpen,
   pickerOpen,
   setPickerOpen,
 }: Readonly<{
-  agency: Agency;
-  onAgency: (a: Agency) => void;
   onSwitchToBinary: () => void;
   onToggleLogs: () => void;
   logsOpen: boolean;
@@ -125,8 +94,6 @@ function TopBar({
           }}
         />
       </button>
-
-      <ModePills value={agency} onChange={onAgency} />
 
       <div className="top-actions">
         <button className="searchbtn">
@@ -386,7 +353,7 @@ function useTime() {
   return time;
 }
 
-function StatusBar({ agency }: Readonly<{ agency: Agency }>) {
+function StatusBar() {
   const t = useTime();
   const { server, build, flags } = useAppStore(
     useShallow((s) => ({ server: s.server, build: s.build, flags: s.flags })),
@@ -411,20 +378,15 @@ function StatusBar({ agency }: Readonly<{ agency: Agency }>) {
       <span className="sep" />
       <span className="cmd-snippet">
         $ {binary} --model {basename((flags.model as string) || "")} -c {flags.ctx} -ngl{" "}
-        {agency === "auto" ? "100" : String(flags.ngl)}
+        {String(flags.ngl)}
       </span>
-      <span className="right">
-        <span style={{ color: "var(--accent)" }}>{AGENCY_LABELS[agency].name.toLowerCase()}</span>
-        <span>{t}</span>
-      </span>
+      <span className="right">{t}</span>
     </div>
   );
 }
 
 export function App() {
   const [tab, setTab] = useState<Tab>("configure");
-  const agency = useAppStore((s) => s.agency);
-  const setAgency = useAppStore((s) => s.setAgency);
   const [configureTabRequest, setConfigureTabRequest] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -451,8 +413,6 @@ export function App() {
   return (
     <div className="app">
       <TopBar
-        agency={agency}
-        onAgency={setAgency}
         onSwitchToBinary={() => {
           setTab("configure");
           setConfigureTabRequest("binary");
@@ -465,11 +425,10 @@ export function App() {
       <div className="layout">
         <Sidebar tab={tab} onTab={setTab} />
         <main className="main" data-screen-label={tab}>
-          {tab === "chat" && <ChatScreen agency={agency} />}
+          {tab === "chat" && <ChatScreen />}
           {tab === "models" && <ModelsScreen />}
           {tab === "configure" && (
             <ConfigureScreen
-              agency={agency}
               initialTab={configureTabRequest}
               onTabConsumed={() => setConfigureTabRequest(null)}
             />
@@ -480,7 +439,7 @@ export function App() {
           {tab === "audio" && <TranscribeScreen />}
         </main>
       </div>
-      <StatusBar agency={agency} />
+      <StatusBar />
       <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
       <ModelLibraryOverlay
         open={pickerOpen}

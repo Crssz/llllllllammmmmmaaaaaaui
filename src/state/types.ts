@@ -2,8 +2,6 @@ import type { AudioAttachment, ImageAttachment, ToolCall } from "../lib/api";
 
 export type FlagValues = Record<string, string | number | boolean>;
 
-export type Agency = "manual" | "suggest" | "auto";
-
 export type ChatMessage = {
   role: "user" | "assistant" | "system" | "tool";
   content: string;

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type HTMLAttributes, type ReactElement } from "react";
 import { Streamdown } from "streamdown";
 import { I } from "../icons";
-import type { Agency } from "../data";
 import { useAppStore, useCurrentChat, useChatMessages } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { ChatSidebar } from "../components/ChatSidebar";
@@ -214,7 +213,7 @@ function fmtTime(ts: number): string {
   return d.toTimeString().slice(0, 5);
 }
 
-export function ChatScreen({ agency }: Readonly<{ agency: Agency }>) {
+export function ChatScreen() {
   const chatMessages = useChatMessages();
   const currentChat = useCurrentChat();
   const {
@@ -1120,20 +1119,6 @@ export function ChatScreen({ agency }: Readonly<{ agency: Agency }>) {
             </div>
           )}
         </div>
-
-        {agency !== "manual" && (
-          <div className="empty-hint">
-            <I.Spark size={16} />
-            <div>
-              <b>Pilot is {agency === "suggest" ? "watching" : "in control"}.</b>{" "}
-              <span style={{ color: "var(--muted)" }}>
-                {agency === "suggest"
-                  ? "It will surface inline recommendations on the Configure tab."
-                  : "Settings marked with a purple line are managed automatically. Switch to Manual to take over."}
-              </span>
-            </div>
-          </div>
-        )}
 
         <div className="composer">
           <textarea

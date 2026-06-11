@@ -150,12 +150,11 @@ export type FlagDef = {
   min?: number;
   max?: number;
   step?: number;
-  suggest?: string | number | boolean;
   only?: string;
   // For sliders that accept a sentinel value outside the normal range
   // (e.g. llama.cpp's -ngl 999 = "all layers"). When the flag's value equals
   // `maxAlias.value`, a labeled checkbox is rendered and the slider is locked
-  // at its max. Unchecking restores `suggest` (or `max`).
+  // at its max. Unchecking restores `max`.
   maxAlias?: { value: number; label: string };
 };
 
@@ -224,7 +223,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 2048,
         max: 131072,
         step: 1024,
-        suggest: 65536,
       },
       {
         key: "batch",
@@ -236,7 +234,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 64,
         max: 8192,
         step: 64,
-        suggest: 2048,
       },
       {
         key: "ubatch",
@@ -248,7 +245,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 32,
         max: 2048,
         step: 32,
-        suggest: 512,
       },
       {
         key: "parallel",
@@ -260,7 +256,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 1,
         max: 8,
         step: 1,
-        suggest: 1,
       },
     ],
   },
@@ -280,7 +275,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 0,
         max: 100,
         step: 1,
-        suggest: 100,
         maxAlias: { value: 999, label: "All layers" },
       },
       {
@@ -293,7 +287,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 1,
         max: 64,
         step: 1,
-        suggest: 16,
       },
       {
         key: "tb",
@@ -305,7 +298,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 1,
         max: 64,
         step: 1,
-        suggest: 24,
       },
       {
         key: "split",
@@ -419,7 +411,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 1,
         max: 8,
         step: 1,
-        suggest: 3,
         only: "draft-mtp",
       },
       {
@@ -432,7 +423,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 0,
         max: 4,
         step: 1,
-        suggest: 1,
         only: "draft-mtp",
       },
       {
@@ -454,7 +444,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 0,
         max: 33,
         step: 1,
-        suggest: 33,
         only: "draft-simple",
       },
       {
@@ -467,7 +456,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 1024,
         max: 32768,
         step: 1024,
-        suggest: 8192,
         only: "draft-simple",
       },
       {
@@ -480,7 +468,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 1,
         max: 32,
         step: 1,
-        suggest: 16,
         only: "draft-simple",
       },
       {
@@ -493,7 +480,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 0,
         max: 16,
         step: 1,
-        suggest: 5,
         only: "draft-simple",
       },
       {
@@ -506,7 +492,6 @@ export const FLAG_GROUPS: FlagGroup[] = [
         min: 0,
         max: 1,
         step: 0.05,
-        suggest: 0.9,
         only: "draft-simple",
       },
       {
@@ -823,10 +808,3 @@ export const MODELS_TREE: OwnerEntry[] = [
   },
 ];
 
-export type Agency = "manual" | "suggest" | "auto";
-
-export const AGENCY_LABELS: Record<Agency, { name: string; desc: string; icon: IconName }> = {
-  manual: { name: "Manual", desc: "You do everything", icon: "Cmd" },
-  suggest: { name: "Suggest", desc: "Pilot suggests; you apply", icon: "Spark" },
-  auto: { name: "Autopilot", desc: "Pilot tunes the binary; you watch", icon: "Bolt" },
-};

@@ -1,25 +1,22 @@
 import type { StateCreator } from "zustand";
 import { api } from "../../lib/api";
 import { log } from "../../lib/logger";
-import type { Agency, FlagValues } from "../types";
+import type { FlagValues } from "../types";
 import { persistSettings } from "../persist";
 import type { AppStore } from "../store";
 
 export type FlagsSlice = {
   flags: FlagValues;
-  agency: Agency;
   reasoningEnabled: boolean;
   setReasoningEnabled: (v: boolean) => void;
   setFlag: (key: string, value: string | number | boolean) => void;
   resetFlags: (values: FlagValues) => void;
-  setAgency: (a: Agency) => void;
   pickModel: () => Promise<void>;
   loadModelPath: (path: string) => void;
 };
 
 export const createFlagsSlice: StateCreator<AppStore, [], [], FlagsSlice> = (set, get) => ({
   flags: {},
-  agency: "manual",
   reasoningEnabled: true,
 
   setReasoningEnabled: (v) => {
@@ -29,8 +26,6 @@ export const createFlagsSlice: StateCreator<AppStore, [], [], FlagsSlice> = (set
     persistSettings(updated);
     log.info("chat", `enable_thinking: ${v ? "on" : "off"}`);
   },
-
-  setAgency: (a) => set({ agency: a }),
 
   setFlag: (key, value) => {
     const next = { ...get().flags, [key]: value };

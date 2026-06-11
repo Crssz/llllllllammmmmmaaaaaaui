@@ -52,38 +52,32 @@ function baseVals(overrides: Partial<Values> = {}): Values {
 
 describe("buildArgs", () => {
   it("emits host/port even with defaults", () => {
-    const args = buildArgs(baseVals(), "manual");
+    const args = buildArgs(baseVals());
     expect(args).toContain("--host");
     expect(args).toContain("--port");
     expect(args[args.indexOf("--port") + 1]).toBe("8080");
   });
 
   it("includes --model when set", () => {
-    const args = buildArgs(baseVals({ model: "/path/to/model.gguf" }), "manual");
+    const args = buildArgs(baseVals({ model: "/path/to/model.gguf" }));
     const idx = args.indexOf("--model");
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(args[idx + 1]).toBe("/path/to/model.gguf");
   });
 
   it("omits --model when empty", () => {
-    const args = buildArgs(baseVals({ model: "" }), "manual");
+    const args = buildArgs(baseVals({ model: "" }));
     expect(args).not.toContain("--model");
   });
 
-  it("Auto agency overrides ngl to 100", () => {
-    const args = buildArgs(baseVals({ ngl: 5 }), "auto");
-    const i = args.indexOf("--n-gpu-layers");
-    expect(args[i + 1]).toBe("100");
-  });
-
-  it("Manual respects ngl value", () => {
-    const args = buildArgs(baseVals({ ngl: 42 }), "manual");
+  it("respects the ngl value", () => {
+    const args = buildArgs(baseVals({ ngl: 42 }));
     const i = args.indexOf("--n-gpu-layers");
     expect(args[i + 1]).toBe("42");
   });
 
   it("emits --jinja as a bare flag (no value)", () => {
-    const args = buildArgs(baseVals({ jinja: true }), "manual");
+    const args = buildArgs(baseVals({ jinja: true }));
     const i = args.indexOf("--jinja");
     expect(i).toBeGreaterThanOrEqual(0);
     // Next token should be another flag, not "true"
@@ -91,19 +85,19 @@ describe("buildArgs", () => {
   });
 
   it("--flash-attn always carries on/off (never bare)", () => {
-    const off = buildArgs(baseVals({ fa: false }), "manual");
-    const on = buildArgs(baseVals({ fa: true }), "manual");
+    const off = buildArgs(baseVals({ fa: false }));
+    const on = buildArgs(baseVals({ fa: true }));
     expect(off[off.indexOf("--flash-attn") + 1]).toBe("off");
     expect(on[on.indexOf("--flash-attn") + 1]).toBe("on");
   });
 
   it("emits --no-mmap only when mmap is false", () => {
-    expect(buildArgs(baseVals({ mmap: true }), "manual")).not.toContain("--no-mmap");
-    expect(buildArgs(baseVals({ mmap: false }), "manual")).toContain("--no-mmap");
+    expect(buildArgs(baseVals({ mmap: true }))).not.toContain("--no-mmap");
+    expect(buildArgs(baseVals({ mmap: false }))).toContain("--no-mmap");
   });
 
   it("draft-mtp without a drafter omits --model-draft", () => {
-    const args = buildArgs(baseVals({ spec_type: "draft-mtp" }), "manual");
+    const args = buildArgs(baseVals({ spec_type: "draft-mtp" }));
     expect(args).toContain("--spec-type");
     expect(args[args.indexOf("--spec-type") + 1]).toBe("draft-mtp");
     expect(args).not.toContain("--model-draft");
@@ -112,7 +106,6 @@ describe("buildArgs", () => {
   it("draft-mtp with an explicit drafter emits --model-draft", () => {
     const args = buildArgs(
       baseVals({ spec_type: "draft-mtp", model_draft_mtp: "/mtp/heads.gguf", spec_n_max: 4 }),
-      "manual",
     );
     expect(args[args.indexOf("--spec-type") + 1]).toBe("draft-mtp");
     expect(args[args.indexOf("--model-draft") + 1]).toBe("/mtp/heads.gguf");
@@ -120,27 +113,26 @@ describe("buildArgs", () => {
   });
 
   it("draft-simple only emits when model_draft is set", () => {
-    const without = buildArgs(baseVals({ spec_type: "draft-simple", model_draft: "" }), "manual");
+    const without = buildArgs(baseVals({ spec_type: "draft-simple", model_draft: "" }));
     expect(without).not.toContain("--spec-type");
 
     const withDraft = buildArgs(
       baseVals({ spec_type: "draft-simple", model_draft: "/draft.gguf" }),
-      "manual",
     );
     expect(withDraft).toContain("--spec-type");
     expect(withDraft).toContain("--model-draft");
   });
 
   it("rope defaults are omitted (none/auto)", () => {
-    const args = buildArgs(baseVals(), "manual");
+    const args = buildArgs(baseVals());
     expect(args).not.toContain("--rope-scaling");
     expect(args).not.toContain("--rope-freq-base");
     expect(args).not.toContain("--rope-freq-scale");
   });
 
   it("api-key only emits when provided", () => {
-    expect(buildArgs(baseVals(), "manual")).not.toContain("--api-key");
-    const withKey = buildArgs(baseVals({ api_key: "sk-test" }), "manual");
+    expect(buildArgs(baseVals())).not.toContain("--api-key");
+    const withKey = buildArgs(baseVals({ api_key: "sk-test" }));
     expect(withKey).toContain("--api-key");
   });
 });

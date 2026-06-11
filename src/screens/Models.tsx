@@ -123,7 +123,7 @@ export function ModelsScreen() {
     loadModelPath(p);
     // Switch to this model and restart the server so it's live immediately:
     // stops a running server first, then starts with the new model (or just
-    // starts it if it was stopped), using the current flags + agency.
+    // starts it if it was stopped), using the current flags.
     await reloadServer();
   };
 

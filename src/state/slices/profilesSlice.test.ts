@@ -16,7 +16,6 @@ describe("profiles slice", () => {
         created_at: i,
         flags: {},
         model_path: null,
-        agency: null,
       })),
     });
     useAppStore.getState().setSettings(seed);
@@ -33,7 +32,7 @@ describe("profiles slice", () => {
     expect(useAppStore.getState().settings.profiles[0].name).toBe("Untitled profile");
   });
 
-  it("loadProfile applies flags + agency", () => {
+  it("loadProfile applies flags + model path", () => {
     useAppStore.getState().setSettings(
       makeSettings({
         profiles: [
@@ -43,7 +42,6 @@ describe("profiles slice", () => {
             created_at: 1,
             flags: { ctx: 1024 },
             model_path: "/m/x.gguf",
-            agency: "auto",
           },
         ],
       }),
@@ -51,7 +49,6 @@ describe("profiles slice", () => {
     useAppStore.getState().loadProfile("p1");
     expect(useAppStore.getState().flags.ctx).toBe(1024);
     expect(useAppStore.getState().flags.model).toBe("/m/x.gguf");
-    expect(useAppStore.getState().agency).toBe("auto");
   });
 
   it("loadProfile no-ops on unknown id", () => {
@@ -60,32 +57,12 @@ describe("profiles slice", () => {
     expect(useAppStore.getState().flags.ctx).toBe(2048);
   });
 
-  it("loadProfile ignores invalid agency values", () => {
-    useAppStore.getState().setSettings(
-      makeSettings({
-        profiles: [
-          {
-            id: "p1",
-            name: "n",
-            created_at: 1,
-            flags: {},
-            model_path: null,
-            agency: "garbage",
-          },
-        ],
-      }),
-    );
-    useAppStore.getState().setAgency("manual");
-    useAppStore.getState().loadProfile("p1");
-    expect(useAppStore.getState().agency).toBe("manual");
-  });
-
   it("deleteProfile removes by id and persists", async () => {
     useAppStore.getState().setSettings(
       makeSettings({
         profiles: [
-          { id: "a", name: "a", created_at: 1, flags: {}, model_path: null, agency: null },
-          { id: "b", name: "b", created_at: 2, flags: {}, model_path: null, agency: null },
+          { id: "a", name: "a", created_at: 1, flags: {}, model_path: null },
+          { id: "b", name: "b", created_at: 2, flags: {}, model_path: null },
         ],
       }),
     );

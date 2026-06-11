@@ -156,14 +156,6 @@ export const I = {
       }
     />
   ),
-  Cmd: (p: IconProps) => (
-    <Icon
-      {...p}
-      paths={
-        <path d="M9 4a3 3 0 1 0 0 6h6a3 3 0 1 0 0-6 3 3 0 0 0-3 3v10a3 3 0 0 0 3 3 3 3 0 1 0 0-6H9a3 3 0 1 0 0 6 3 3 0 0 0 3-3" />
-      }
-    />
-  ),
   Spark: (p: IconProps) => (
     <Icon
       {...p}

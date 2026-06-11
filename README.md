@@ -83,10 +83,6 @@ src/
 src-tauri/             — Rust shell + tauri.conf.json
 ```
 
-## Pilot modes
-
-The `Manual / Suggest / Auto` pills in the top bar control how aggressively the agent tunes the binary. In **Auto**, sliders with a `suggest` value get locked and marked with an accent line; in **Suggest**, ghost recommendations appear inline (`→ 100`).
-
 ## First-time setup
 
 1. Build `llama.cpp` somewhere on disk (`cmake -B build && cmake --build build --config Release`).
