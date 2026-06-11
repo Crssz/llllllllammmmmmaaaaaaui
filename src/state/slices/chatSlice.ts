@@ -14,6 +14,14 @@ import {
 } from "../../lib/api";
 import { log } from "../../lib/logger";
 import { deriveTitle, newChatId, splitThink, mcpResultToText } from "../../lib/chatHelpers";
+import {
+  WORKSPACE_SERVER_ID,
+  WORKSPACE_SERVER_NAME,
+  WORKSPACE_TOOLS,
+  callWorkspaceTool,
+  isWorkspaceReadOnlyTool,
+  workspaceSystemNote,
+} from "../../lib/workspaceTools";
 import { persistChats } from "../persist";
 import type { AppStore } from "../store";
 
@@ -370,11 +378,17 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     set({ chatError: null });
 
     const cfg = session.config ?? null;
+    const workspaceRoot = cfg?.workspace_root?.trim() || null;
     const composedMessages: StoredChatMessage[] = [];
-    if (cfg?.system_prompt?.trim()) {
+    // System prompt + workspace note travel as ONE system message — some chat
+    // templates mishandle multiple system turns.
+    const sysParts: string[] = [];
+    if (cfg?.system_prompt?.trim()) sysParts.push(cfg.system_prompt.trim());
+    if (workspaceRoot) sysParts.push(workspaceSystemNote(workspaceRoot));
+    if (sysParts.length > 0) {
       composedMessages.push({
         role: "system",
-        content: cfg.system_prompt.trim(),
+        content: sysParts.join("\n\n"),
         time: Date.now(),
       });
     }
@@ -401,6 +415,16 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           },
         });
         toolIndex.set(exposed, { serverId: sid, toolName: t.name });
+      }
+    }
+    if (workspaceRoot) {
+      for (const t of WORKSPACE_TOOLS) {
+        const exposed = `${WORKSPACE_SERVER_ID}__${t.name}`;
+        tools.push({
+          type: "function",
+          function: { name: exposed, description: t.description, parameters: t.parameters },
+        });
+        toolIndex.set(exposed, { serverId: WORKSPACE_SERVER_ID, toolName: t.name });
       }
     }
 
@@ -486,14 +510,27 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           }
           const sid = mapped.serverId;
           const toolName = mapped.toolName;
-          const serverCfg = settings.mcp_servers.find((s) => s.id === sid);
-          const serverName = serverCfg?.name ?? sid;
+          const isWorkspace = sid === WORKSPACE_SERVER_ID;
+          const serverName = isWorkspace
+            ? WORKSPACE_SERVER_NAME
+            : (settings.mcp_servers.find((s) => s.id === sid)?.name ?? sid);
 
           const perms = cfg?.tool_permissions ?? {
             default: "ask" as ToolPermission,
             per_tool: {},
           };
-          const policy: ToolPermission = perms.per_tool[`${sid}:${toolName}`] ?? perms.default;
+          // Read-only workspace tools are auto-allowed so the model can browse
+          // without a prompt per file — unless the user set a per-tool override
+          // or locked the session down with a "deny" default.
+          const override = perms.per_tool[`${sid}:${toolName}`];
+          let policy: ToolPermission;
+          if (override) {
+            policy = override;
+          } else if (isWorkspace && isWorkspaceReadOnlyTool(toolName) && perms.default !== "deny") {
+            policy = "allow";
+          } else {
+            policy = perms.default;
+          }
 
           let args: Record<string, unknown> = {};
           try {
@@ -530,9 +567,15 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           }
 
           try {
-            log.info("mcp", `call ${sid}/${toolName}`, { args });
-            const raw = await api.mcpCallTool(sid, toolName, args);
-            const text = mcpResultToText(raw);
+            let text: string;
+            if (isWorkspace) {
+              log.info("workspace", `call ${toolName}`, { args });
+              text = await callWorkspaceTool(workspaceRoot as string, toolName, args);
+            } else {
+              log.info("mcp", `call ${sid}/${toolName}`, { args });
+              const raw = await api.mcpCallTool(sid, toolName, args);
+              text = mcpResultToText(raw);
+            }
             const okMsg: StoredChatMessage = {
               role: "tool",
               content: text,
@@ -544,7 +587,11 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
             liveMessages.push(okMsg);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            log.error("mcp", `tool call failed`, { server: sid, tool: toolName, error: msg });
+            log.error(isWorkspace ? "workspace" : "mcp", `tool call failed`, {
+              server: sid,
+              tool: toolName,
+              error: msg,
+            });
             const errMsg: StoredChatMessage = {
               role: "tool",
               content: `Tool execution failed: ${msg}`,

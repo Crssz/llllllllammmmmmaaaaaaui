@@ -8,6 +8,7 @@ mod server;
 mod settings;
 mod transcribe;
 mod util;
+mod workspace;
 
 use std::sync::Mutex;
 
@@ -164,6 +165,12 @@ pub fn run() {
             mcp_list_tools,
             mcp_call_tool,
             mcp_status_all,
+            crate::workspace::workspace_list,
+            crate::workspace::workspace_read,
+            crate::workspace::workspace_write,
+            crate::workspace::workspace_edit,
+            crate::workspace::workspace_search,
+            crate::workspace::workspace_find,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

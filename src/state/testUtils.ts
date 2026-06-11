@@ -111,6 +111,23 @@ export function stubApi() {
   vi.spyOn(api, "mcpListTools").mockResolvedValue([]);
   vi.spyOn(api, "mcpCallTool").mockResolvedValue("");
   vi.spyOn(api, "mcpStatusAll").mockResolvedValue([]);
+  vi.spyOn(api, "workspaceList").mockResolvedValue([]);
+  vi.spyOn(api, "workspaceRead").mockResolvedValue({
+    path: "f.txt",
+    total_lines: 0,
+    start_line: 1,
+    end_line: 0,
+    truncated: false,
+    content: "",
+  });
+  vi.spyOn(api, "workspaceWrite").mockResolvedValue({ path: "f.txt", bytes: 0, created: true });
+  vi.spyOn(api, "workspaceEdit").mockResolvedValue({ path: "f.txt", replacements: 1 });
+  vi.spyOn(api, "workspaceSearch").mockResolvedValue({
+    matches: [],
+    truncated: false,
+    files_scanned: 0,
+  });
+  vi.spyOn(api, "workspaceFind").mockResolvedValue({ paths: [], truncated: false });
 }
 
 // Drain microtasks so fire-and-forget persistence promises settle before the

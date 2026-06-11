@@ -63,6 +63,10 @@ pub struct ChatSessionConfig {
     /// Default tool-permission policy and per-tool overrides.
     #[serde(default)]
     pub tool_permissions: ToolPermissions,
+    /// Absolute path of the project folder opened for this session. When set,
+    /// the chat offers the built-in `workspace__*` file tools rooted here.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
     /// If this session was hydrated from a preset, remember the preset id so
     /// the UI can show "linked" state.
     #[serde(default)]
@@ -201,6 +205,7 @@ mod tests {
         assert!(c.mcp_server_ids.is_empty());
         assert_eq!(c.tool_permissions.default, "ask");
         assert!(c.preset_id.is_none());
+        assert!(c.workspace_root.is_none());
     }
 
     #[test]
@@ -217,6 +222,7 @@ mod tests {
                     default: "allow".into(),
                     per_tool: [("s1:t".into(), "deny".into())].into_iter().collect(),
                 },
+                workspace_root: Some("C:/proj".into()),
                 preset_id: None,
             },
         };
@@ -225,6 +231,7 @@ mod tests {
         assert_eq!(decoded.config.system_prompt.as_deref(), Some("be brief"));
         assert_eq!(decoded.config.tool_permissions.default, "allow");
         assert_eq!(decoded.config.tool_permissions.per_tool["s1:t"], "deny");
+        assert_eq!(decoded.config.workspace_root.as_deref(), Some("C:/proj"));
     }
 
     #[test]
@@ -246,7 +253,8 @@ mod tests {
     fn saved_profile_tolerates_legacy_agency_key() {
         // Profiles saved before the pilot-mode feature was removed carry an
         // "agency" key; loading them must not fail.
-        let legacy = r#"{"id":"id","name":"n","created_at":1,"flags":{},"model_path":null,"agency":"auto"}"#;
+        let legacy =
+            r#"{"id":"id","name":"n","created_at":1,"flags":{},"model_path":null,"agency":"auto"}"#;
         let decoded: SavedProfile = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded.id, "id");
     }

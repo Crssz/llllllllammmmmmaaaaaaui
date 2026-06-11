@@ -614,6 +614,14 @@ export function ChatScreen() {
                 <I.Spark size={11} /> MTP
               </span>
             )}
+            {currentChat?.config?.workspace_root && (
+              <span
+                className="badge ghost"
+                title={`Workspace: ${currentChat.config.workspace_root}`}
+              >
+                <I.Folder size={11} /> {basename(currentChat.config.workspace_root)}
+              </span>
+            )}
             {currentChat && (
               <button
                 className="btn ghost"

@@ -78,6 +78,10 @@ export type ChatSessionConfig = {
   chat_template: string | null;
   mcp_server_ids: string[];
   tool_permissions: ToolPermissions;
+  /** Absolute path of the project folder opened for this session. When set,
+   *  the chat offers the built-in workspace file tools rooted here. Optional
+   *  so configs persisted before this feature still type-check. */
+  workspace_root?: string | null;
   preset_id: string | null;
 };
 
@@ -255,9 +259,33 @@ export function defaultSessionConfig(): ChatSessionConfig {
     chat_template: null,
     mcp_server_ids: [],
     tool_permissions: { default: "ask", per_tool: {} },
+    workspace_root: null,
     preset_id: null,
   };
 }
+
+// ── Workspace file tools (mirror Rust workspace.rs) ─────────────────────────
+
+export type WsEntry = { name: string; is_dir: boolean; size: number };
+
+export type WsRead = {
+  path: string;
+  total_lines: number;
+  start_line: number;
+  end_line: number;
+  truncated: boolean;
+  content: string;
+};
+
+export type WsWrite = { path: string; bytes: number; created: boolean };
+
+export type WsEdit = { path: string; replacements: number };
+
+export type WsMatch = { path: string; line: number; text: string };
+
+export type WsSearch = { matches: WsMatch[]; truncated: boolean; files_scanned: number };
+
+export type WsFind = { paths: string[]; truncated: boolean };
 
 export const api = {
   loadSettings: () => invoke<Settings>("load_settings"),
@@ -296,6 +324,41 @@ export const api = {
   mcpCallTool: (id: string, name: string, args: Record<string, unknown>) =>
     invoke<unknown>("mcp_call_tool", { id, name, arguments: args }),
   mcpStatusAll: () => invoke<McpStatus[]>("mcp_status_all"),
+
+  workspaceList: (root: string, path: string) =>
+    invoke<WsEntry[]>("workspace_list", { root, path }),
+  workspaceRead: (root: string, path: string, offset?: number | null, limit?: number | null) =>
+    invoke<WsRead>("workspace_read", { root, path, offset: offset ?? null, limit: limit ?? null }),
+  workspaceWrite: (root: string, path: string, content: string) =>
+    invoke<WsWrite>("workspace_write", { root, path, content }),
+  workspaceEdit: (
+    root: string,
+    path: string,
+    oldString: string,
+    newString: string,
+    replaceAll?: boolean,
+  ) =>
+    invoke<WsEdit>("workspace_edit", {
+      root,
+      path,
+      oldString,
+      newString,
+      replaceAll: replaceAll ?? false,
+    }),
+  workspaceSearch: (
+    root: string,
+    query: string,
+    path?: string | null,
+    maxResults?: number | null,
+  ) =>
+    invoke<WsSearch>("workspace_search", {
+      root,
+      query,
+      path: path ?? null,
+      maxResults: maxResults ?? null,
+    }),
+  workspaceFind: (root: string, pattern: string, maxResults?: number | null) =>
+    invoke<WsFind>("workspace_find", { root, pattern, maxResults: maxResults ?? null }),
 
   pickFolder: (title = "Select a directory") =>
     open({ directory: true, multiple: false, title }) as Promise<string | null>,

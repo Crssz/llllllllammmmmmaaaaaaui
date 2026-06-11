@@ -621,6 +621,198 @@ describe("chat slice — streaming roundtrip", () => {
       .chats[0].messages.find((m: StoredChatMessage) => m.role === "tool")!;
     expect(tool.content).toMatch(/not registered/);
   });
+
+  it("offers workspace tools and auto-allows reads under the default 'ask' policy", async () => {
+    useAppStore.setState({
+      chats: [
+        makeChat({
+          id: "c1",
+          config: {
+            system_prompt: null,
+            chat_template: null,
+            mcp_server_ids: [],
+            tool_permissions: { default: "ask", per_tool: {} },
+            workspace_root: "C:\\proj",
+            preset_id: null,
+          },
+        }),
+      ],
+      currentChatId: "c1",
+    });
+    vi.spyOn(api, "workspaceRead").mockResolvedValueOnce({
+      path: "src/main.rs",
+      total_lines: 1,
+      start_line: 1,
+      end_line: 1,
+      truncated: false,
+      content: "fn main() {}\n",
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_ws",
+                      function: {
+                        name: "workspace__read_file",
+                        arguments: '{"path":"src/main.rs"}',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "read it" } }] })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      );
+
+    // Note: had the read required approval, this await would hang on the
+    // pending-approval promise — completion proves reads are auto-allowed.
+    await useAppStore.getState().sendChat("open main.rs");
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const toolNames = (body.tools as Array<{ function: { name: string } }>).map(
+      (t) => t.function.name,
+    );
+    expect(toolNames).toContain("workspace__read_file");
+    expect(toolNames).toContain("workspace__edit_file");
+    // The workspace note rides in as a system message even with no prompt set.
+    expect(body.messages[0].role).toBe("system");
+    expect(body.messages[0].content).toContain("C:\\proj");
+
+    expect(api.workspaceRead).toHaveBeenCalledWith("C:\\proj", "src/main.rs", null, null);
+    const msgs = useAppStore.getState().chats[0].messages;
+    const toolMsg = msgs.find((m: StoredChatMessage) => m.role === "tool")!;
+    expect(toolMsg.content).toContain("fn main() {}");
+    expect(msgs.at(-1)?.content).toBe("read it");
+  });
+
+  it("denies workspace writes when the session default is 'deny'", async () => {
+    useAppStore.setState({
+      chats: [
+        makeChat({
+          id: "c1",
+          config: {
+            system_prompt: null,
+            chat_template: null,
+            mcp_server_ids: [],
+            tool_permissions: { default: "deny", per_tool: {} },
+            workspace_root: "C:\\proj",
+            preset_id: null,
+          },
+        }),
+      ],
+      currentChatId: "c1",
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_w",
+                      function: {
+                        name: "workspace__write_file",
+                        arguments: '{"path":"x.txt","content":"hi"}',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      );
+
+    await useAppStore.getState().sendChat("write it");
+    const msgs = useAppStore.getState().chats[0].messages;
+    expect(msgs.some((m: StoredChatMessage) => m.role === "tool" && /denied/.test(m.content))).toBe(
+      true,
+    );
+    expect(api.workspaceWrite).not.toHaveBeenCalled();
+  });
+
+  it("honors a per-tool 'allow' override for workspace writes", async () => {
+    useAppStore.setState({
+      chats: [
+        makeChat({
+          id: "c1",
+          config: {
+            system_prompt: null,
+            chat_template: null,
+            mcp_server_ids: [],
+            tool_permissions: {
+              default: "deny",
+              per_tool: { "workspace:edit_file": "allow" },
+            },
+            workspace_root: "C:\\proj",
+            preset_id: null,
+          },
+        }),
+      ],
+      currentChatId: "c1",
+    });
+    vi.spyOn(api, "workspaceEdit").mockResolvedValueOnce({ path: "x.txt", replacements: 1 });
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_e",
+                      function: {
+                        name: "workspace__edit_file",
+                        arguments: '{"path":"x.txt","old_string":"a","new_string":"b"}',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "done" } }] })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      );
+
+    await useAppStore.getState().sendChat("edit it");
+    expect(api.workspaceEdit).toHaveBeenCalledWith("C:\\proj", "x.txt", "a", "b", false);
+    const msgs = useAppStore.getState().chats[0].messages;
+    const toolMsg = msgs.find((m: StoredChatMessage) => m.role === "tool")!;
+    expect(toolMsg.content).toContain("Edited x.txt");
+  });
 });
 
 describe("chat slice — request body + edge SSE", () => {

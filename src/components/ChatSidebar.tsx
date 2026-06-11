@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { I } from "../icons";
 import { useAppStore, useCurrentChat } from "../state";
 import { useShallow } from "zustand/react/shallow";
-import { defaultSessionConfig, type ChatSessionConfig, type ToolPermission } from "../lib/api";
+import { api, defaultSessionConfig, type ChatSessionConfig, type ToolPermission } from "../lib/api";
+import { WORKSPACE_SERVER_ID, WORKSPACE_SERVER_NAME, WORKSPACE_TOOLS } from "../lib/workspaceTools";
 
 function Section({
   title,
@@ -230,6 +231,67 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
         )}
       </Section>
 
+      <Section title="Workspace" icon="Folder">
+        {cfg.workspace_root ? (
+          <>
+            <div
+              className="mono"
+              title={cfg.workspace_root}
+              style={{
+                fontSize: 11.5,
+                color: "var(--text-2)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                direction: "rtl",
+                textAlign: "left",
+              }}
+            >
+              {cfg.workspace_root}
+            </div>
+            <div className="chat-side-row" style={{ marginTop: 6 }}>
+              <button
+                className="btn"
+                onClick={async () => {
+                  const p = await api.pickFolder("Open a project folder");
+                  if (p) update({ workspace_root: p });
+                }}
+              >
+                <I.Folder size={11} /> Change
+              </button>
+              <button
+                className="btn ghost"
+                style={{ color: "var(--red)" }}
+                onClick={() => update({ workspace_root: null })}
+                title="Close the project — the model loses its file tools"
+              >
+                <I.X size={11} /> Close
+              </button>
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6 }}>
+              The model can list, search and read files here without asking; edits and writes follow
+              the tool permissions below.
+            </div>
+          </>
+        ) : (
+          <>
+            <button
+              className="btn primary"
+              onClick={async () => {
+                const p = await api.pickFolder("Open a project folder");
+                if (p) update({ workspace_root: p });
+              }}
+            >
+              <I.Folder size={11} /> Open project folder…
+            </button>
+            <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6 }}>
+              Give the model file tools (read, search, edit, write) rooted at a folder of your
+              choice — like a coding assistant for that project.
+            </div>
+          </>
+        )}
+      </Section>
+
       <Section title="System prompt" icon="Brain">
         <textarea
           className="input"
@@ -311,6 +373,54 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
         >
           Per-tool overrides
         </div>
+        {cfg.workspace_root &&
+          WORKSPACE_TOOLS.map((t) => {
+            const key = `${WORKSPACE_SERVER_ID}:${t.name}`;
+            const policy = cfg.tool_permissions.per_tool[key];
+            // Read-only workspace tools are auto-allowed unless overridden or
+            // the session default is deny — show that effective value.
+            const effective =
+              t.readOnly && cfg.tool_permissions.default !== "deny"
+                ? "allow"
+                : cfg.tool_permissions.default;
+            return (
+              <div key={key} className="chat-side-tool-perm">
+                <div style={{ overflow: "hidden", flex: 1 }}>
+                  <div
+                    className="mono"
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--text-2)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={t.name}
+                  >
+                    {t.name}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "var(--subtle)" }}>
+                    {WORKSPACE_SERVER_NAME}
+                  </div>
+                </div>
+                <ToolPermSelect
+                  value={policy ?? effective}
+                  onChange={(v) => setToolPolicy(key, v)}
+                  compact
+                />
+                {policy && (
+                  <button
+                    className="iconbtn"
+                    title="Clear override (use default)"
+                    onClick={() => clearToolPolicy(key)}
+                    style={{ width: 18, height: 18 }}
+                  >
+                    <I.X size={10} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
         {cfg.mcp_server_ids.flatMap((sid) => {
           const tools = mcpTools[sid] ?? [];
           const server = mcpServers.find((s) => s.id === sid);
