@@ -48,8 +48,7 @@ export function ModelsScreen() {
     clearModelsRecent,
     loadModelPath,
     setFlag,
-    server,
-    stopServer,
+    reloadServer,
   } = useAppStore(
     useShallow((s) => ({
       flags: s.flags,
@@ -63,8 +62,7 @@ export function ModelsScreen() {
       clearModelsRecent: s.clearModelsRecent,
       loadModelPath: s.loadModelPath,
       setFlag: s.setFlag,
-      server: s.server,
-      stopServer: s.stopServer,
+      reloadServer: s.reloadServer,
     })),
   );
 
@@ -121,18 +119,12 @@ export function ModelsScreen() {
     });
   };
 
-  const onLoad = async (p: string, opts: { altRestart?: boolean } = {}) => {
+  const onLoad = async (p: string) => {
     loadModelPath(p);
-    if (opts.altRestart && server.running) {
-      // Quick swap: stop + restart with current flags.
-      // Re-using the server's existing flags rather than building a new argv
-      // from the page-level flags map. The user can hit Reload on Configure
-      // for a full restart if they want different args.
-      await stopServer();
-      // Note: we deliberately don't auto-start here — startServer needs the
-      // assembled argv, which lives in Configure's args builder. The user
-      // can press Start on Configure.
-    }
+    // Switch to this model and restart the server so it's live immediately:
+    // stops a running server first, then starts with the new model (or just
+    // starts it if it was stopped), using the current flags + agency.
+    await reloadServer();
   };
 
   return (
@@ -385,9 +377,9 @@ export function ModelsScreen() {
                       className="btn"
                       style={{ padding: "3px 9px" }}
                       onClick={(e) => {
-                        // Alt-click → quick load, bypassing expansion
+                        // Alt-click → quick load + restart, bypassing expansion
                         if (e.altKey) {
-                          onLoad(r.quant.path, { altRestart: true }).catch(() => {});
+                          onLoad(r.quant.path).catch(() => {});
                         } else {
                           onToggle(key, r.quant.path);
                         }
@@ -395,7 +387,7 @@ export function ModelsScreen() {
                       title={
                         isLoaded
                           ? "Already loaded"
-                          : "Click to configure & load · Alt-click to load directly"
+                          : "Click to configure · Alt-click to load & restart server"
                       }
                       disabled={isLoaded}
                     >
@@ -600,8 +592,8 @@ export function ExpandedRow({
         <div className="row-ctrl" style={{ justifyContent: "space-between" }}>
           <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
             <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-            Load sets <span className="mono">--model</span> and applies the params above. Hit{" "}
-            <strong>Start</strong> on Configure to actually launch the server.
+            Load sets <span className="mono">--model</span>, applies the params above, and restarts
+            the server so the model is live.
           </span>
           <div className="actions">
             <button className="btn primary" onClick={onLoad} disabled={isLoaded}>

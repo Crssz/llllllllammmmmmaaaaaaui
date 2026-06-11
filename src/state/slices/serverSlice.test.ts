@@ -44,6 +44,39 @@ describe("server slice", () => {
     expect(useAppStore.getState().server).toEqual({ running: false, ready: false, info: null });
   });
 
+  it("reloadServer restarts a running server with the current model + flags", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/new.gguf");
+    s.setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "x" },
+    });
+
+    await useAppStore.getState().reloadServer();
+
+    expect(api.stopServer).toHaveBeenCalledTimes(1);
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    const [, args] = vi.mocked(api.startServer).mock.calls[0];
+    expect(args).toContain("--model");
+    expect(args).toContain("/models/new.gguf");
+    expect(useAppStore.getState().server.running).toBe(true);
+  });
+
+  it("reloadServer starts a stopped server without calling stop", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/m.gguf");
+    // server is STOPPED by default after freshStore()
+
+    await useAppStore.getState().reloadServer();
+
+    expect(api.stopServer).not.toHaveBeenCalled();
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().server.running).toBe(true);
+  });
+
   it("setServer replaces server state", () => {
     useAppStore.getState().setServer({
       running: true,

@@ -33,6 +33,7 @@ export function ModelLibraryOverlay({
     loadModelPath,
     server,
     stopServer,
+    reloadServer,
     modelInfo,
   } = useAppStore(
     useShallow((s) => ({
@@ -46,6 +47,7 @@ export function ModelLibraryOverlay({
       loadModelPath: s.loadModelPath,
       server: s.server,
       stopServer: s.stopServer,
+      reloadServer: s.reloadServer,
       modelInfo: s.modelInfo,
     })),
   );
@@ -132,10 +134,10 @@ export function ModelLibraryOverlay({
   const doLoad = (p: string, andClose = true) => {
     loadModelPath(p);
     if (andClose) onClose();
-    if (server.running) {
-      // Safer default: stop so the next Start picks up the new model.
-      stopServer().catch(() => {});
-    }
+    // Switch to the picked model and restart the server so it's live
+    // immediately — stops a running server first, then starts with the new
+    // model (or just starts it if it was stopped).
+    reloadServer().catch(() => {});
   };
 
   return (
@@ -422,7 +424,7 @@ export function ModelLibraryOverlay({
                         title={
                           isLoaded
                             ? "Already loaded"
-                            : "Click to configure · Alt-click to load directly"
+                            : "Click to configure · Alt-click to load & restart server"
                         }
                       >
                         {isLoaded ? (
@@ -474,7 +476,9 @@ export function ModelLibraryOverlay({
           }}
         >
           <I.Info size={11} />
-          <span>Alt-click Load to skip the inline config panel.</span>
+          <span>
+            Load switches the model and restarts the server. Alt-click to skip the config panel.
+          </span>
           <span style={{ flex: 1 }} />
           <button
             className="btn"

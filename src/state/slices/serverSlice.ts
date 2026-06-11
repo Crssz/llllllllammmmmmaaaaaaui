@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import { api, type RunningInfo } from "../../lib/api";
+import { buildArgs } from "../../lib/buildArgs";
 import { log } from "../../lib/logger";
 import type { AppStore } from "../store";
 
@@ -11,6 +12,7 @@ export type ServerSlice = {
   setServer: (s: ServerState) => void;
   startServer: (args: string[]) => Promise<void>;
   stopServer: () => Promise<void>;
+  reloadServer: () => Promise<void>;
 };
 
 const STOPPED: ServerState = { running: false, ready: false, info: null };
@@ -54,5 +56,18 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     } finally {
       set({ server: STOPPED });
     }
+  },
+
+  // Restart the server with the current flags + agency so a freshly switched
+  // model takes effect. Stops a running server first, then starts; if it was
+  // already stopped this just starts it. Builds the same argv the Configure
+  // tab does, so callers (the model picker, Models tab) don't have to.
+  reloadServer: async () => {
+    const { flags, agency } = get();
+    const args = buildArgs(flags, agency);
+    if (get().server.running) {
+      await get().stopServer();
+    }
+    await get().startServer(args);
   },
 });
