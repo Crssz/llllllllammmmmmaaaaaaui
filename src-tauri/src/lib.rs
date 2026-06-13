@@ -1,3 +1,4 @@
+mod bench;
 mod build_scan;
 mod chats;
 mod gguf;
@@ -17,6 +18,7 @@ use serde_json::Value as JsonValue;
 use sysinfo::System;
 use tauri::{AppHandle, Manager, State};
 
+use crate::bench::{cancel_bench, load_bench_runs, run_bench, save_bench_runs, BenchState};
 use crate::chats::{load_chats, save_chats};
 use crate::gguf::inspect_gguf;
 use crate::hw::{hw_snapshot, HwState};
@@ -55,25 +57,32 @@ fn add_recent_models_dir(app: AppHandle, dir: String) -> Result<Settings, String
     Ok(settings)
 }
 
+// The MCP commands below are async + spawn_blocking: sync commands run on the
+// main thread, and connect/call block on the child process (up to 60s per
+// request) — inline they freeze the whole window for that long.
+
 #[tauri::command]
-fn mcp_connect(
-    app: AppHandle,
-    reg: State<'_, McpRegistry>,
-    id: String,
-) -> Result<McpStatus, String> {
-    let settings = load_settings(app)?;
-    let cfg = settings
-        .mcp_servers
-        .into_iter()
-        .find(|s| s.id == id)
-        .ok_or_else(|| format!("MCP server {id} not found"))?;
-    reg.connect(&cfg)
+async fn mcp_connect(app: AppHandle, id: String) -> Result<McpStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_settings(app.clone())?;
+        let cfg = settings
+            .mcp_servers
+            .into_iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| format!("MCP server {id} not found"))?;
+        app.state::<McpRegistry>().connect(&cfg)
+    })
+    .await
+    .map_err(|e| format!("mcp_connect task failed: {e}"))?
 }
 
 #[tauri::command]
-fn mcp_disconnect(reg: State<'_, McpRegistry>, id: String) -> Result<(), String> {
-    reg.disconnect(&id);
-    Ok(())
+async fn mcp_disconnect(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<McpRegistry>().disconnect(&id);
+    })
+    .await
+    .map_err(|e| format!("mcp_disconnect task failed: {e}"))
 }
 
 #[tauri::command]
@@ -82,13 +91,17 @@ fn mcp_list_tools(reg: State<'_, McpRegistry>, id: String) -> Result<Vec<McpTool
 }
 
 #[tauri::command]
-fn mcp_call_tool(
-    reg: State<'_, McpRegistry>,
+async fn mcp_call_tool(
+    app: AppHandle,
     id: String,
     name: String,
     arguments: JsonValue,
 ) -> Result<JsonValue, String> {
-    reg.call_tool(&id, &name, arguments)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<McpRegistry>().call_tool(&id, &name, arguments)
+    })
+    .await
+    .map_err(|e| format!("mcp_call_tool task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -134,6 +147,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(ServerState::default())
+        .manage(BenchState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -165,6 +179,10 @@ pub fn run() {
             mcp_list_tools,
             mcp_call_tool,
             mcp_status_all,
+            run_bench,
+            cancel_bench,
+            load_bench_runs,
+            save_bench_runs,
             crate::workspace::workspace_list,
             crate::workspace::workspace_read,
             crate::workspace::workspace_write,
@@ -176,6 +194,12 @@ pub fn run() {
             if let tauri::WindowEvent::Destroyed = event {
                 info!("window destroyed — cleaning up child server");
                 if let Some(state) = window.try_state::<ServerState>() {
+                    let mut child = lock_or_poisoned(&state.child);
+                    if let Some(mut c) = child.take() {
+                        let _ = c.kill();
+                    }
+                }
+                if let Some(state) = window.try_state::<BenchState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
                         let _ = c.kill();

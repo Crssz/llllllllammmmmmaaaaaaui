@@ -128,6 +128,10 @@ export function stubApi() {
     files_scanned: 0,
   });
   vi.spyOn(api, "workspaceFind").mockResolvedValue({ paths: [], truncated: false });
+  vi.spyOn(api, "runBench").mockResolvedValue(1);
+  vi.spyOn(api, "cancelBench").mockResolvedValue(undefined);
+  vi.spyOn(api, "loadBenchRuns").mockResolvedValue([]);
+  vi.spyOn(api, "saveBenchRuns").mockResolvedValue(undefined);
 }
 
 // Drain microtasks so fire-and-forget persistence promises settle before the

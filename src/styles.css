@@ -2868,3 +2868,206 @@ button {
   border-radius: 4px;
   flex-shrink: 0;
 }
+
+/* ───────── Benchmark (llama-bench) ───────── */
+.bench-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px 16px;
+}
+.bench-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.bench-field > label {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.bench-field .hint {
+  font-size: 10px;
+  color: var(--subtle);
+  font-style: italic;
+}
+.bench-field .input,
+.bench-field .select {
+  width: 100%;
+  min-width: 0;
+}
+/* The model row spans the whole grid and pairs an input with a Browse button. */
+.bench-model {
+  grid-column: 1 / -1;
+}
+.bench-model-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.bench-model-row .input {
+  flex: 1;
+}
+
+/* Results table */
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.bench-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.bench-table th.num,
+.bench-table td.num {
+  text-align: right;
+}
+.bench-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.bench-table tr:last-child td {
+  border-bottom: 0;
+}
+.bench-table tr.best td {
+  color: var(--text);
+}
+.bench-table .ts {
+  font-size: 13px;
+  color: var(--text);
+}
+.bench-table tr.best .ts {
+  color: var(--green);
+  font-weight: 600;
+}
+.bench-table .err {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Horizontal tok/s comparison bars */
+.bench-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bench-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.bench-bar .blabel {
+  width: 92px;
+  flex-shrink: 0;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bench-bar .btrack {
+  flex: 1;
+  height: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.bench-bar .bfill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px 0 0 4px;
+  transition: width 0.3s ease;
+}
+.bench-bar.best .bfill {
+  background: var(--green);
+}
+.bench-bar .bval {
+  width: 78px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--text);
+}
+
+/* Live progress log tail */
+.bench-progress {
+  max-height: 168px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* History list */
+.bench-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bench-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.bench-run:hover {
+  background: var(--surface);
+}
+.bench-run.active {
+  background: var(--surface);
+  border-color: var(--accent-line);
+}
+.bench-run .rname {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bench-run .rname .rtitle {
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bench-run .rname .rsub {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bench-run .rdel {
+  opacity: 0;
+  flex-shrink: 0;
+}
+.bench-run:hover .rdel {
+  opacity: 1;
+}

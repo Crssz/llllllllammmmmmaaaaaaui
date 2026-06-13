@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { api } from "../lib/api";
+import { api, type BenchRow } from "../lib/api";
 import { log } from "../lib/logger";
 import { useAppStore } from "./store";
 import type { FlagValues } from "./types";
@@ -66,6 +66,7 @@ export function useAppEffects(initialFlags: FlagValues) {
           const msg = e instanceof Error ? e.message : String(e);
           log.warn("init", "chats file not loaded (likely first run)", { error: msg });
         }
+        useAppStore.getState().benchLoadRuns();
         const st = await api.serverStatus();
         useAppStore.getState().setServer(st);
         log.info(
@@ -178,6 +179,42 @@ export function useAppEffects(initialFlags: FlagValues) {
     return () => {
       cancelled = true;
       if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Subscribe to llama-bench progress (stderr) + terminal result events.
+  useEffect(() => {
+    let cancelled = false;
+    const unlisteners: UnlistenFn[] = [];
+    const track = (p: Promise<UnlistenFn>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlisteners.push(u);
+        })
+        .catch((e) =>
+          log.warn("bench", "failed to subscribe to bench events", { error: String(e) }),
+        );
+
+    track(
+      listen<{ generation: number; line: string }>("bench-progress", (event) => {
+        useAppStore.getState().benchOnProgress(event.payload.line);
+      }),
+    );
+    track(
+      listen<{
+        generation: number;
+        ok: boolean;
+        cancelled: boolean;
+        error: string | null;
+        rows: BenchRow[];
+      }>("bench-done", (event) => {
+        useAppStore.getState().benchOnDone(event.payload);
+      }),
+    );
+    return () => {
+      cancelled = true;
+      for (const u of unlisteners) u();
     };
   }, []);
 

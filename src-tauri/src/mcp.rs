@@ -12,12 +12,12 @@
 // `tools/call`. Notifications from the server are read off the stdio pipe so
 // they don't wedge the request lane, but we don't surface them yet.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    mpsc::{channel, Receiver, Sender},
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc::{channel, Receiver, RecvTimeoutError, Sender},
     Arc, Mutex,
 };
 use std::thread;
@@ -68,6 +68,71 @@ pub struct McpStatus {
     pub server_name: Option<String>,
 }
 
+/// On Windows, `Command::new("foo")` goes through `CreateProcessW`, which only
+/// appends `.exe` when searching PATH — npm-style `foo.cmd` shims that work in
+/// a shell are never found and spawn fails with "program not found". Resolve
+/// PATH + PATHEXT the way a shell would; returning the extension-qualified
+/// path also lets std route `.cmd`/`.bat` files through cmd.exe safely.
+#[cfg(windows)]
+fn resolve_program(program: &str) -> std::ffi::OsString {
+    use std::path::{Path, PathBuf};
+
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let exts: Vec<&str> = pathext.split(';').filter(|e| !e.is_empty()).collect();
+
+    // Try the path as given, then with each PATHEXT extension appended.
+    let try_exts = |stem: &Path| -> Option<PathBuf> {
+        if stem.is_file() {
+            return Some(stem.to_path_buf());
+        }
+        exts.iter()
+            .map(|ext| {
+                let mut s = stem.as_os_str().to_os_string();
+                s.push(ext);
+                PathBuf::from(s)
+            })
+            .find(|candidate| candidate.is_file())
+    };
+
+    let resolved = if program.contains(['\\', '/']) {
+        try_exts(Path::new(program))
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .find_map(|dir| try_exts(&dir.join(program)))
+    };
+    resolved.map_or_else(|| program.into(), PathBuf::into_os_string)
+}
+
+#[cfg(not(windows))]
+fn resolve_program(program: &str) -> std::ffi::OsString {
+    program.into()
+}
+
+/// Users paste `serve --mcp` as a single "argument" line; passing that to the
+/// child as one argv entry makes CLIs bail with `unknown command 'serve --mcp'`.
+/// Split each configured arg on whitespace the way a shell would, honoring
+/// double quotes so args with spaces (paths) stay intact.
+fn split_arg_line(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for c in line.chars() {
+        match c {
+            '"' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Active connection handle. Behind a Mutex inside the registry.
 struct McpClient {
     transport: Transport,
@@ -78,6 +143,12 @@ struct McpClient {
     /// Server-advertised name from `initialize` response.
     server_name: Mutex<Option<String>>,
     last_error: Mutex<Option<String>>,
+    /// False once the stdio child's stdout closes — requests fail immediately
+    /// instead of riding out the full response timeout. Always true for http.
+    alive: AtomicBool,
+    /// Last few stderr lines from the stdio child, surfaced in errors so a
+    /// dying server explains itself (e.g. `unknown command 'serve --mcp'`).
+    stderr_tail: Mutex<VecDeque<String>>,
 }
 
 enum Transport {
@@ -109,8 +180,9 @@ impl McpClient {
             .as_ref()
             .ok_or_else(|| "stdio MCP server is missing `command`".to_string())?;
 
-        let mut cmd = Command::new(command);
-        cmd.args(&cfg.args)
+        let args: Vec<String> = cfg.args.iter().flat_map(|a| split_arg_line(a)).collect();
+        let mut cmd = Command::new(resolve_program(command));
+        cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -150,6 +222,8 @@ impl McpClient {
             tools: Mutex::new(Vec::new()),
             server_name: Mutex::new(None),
             last_error: Mutex::new(None),
+            alive: AtomicBool::new(true),
+            stderr_tail: Mutex::new(VecDeque::new()),
         });
 
         // Reader thread: parse newline-delimited JSON-RPC frames from stdout
@@ -190,23 +264,43 @@ impl McpClient {
                         debug!("mcp[{server_id}] unmatched frame: {line}");
                     }
                 }
-                debug!("mcp[{server_id}] stdout pump exited");
+                warn!("mcp[{server_id}] stdout closed — server process gone");
+                // Wake every in-flight request now; dropping the senders makes
+                // their receivers see Disconnected instead of a 60s timeout.
+                client.alive.store(false, Ordering::Release);
+                if let Ok(mut p) = client.pending.lock() {
+                    p.clear();
+                }
             });
         }
         if let Some(stderr) = stderr {
             let server_id = cfg.id.clone();
+            let client = client.clone();
             thread::spawn(move || {
                 let buf = BufReader::new(stderr);
                 for line in buf.lines().map_while(Result::ok) {
                     if !line.trim().is_empty() {
                         debug!("mcp[{server_id}] stderr: {line}");
+                        if let Ok(mut tail) = client.stderr_tail.lock() {
+                            if tail.len() >= 5 {
+                                tail.pop_front();
+                            }
+                            tail.push_back(line);
+                        }
                     }
                 }
             });
         }
 
-        client.initialize()?;
-        client.reload_tools()?;
+        if let Err(e) = client
+            .initialize()
+            .and_then(|()| client.reload_tools().map(|_| ()))
+        {
+            // Don't leak the child: a server that spoke garbage (or is hung)
+            // would otherwise stay alive with no handle left to stop it.
+            client.shutdown();
+            return Err(e);
+        }
         Ok(client)
     }
 
@@ -225,6 +319,8 @@ impl McpClient {
             tools: Mutex::new(Vec::new()),
             server_name: Mutex::new(None),
             last_error: Mutex::new(None),
+            alive: AtomicBool::new(true),
+            stderr_tail: Mutex::new(VecDeque::new()),
         });
         client.initialize()?;
         client.reload_tools()?;
@@ -302,18 +398,29 @@ impl McpClient {
         });
         match &self.transport {
             Transport::Stdio { stdin, .. } => {
+                if !self.alive.load(Ordering::Acquire) {
+                    return Err(format!(
+                        "{method}: server process is not running{}",
+                        self.stderr_context()
+                    ));
+                }
                 let (tx, rx) = channel::<Value>();
                 self.pending.lock().unwrap().insert(id, tx);
                 let serialized =
                     serde_json::to_string(&body).map_err(|e| format!("encode JSON-RPC: {e}"))?;
-                {
+                let written = {
                     let mut w = stdin.lock().unwrap();
                     w.write_all(serialized.as_bytes())
                         .and_then(|_| w.write_all(b"\n"))
-                        .map_err(|e| format!("write stdin: {e}"))?;
-                    w.flush().map_err(|e| format!("flush stdin: {e}"))?;
+                        .and_then(|_| w.flush())
+                };
+                if let Err(e) = written {
+                    if let Ok(mut p) = self.pending.lock() {
+                        p.remove(&id);
+                    }
+                    return Err(format!("write stdin: {e}{}", self.stderr_context()));
                 }
-                wait_for_response(method, &rx, &self.pending, id)
+                self.wait_stdio_response(method, &rx, id)
             }
             Transport::Http { url, headers } => {
                 let req = ureq::post(url)
@@ -373,6 +480,46 @@ impl McpClient {
         Ok(())
     }
 
+    /// Block until the demux thread routes the response, the transport dies,
+    /// or the timeout passes. A dead child fails immediately (the stdout pump
+    /// drops every pending sender) rather than eating the whole timeout.
+    fn wait_stdio_response(
+        &self,
+        method: &str,
+        rx: &Receiver<Value>,
+        id: u64,
+    ) -> Result<Value, String> {
+        match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(resp) => extract_result(method, resp),
+            Err(RecvTimeoutError::Disconnected) => {
+                // Give the stderr pump a beat to drain the child's last words
+                // so the error can say *why* it died.
+                thread::sleep(Duration::from_millis(150));
+                Err(format!(
+                    "{method}: server process exited before responding{}",
+                    self.stderr_context()
+                ))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // Drop the pending sender if we time out so a late response
+                // doesn't leak the slot forever.
+                if let Ok(mut p) = self.pending.lock() {
+                    p.remove(&id);
+                }
+                Err(format!("{method}: timed out after 60s"))
+            }
+        }
+    }
+
+    /// Recent child stderr formatted for appending to an error message.
+    fn stderr_context(&self) -> String {
+        let tail = match self.stderr_tail.lock() {
+            Ok(t) if !t.is_empty() => t.iter().cloned().collect::<Vec<_>>().join(" | "),
+            _ => return String::new(),
+        };
+        format!(" — stderr: {tail}")
+    }
+
     fn shutdown(&self) {
         if let Transport::Stdio { child, .. } = &self.transport {
             if let Ok(mut c) = child.lock() {
@@ -381,23 +528,6 @@ impl McpClient {
             }
         }
     }
-}
-
-fn wait_for_response(
-    method: &str,
-    rx: &Receiver<Value>,
-    pending: &Mutex<HashMap<u64, Sender<Value>>>,
-    id: u64,
-) -> Result<Value, String> {
-    let resp = rx.recv_timeout(Duration::from_secs(60)).map_err(|_| {
-        // Drop the pending sender if we time out so a late response doesn't
-        // leak the slot forever.
-        if let Ok(mut p) = pending.lock() {
-            p.remove(&id);
-        }
-        format!("{method}: timed out after 60s")
-    })?;
-    extract_result(method, resp)
 }
 
 fn extract_result(method: &str, resp: Value) -> Result<Value, String> {
@@ -553,6 +683,75 @@ impl McpRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_program_finds_cmd_shim() {
+        let dir = std::env::temp_dir().join("lm-st-resolve-program-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("fake-tool.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+
+        // A path without extension resolves to the .cmd next to it. The
+        // extension comes back in PATHEXT's casing (usually ".CMD"), which
+        // both NTFS and std's batch-file detection treat case-insensitively.
+        let resolved = resolve_program(dir.join("fake-tool").to_str().unwrap());
+        assert_eq!(
+            resolved.to_string_lossy().to_lowercase(),
+            shim.to_string_lossy().to_lowercase()
+        );
+
+        // Unresolvable names pass through unchanged so spawn reports them.
+        assert_eq!(
+            resolve_program("definitely-not-a-real-program"),
+            std::ffi::OsString::from("definitely-not-a-real-program")
+        );
+    }
+
+    #[test]
+    fn split_arg_line_splits_on_whitespace() {
+        assert_eq!(split_arg_line("serve --mcp"), vec!["serve", "--mcp"]);
+        assert_eq!(split_arg_line("  serve   --mcp  "), vec!["serve", "--mcp"]);
+        assert_eq!(split_arg_line("--mcp"), vec!["--mcp"]);
+        assert!(split_arg_line("   ").is_empty());
+    }
+
+    #[test]
+    fn split_arg_line_quotes_keep_spaces() {
+        assert_eq!(
+            split_arg_line(r#"--dir "C:\Program Files\x" -v"#),
+            vec!["--dir", r"C:\Program Files\x", "-v"]
+        );
+    }
+
+    /// A child that exits without ever speaking MCP must fail the connect
+    /// quickly with a process-exited error — not block for the full 60s
+    /// response timeout (which, from a sync command, froze the whole UI).
+    #[cfg(windows)]
+    #[test]
+    fn connect_fails_fast_when_child_exits() {
+        let cfg = McpServerConfig {
+            id: "dead".into(),
+            name: "dead".into(),
+            transport: "stdio".into(),
+            command: Some("cmd".into()),
+            args: vec!["/c exit 1".into()],
+            env: HashMap::new(),
+            cwd: None,
+            url: None,
+            headers: HashMap::new(),
+            enabled: true,
+            autostart: false,
+        };
+        let t0 = std::time::Instant::now();
+        let err = McpClient::connect(&cfg).err().expect("connect must fail");
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            t0.elapsed()
+        );
+        assert!(err.contains("exited"), "unexpected error: {err}");
+    }
 
     #[test]
     fn parse_sse_extracts_matching_frame() {

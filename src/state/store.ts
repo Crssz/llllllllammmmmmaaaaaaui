@@ -9,6 +9,7 @@ import { createChatSlice, type ChatSlice } from "./slices/chatSlice";
 import { createMcpSlice, type McpSlice } from "./slices/mcpSlice";
 import { createProfilesSlice, type ProfilesSlice } from "./slices/profilesSlice";
 import { createTranscribeSlice, type TranscribeSlice } from "./slices/transcribeSlice";
+import { createBenchSlice, type BenchSlice } from "./slices/benchSlice";
 
 export type AppStore = SettingsSlice &
   BuildSlice &
@@ -19,7 +20,8 @@ export type AppStore = SettingsSlice &
   ChatSlice &
   McpSlice &
   ProfilesSlice &
-  TranscribeSlice;
+  TranscribeSlice &
+  BenchSlice;
 
 export const useAppStore = create<AppStore>()((...a) => ({
   ...createSettingsSlice(...a),
@@ -32,6 +34,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createMcpSlice(...a),
   ...createProfilesSlice(...a),
   ...createTranscribeSlice(...a),
+  ...createBenchSlice(...a),
 }));
 
 // Snapshot of the initial state — used by tests to reset the store between

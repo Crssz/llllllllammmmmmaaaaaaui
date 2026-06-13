@@ -229,6 +229,71 @@ export type GgufInfo = {
   thinking_style: string | null;
 };
 
+// ── Benchmark (mirror Rust bench.rs) ────────────────────────────────────────
+
+/** One result row from `llama-bench -o json`. Field names match the JSON
+ *  exactly: `avg_ts`/`stddev_ts` are tok/s, `flash_attn` is an int (0/1/2),
+ *  cache types are `type_k`/`type_v`, and pp/tg is derived from n_prompt/n_gen. */
+export type BenchRow = {
+  model_filename: string;
+  model_type: string;
+  model_size: number;
+  model_n_params: number;
+  build_commit: string;
+  test_time: string;
+  n_prompt: number;
+  n_gen: number;
+  n_depth: number;
+  n_gpu_layers: number;
+  n_batch: number;
+  n_ubatch: number;
+  n_threads: number;
+  flash_attn: number;
+  type_k: string;
+  type_v: string;
+  avg_ns: number;
+  stddev_ns: number;
+  avg_ts: number;
+  stddev_ts: number;
+};
+
+/** A persisted benchmark run (history entry). Built/labelled on the frontend. */
+export type BenchRun = {
+  id: string;
+  created_at: number;
+  model_path: string;
+  label: string;
+  rows: BenchRow[];
+  note?: string | null;
+};
+
+/** Benchmark parameters. Each matrix field is a comma-joined string (e.g.
+ *  "512,1024") that llama-bench expands into a benchmark matrix. */
+export type BenchRequest = {
+  model: string;
+  n_prompt: string;
+  n_gen: string;
+  n_gpu_layers: string;
+  threads: string;
+  batch: string;
+  ubatch: string;
+  flash_attn: string;
+  reps: number;
+  extra?: string[];
+};
+
+/** Per-line stderr progress emitted while a benchmark runs. */
+export type BenchProgressEvent = { generation: number; line: string };
+
+/** Terminal event for a benchmark run (success, failure, or cancellation). */
+export type BenchDoneEvent = {
+  generation: number;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  rows: BenchRow[];
+};
+
 export type GpuInfo = {
   name: string;
   vram_total_gb: number;
@@ -317,6 +382,13 @@ export const api = {
 
   loadChats: () => invoke<ChatSession[]>("load_chats"),
   saveChats: (chats: ChatSession[]) => invoke<void>("save_chats", { chats }),
+
+  // Spawn llama-bench; resolves with the run's generation id. Progress arrives
+  // via `bench-progress` events and results via a `bench-done` event.
+  runBench: (buildDir: string, req: BenchRequest) => invoke<number>("run_bench", { buildDir, req }),
+  cancelBench: () => invoke<void>("cancel_bench"),
+  loadBenchRuns: () => invoke<BenchRun[]>("load_bench_runs"),
+  saveBenchRuns: (runs: BenchRun[]) => invoke<void>("save_bench_runs", { runs }),
 
   mcpConnect: (id: string) => invoke<McpStatus>("mcp_connect", { id }),
   mcpDisconnect: (id: string) => invoke<void>("mcp_disconnect", { id }),

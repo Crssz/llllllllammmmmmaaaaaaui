@@ -189,7 +189,9 @@ function ServerEditor({
             />
           </div>
           <div className="mcp-field">
-            <label htmlFor={fid("args")}>Arguments (one per line)</label>
+            <label htmlFor={fid("args")}>
+              Arguments (newline or space separated; quote args containing spaces)
+            </label>
             <textarea
               id={fid("args")}
               className="input mono"
