@@ -1,8 +1,30 @@
 import { useState } from "react";
 import { I } from "../icons";
 import { api, type BenchRequest, type BenchRow } from "../lib/api";
-import { useAppStore } from "../state";
+import { useAppStore, type FlagValues } from "../state";
 import { useShallow } from "zustand/react/shallow";
+
+// llama-bench shares a subset of llama-server's flags, so the benchmark can
+// inherit them from the live Configure config and measure the model the way the
+// user actually serves it. The KV-cache types matter most here: llama-bench
+// defaults them to f16, so without inheriting -ctk/-ctv the benchmark would
+// silently report throughput for a different cache than the server runs.
+// Bench-only knobs (-p/-n/-r/label) have no server equivalent and are left out.
+// Used both to seed the form on mount and by the "From config" button.
+function benchFromConfig(f: FlagValues) {
+  const str = (v: string | number | boolean | undefined, fallback = "") =>
+    v === undefined || v === null || v === "" ? fallback : String(v);
+  return {
+    model: str(f.model),
+    ngl: str(f.ngl, "999"),
+    threads: str(f.threads),
+    batch: str(f.batch, "2048"),
+    ubatch: str(f.ubatch),
+    ctk: str(f.ctk),
+    ctv: str(f.ctv),
+    fa: f.fa ? "on" : "auto",
+  };
+}
 
 function basename(p: string): string {
   if (!p) return "";
@@ -163,26 +185,19 @@ export function BenchScreen() {
   );
 
   // Seed the form from the current server config so the benchmark reflects how
-  // the user actually runs the model. These are local — running a benchmark
-  // never mutates the Configure flags.
-  const [model, setModel] = useState<string>(
-    () => (useAppStore.getState().flags.model as string) || "",
-  );
+  // the user actually runs the model. These are local copies — running a
+  // benchmark never mutates the Configure flags.
+  const [seed] = useState(() => benchFromConfig(useAppStore.getState().flags));
+  const [model, setModel] = useState(seed.model);
   const [nPrompt, setNPrompt] = useState("512");
   const [nGen, setNGen] = useState("128");
-  const [ngl, setNgl] = useState<string>(() => {
-    const v = useAppStore.getState().flags.ngl;
-    return v === undefined || v === null || v === "" ? "999" : String(v);
-  });
-  const [threads, setThreads] = useState<string>(() => {
-    const v = useAppStore.getState().flags.threads;
-    return v === undefined || v === null ? "" : String(v);
-  });
-  const [batch, setBatch] = useState("2048");
-  const [ubatch, setUbatch] = useState("");
-  const [fa, setFa] = useState<string>(() =>
-    (useAppStore.getState().flags.fa as boolean) ? "on" : "auto",
-  );
+  const [ngl, setNgl] = useState(seed.ngl);
+  const [threads, setThreads] = useState(seed.threads);
+  const [batch, setBatch] = useState(seed.batch);
+  const [ubatch, setUbatch] = useState(seed.ubatch);
+  const [ctk, setCtk] = useState(seed.ctk);
+  const [ctv, setCtv] = useState(seed.ctv);
+  const [fa, setFa] = useState(seed.fa);
   const [reps, setReps] = useState("3");
   const [label, setLabel] = useState("");
 
@@ -199,6 +214,8 @@ export function BenchScreen() {
       threads,
       batch,
       ubatch,
+      cache_type_k: ctk,
+      cache_type_v: ctv,
       flash_attn: fa,
       reps: Number(reps) || 0,
       extra: [],
@@ -215,12 +232,15 @@ export function BenchScreen() {
   };
 
   const syncFromConfig = () => {
-    const f = useAppStore.getState().flags;
-    if (f.model) setModel(f.model as string);
-    if (f.ngl !== undefined) setNgl(String(f.ngl));
-    if (f.threads !== undefined) setThreads(String(f.threads));
-    if (f.batch !== undefined) setBatch(String(f.batch));
-    setFa((f.fa as boolean) ? "on" : "auto");
+    const c = benchFromConfig(useAppStore.getState().flags);
+    if (c.model) setModel(c.model); // keep a hand-picked model if config has none
+    setNgl(c.ngl);
+    setThreads(c.threads);
+    setBatch(c.batch);
+    setUbatch(c.ubatch);
+    setCtk(c.ctk);
+    setCtv(c.ctv);
+    setFa(c.fa);
   };
 
   const viewingRun = benchViewingId ? benchRuns.find((r) => r.id === benchViewingId) : null;
@@ -290,7 +310,7 @@ export function BenchScreen() {
               <button
                 className="btn ghost"
                 onClick={syncFromConfig}
-                title="Copy model + ngl/threads/batch/fa from the Configure tab"
+                title="Copy model, GPU layers, threads, batch, micro-batch, KV-cache types & flash-attn from the Configure tab"
               >
                 <I.Refresh size={11} /> From config
               </button>
@@ -353,6 +373,8 @@ export function BenchScreen() {
                 onChange={setUbatch}
                 placeholder="512"
               />
+              <Field label="K cache" hint="-ctk" value={ctk} onChange={setCtk} placeholder="f16" />
+              <Field label="V cache" hint="-ctv" value={ctv} onChange={setCtv} placeholder="f16" />
               <div className="bench-field">
                 <label>
                   <span>Flash attn</span>

@@ -1,6 +1,7 @@
 mod bench;
 mod build_scan;
 mod chats;
+mod engines;
 mod gguf;
 mod hw;
 mod mcp;
@@ -20,6 +21,10 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::bench::{cancel_bench, load_bench_runs, run_bench, save_bench_runs, BenchState};
 use crate::chats::{load_chats, save_chats};
+use crate::engines::{
+    cancel_engine_download, delete_engine, download_engine, list_engine_releases,
+    list_installed_engines, EngineState,
+};
 use crate::gguf::inspect_gguf;
 use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
@@ -148,6 +153,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(ServerState::default())
         .manage(BenchState::default())
+        .manage(EngineState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -183,6 +189,11 @@ pub fn run() {
             cancel_bench,
             load_bench_runs,
             save_bench_runs,
+            list_engine_releases,
+            list_installed_engines,
+            download_engine,
+            cancel_engine_download,
+            delete_engine,
             crate::workspace::workspace_list,
             crate::workspace::workspace_read,
             crate::workspace::workspace_write,

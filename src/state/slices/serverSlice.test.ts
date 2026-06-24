@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { api } from "../../lib/api";
+import { buildArgs } from "../../lib/buildArgs";
 import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
 
 describe("server slice", () => {
@@ -75,6 +76,64 @@ describe("server slice", () => {
     expect(api.stopServer).not.toHaveBeenCalled();
     expect(api.startServer).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().server.running).toBe(true);
+  });
+
+  it("reloadIfStale reloads when the config changed since the model was loaded", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/old.gguf");
+    // Launch records loadedArgs from the current flags.
+    await s.startServer(buildArgs(useAppStore.getState().flags));
+    // Backend now reports the reloaded model as ready so the post-reload wait
+    // resolves on its first poll.
+    vi.spyOn(api, "serverStatus").mockResolvedValue({
+      running: true,
+      ready: true,
+      info: { pid: 2, port: 8080, started_at: 0, binary: "x" },
+    });
+    // Change a flag → the running server is now serving a stale config.
+    s.setFlag("model", "/models/new.gguf");
+
+    const ok = await useAppStore.getState().reloadIfStale();
+
+    expect(ok).toBe(true);
+    expect(api.stopServer).toHaveBeenCalledTimes(1);
+    // Two starts: the initial launch + the reload with the latest flags.
+    expect(api.startServer).toHaveBeenCalledTimes(2);
+    const lastArgs = vi.mocked(api.startServer).mock.calls.at(-1)![1];
+    expect(lastArgs).toContain("/models/new.gguf");
+  });
+
+  it("reloadIfStale is a no-op when the config is unchanged", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/m.gguf");
+    await s.startServer(buildArgs(useAppStore.getState().flags));
+
+    const ok = await useAppStore.getState().reloadIfStale();
+
+    expect(ok).toBe(true);
+    expect(api.stopServer).not.toHaveBeenCalled();
+    expect(api.startServer).toHaveBeenCalledTimes(1); // just the initial launch
+  });
+
+  it("reloadIfStale leaves an adopted server (unknown launch args) alone", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    // Server adopted from a prior app run: running, but we never launched it,
+    // so loadedArgs is null and we can't prove it's stale.
+    s.setServer({
+      running: true,
+      ready: true,
+      info: { pid: 9, port: 8080, started_at: 0, binary: "x" },
+    });
+    s.setFlag("model", "/models/whatever.gguf");
+
+    const ok = await useAppStore.getState().reloadIfStale();
+
+    expect(ok).toBe(true);
+    expect(api.stopServer).not.toHaveBeenCalled();
+    expect(api.startServer).not.toHaveBeenCalled();
   });
 
   it("setServer replaces server state", () => {

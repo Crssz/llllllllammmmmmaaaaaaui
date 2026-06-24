@@ -22,6 +22,12 @@ import {
   isWorkspaceReadOnlyTool,
   workspaceSystemNote,
 } from "../../lib/workspaceTools";
+import {
+  ASK_SERVER_ID,
+  ASK_SERVER_NAME,
+  ASK_TOOLS,
+  parseAskUserArgs,
+} from "../../lib/interactionTools";
 import { persistChats } from "../persist";
 import type { AppStore } from "../store";
 
@@ -366,7 +372,20 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
   };
 
   const streamReply = async (session: ChatSession, baseMessages: StoredChatMessage[]) => {
-    const { server, mcpStatuses, mcpTools, settings, requestApproval } = get();
+    // Reconcile the server with the current config FIRST: if the Configure
+    // flags changed since the model was loaded, this restarts llama-server with
+    // the latest flags and waits for the reload, so the turn runs on the
+    // current config instead of the previously-loaded one. No-op when already
+    // current; the guards below still handle a not-running / not-ready server.
+    const serverFresh = await get().reloadIfStale();
+    if (!serverFresh) {
+      set({
+        chatError:
+          "Server didn't come back after applying the new config — check the Configure tab.",
+      });
+      return;
+    }
+    const { server, mcpStatuses, mcpTools, settings, requestApproval, requestUserChoice } = get();
     if (!server.running || !server.info) {
       set({ chatError: "Start llama-server on the Configure tab first." });
       return;
@@ -426,6 +445,16 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         });
         toolIndex.set(exposed, { serverId: WORKSPACE_SERVER_ID, toolName: t.name });
       }
+    }
+    // The built-in ask_user tool is always offered so the model can ask the
+    // user a multiple-choice question instead of guessing.
+    for (const t of ASK_TOOLS) {
+      const exposed = `${ASK_SERVER_ID}__${t.name}`;
+      tools.push({
+        type: "function",
+        function: { name: exposed, description: t.description, parameters: t.parameters },
+      });
+      toolIndex.set(exposed, { serverId: ASK_SERVER_ID, toolName: t.name });
     }
 
     const placeholder: StoredChatMessage = { role: "assistant", content: "", time: Date.now() };
@@ -511,20 +540,27 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           const sid = mapped.serverId;
           const toolName = mapped.toolName;
           const isWorkspace = sid === WORKSPACE_SERVER_ID;
+          const isAsk = sid === ASK_SERVER_ID;
           const serverName = isWorkspace
             ? WORKSPACE_SERVER_NAME
-            : (settings.mcp_servers.find((s) => s.id === sid)?.name ?? sid);
+            : isAsk
+              ? ASK_SERVER_NAME
+              : (settings.mcp_servers.find((s) => s.id === sid)?.name ?? sid);
 
           const perms = cfg?.tool_permissions ?? {
             default: "ask" as ToolPermission,
             per_tool: {},
           };
-          // Read-only workspace tools are auto-allowed so the model can browse
-          // without a prompt per file — unless the user set a per-tool override
-          // or locked the session down with a "deny" default.
+          // ask_user is always allowed — putting a question to the user is the
+          // user-mediated action itself, so it never goes through the approval
+          // gate (even under a "deny" default). Read-only workspace tools are
+          // likewise auto-allowed so the model can browse without a prompt per
+          // file, unless a per-tool override or "deny" default says otherwise.
           const override = perms.per_tool[`${sid}:${toolName}`];
           let policy: ToolPermission;
-          if (override) {
+          if (isAsk) {
+            policy = "allow";
+          } else if (override) {
             policy = override;
           } else if (isWorkspace && isWorkspaceReadOnlyTool(toolName) && perms.default !== "deny") {
             policy = "allow";
@@ -568,7 +604,21 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
 
           try {
             let text: string;
-            if (isWorkspace) {
+            if (isAsk) {
+              // Pause the turn and surface a multiple-choice prompt; the tool
+              // result is whatever the user picks (or a dismissal note).
+              const { question, choices } = parseAskUserArgs(args);
+              log.info("ask", `ask_user`, { choices: choices.length });
+              const answer = await requestUserChoice({
+                id: `${tc.id}_${Date.now()}`,
+                question,
+                choices,
+              });
+              text =
+                answer == null
+                  ? "The user dismissed the question without choosing an option."
+                  : `The user selected: ${answer}`;
+            } else if (isWorkspace) {
               log.info("workspace", `call ${toolName}`, { args });
               text = await callWorkspaceTool(workspaceRoot as string, toolName, args);
             } else {
@@ -587,7 +637,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
             liveMessages.push(okMsg);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            log.error(isWorkspace ? "workspace" : "mcp", `tool call failed`, {
+            log.error(isAsk ? "ask" : isWorkspace ? "workspace" : "mcp", `tool call failed`, {
               server: sid,
               tool: toolName,
               error: msg,

@@ -20,6 +20,63 @@ export type BuildInfo = {
   binaries: DetectedBinary[];
 };
 
+/** One downloadable Windows asset of a llama.cpp release (mirrors Rust `EngineAsset`). */
+export type EngineAsset = {
+  name: string;
+  url: string;
+  size: number;
+  /** "vulkan" | "cpu" | "cuda" | "hip" | "hip-gfxNNNN" | "other". */
+  variant: string;
+  os: string;
+  arch: string;
+  /** Stable install id: `<tag>-<variant>-<arch>`. */
+  id: string;
+};
+
+/** A llama.cpp release with its Windows engine assets (mirrors Rust `EngineRelease`). */
+export type EngineRelease = {
+  tag: string;
+  name: string;
+  published_at: string;
+  assets: EngineAsset[];
+};
+
+/** An engine already downloaded into the library (mirrors Rust `InstalledEngine`). */
+export type InstalledEngine = {
+  id: string;
+  path: string;
+  tag: string | null;
+  variant: string | null;
+  arch: string | null;
+  version: string | null;
+  commit: string | null;
+  backend_badges: string[];
+  size: string;
+  installed_at: number | null;
+  active: boolean;
+};
+
+/** `engine-progress` event payload (mirrors Rust `EngineProgress`). */
+export type EngineProgress = {
+  generation: number;
+  id: string;
+  tag: string;
+  phase: "download" | "extract" | "scan";
+  downloaded: number;
+  total: number;
+};
+
+/** `engine-done` event payload (mirrors Rust `EngineDone`). */
+export type EngineDone = {
+  generation: number;
+  id: string;
+  tag: string;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  installed: InstalledEngine | null;
+};
+
 /** Audio clip attached to a chat message (mirrors Rust `AudioAttachment`). */
 export type AudioAttachment = {
   /** Absolute path to a wav/mp3 file on disk. */
@@ -277,6 +334,8 @@ export type BenchRequest = {
   threads: string;
   batch: string;
   ubatch: string;
+  cache_type_k: string;
+  cache_type_v: string;
   flash_attn: string;
   reps: number;
   extra?: string[];
@@ -389,6 +448,24 @@ export const api = {
   cancelBench: () => invoke<void>("cancel_bench"),
   loadBenchRuns: () => invoke<BenchRun[]>("load_bench_runs"),
   saveBenchRuns: (runs: BenchRun[]) => invoke<void>("save_bench_runs", { runs }),
+
+  // Engine manager. `listEngineReleases` hits the GitHub API (off the main
+  // thread on the backend). `downloadEngine` resolves with the run's generation
+  // id; progress arrives via `engine-progress` and the result via `engine-done`.
+  listEngineReleases: (limit?: number) =>
+    invoke<EngineRelease[]>("list_engine_releases", { limit: limit ?? null }),
+  listInstalledEngines: () => invoke<InstalledEngine[]>("list_installed_engines"),
+  downloadEngine: (asset: EngineAsset, tag: string) =>
+    invoke<number>("download_engine", {
+      tag,
+      variant: asset.variant,
+      arch: asset.arch,
+      assetName: asset.name,
+      assetUrl: asset.url,
+      expectedSize: asset.size,
+    }),
+  cancelEngineDownload: () => invoke<void>("cancel_engine_download"),
+  deleteEngine: (id: string) => invoke<void>("delete_engine", { id }),
 
   mcpConnect: (id: string) => invoke<McpStatus>("mcp_connect", { id }),
   mcpDisconnect: (id: string) => invoke<void>("mcp_disconnect", { id }),

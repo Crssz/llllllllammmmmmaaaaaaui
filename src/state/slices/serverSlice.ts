@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import { api, type RunningInfo } from "../../lib/api";
+import { api, type RunningInfo, type ServerStatus } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
 import { log } from "../../lib/logger";
 import type { AppStore } from "../store";
@@ -9,17 +9,51 @@ export type ServerState = { running: boolean; ready: boolean; info: RunningInfo 
 export type ServerSlice = {
   server: ServerState;
   startError: string | null;
+  /** The exact argv the running server was launched with, or null when we
+   *  didn't launch it (e.g. it was adopted from a previous app run). Lets a
+   *  chat detect a config change and reload the model with the latest flags. */
+  loadedArgs: string[] | null;
   setServer: (s: ServerState) => void;
   startServer: (args: string[]) => Promise<void>;
   stopServer: () => Promise<void>;
   reloadServer: () => Promise<void>;
+  reloadIfStale: () => Promise<boolean>;
 };
 
 const STOPPED: ServerState = { running: false, ready: false, info: null };
 
+function argsEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+// Poll the backend until a freshly-(re)started server reports the model loaded,
+// or we give up. The background status poll updates the store too, but polling
+// here makes a reload-then-send resolve deterministically (and works in tests,
+// where the poller isn't mounted). Returns false if the server stops or never
+// becomes ready within the timeout.
+async function waitForServerReady(get: () => AppStore, timeoutMs: number): Promise<boolean> {
+  const start = performance.now();
+  while (performance.now() - start < timeoutMs) {
+    let st: ServerStatus | null = null;
+    try {
+      st = await api.serverStatus();
+    } catch {
+      st = null;
+    }
+    if (st) {
+      get().setServer(st);
+      if (!st.running) return false;
+      if (st.ready) return true;
+    }
+    await new Promise((r) => setTimeout(r, 350));
+  }
+  return get().server.ready;
+}
+
 export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (set, get) => ({
   server: STOPPED,
   startError: null,
+  loadedArgs: null,
 
   setServer: (s) => set({ server: s }),
 
@@ -35,7 +69,9 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     log.debug("server", `argv: ${args.join(" ")}`);
     try {
       const info = await api.startServer(buildDir, args);
-      set({ server: { running: true, ready: false, info } });
+      // Record the launch argv so a later config change can be detected and the
+      // model reloaded with the latest flags instead of these.
+      set({ server: { running: true, ready: false, info }, loadedArgs: args });
       log.info("server", `started: pid=${info.pid} port=${info.port} (loading model…)`, {
         binary: info.binary,
       });
@@ -54,7 +90,7 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     } catch (e: unknown) {
       log.error("server", "stop failed", { error: String(e) });
     } finally {
-      set({ server: STOPPED });
+      set({ server: STOPPED, loadedArgs: null });
     }
   },
 
@@ -69,5 +105,23 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
       await get().stopServer();
     }
     await get().startServer(args);
+  },
+
+  // Reconcile the running server with the current Configure flags before a
+  // chat: if the model was loaded with a different config, restart llama-server
+  // with the latest flags and wait for it to come back, so the turn never runs
+  // on the previously-loaded config. Returns true when the server is already
+  // current or the reload succeeded; false only when a reload was needed but
+  // the server didn't come back ready. A no-op (returns true) when the server
+  // isn't running, or when we didn't launch it (loaded config unknown — we
+  // can't prove it's stale, so we don't force a costly model reload).
+  reloadIfStale: async () => {
+    const { server, flags, loadedArgs } = get();
+    if (!server.running || !loadedArgs) return true;
+    const args = buildArgs(flags);
+    if (argsEqual(args, loadedArgs)) return true;
+    log.info("server", "config changed since model load — reloading with latest flags before chat");
+    await get().reloadServer();
+    return waitForServerReady(get, 180_000);
   },
 });

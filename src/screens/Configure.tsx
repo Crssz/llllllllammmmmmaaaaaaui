@@ -404,7 +404,11 @@ export function ConfigureScreen({
                   // With an explicit MTP drafter GGUF the heads come from the
                   // drafter, so the main model not having them is fine.
                   const mtpDrafter = Boolean(vals.model_draft_mtp);
-                  const mtpMissing = !!modelInfo && !modelInfo.mtp_support && !mtpDrafter;
+                  // Filename-based MTP detection couldn't confirm heads and no
+                  // explicit drafter is set. This is a caution, not a blocker:
+                  // the drafter is optional and many MTP GGUFs embed the heads
+                  // without advertising them in the name.
+                  const mtpUnconfirmed = !!modelInfo && !modelInfo.mtp_support && !mtpDrafter;
                   return (
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
                       <button
@@ -462,9 +466,9 @@ export function ConfigureScreen({
                             style={{
                               padding: "10px 16px",
                               borderTop: "1px solid var(--border)",
-                              background: mtpMissing ? "var(--red-soft)" : "var(--surface)",
+                              background: mtpUnconfirmed ? "var(--yellow-soft)" : "var(--surface)",
                               fontSize: 11.5,
-                              color: mtpMissing ? "var(--red)" : "var(--muted)",
+                              color: mtpUnconfirmed ? "var(--yellow)" : "var(--muted)",
                               display: "flex",
                               gap: 10,
                               alignItems: "flex-start",
@@ -474,15 +478,16 @@ export function ConfigureScreen({
                               size={13}
                               style={{
                                 marginTop: 1,
-                                color: mtpMissing ? "var(--red)" : "var(--accent)",
+                                color: mtpUnconfirmed ? "var(--yellow)" : "var(--accent)",
                               }}
                             />
                             <div>
-                              {mtpMissing ? (
+                              {mtpUnconfirmed ? (
                                 <>
-                                  The selected GGUF does <strong>not</strong> contain MTP heads —
-                                  llama-server will refuse to start with{" "}
-                                  <span className="mono">--spec-type draft-mtp</span>. Set an MTP
+                                  This GGUF&apos;s filename doesn&apos;t advertise MTP heads. The
+                                  drafter below is <strong>optional</strong> — if the model embeds
+                                  the heads, <span className="mono">draft-mtp</span> works as-is. If
+                                  it doesn&apos;t, llama-server will refuse to start; set an MTP
                                   drafter GGUF above, or switch to{" "}
                                   <span className="mono">none</span> or{" "}
                                   <span className="mono">draft-simple</span>.

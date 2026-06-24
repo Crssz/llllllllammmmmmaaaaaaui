@@ -40,6 +40,8 @@ const REQ = {
   threads: "",
   batch: "2048",
   ubatch: "",
+  cache_type_k: "q8_0",
+  cache_type_v: "q8_0",
   flash_attn: "on",
   reps: 3,
   extra: [],

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { api, type BenchRow } from "../lib/api";
+import { api, type BenchRow, type EngineDone, type EngineProgress } from "../lib/api";
 import { log } from "../lib/logger";
 import { useAppStore } from "./store";
 import type { FlagValues } from "./types";
@@ -84,8 +84,8 @@ export function useAppEffects(initialFlags: FlagValues) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Inspect the GGUF whenever the model path changes. Auto-demote draft-mtp
-  // when the model lacks MTP heads; auto-set --mmproj when a sibling exists.
+  // Inspect the GGUF whenever the model path changes: surface MTP/thinking
+  // capabilities and auto-set --mmproj when a sibling exists.
   useEffect(() => {
     let prevModel = useAppStore.getState().flags.model as string | undefined;
     const inspect = (path: string | undefined) => {
@@ -107,11 +107,16 @@ export function useAppEffects(initialFlags: FlagValues) {
             }`,
           );
           const flags = useAppStore.getState().flags;
-          // An explicit MTP drafter GGUF supplies the heads, so the main
-          // model not advertising MTP is fine in that case.
+          // MTP detection is filename-based (see inspect_gguf) and can't see
+          // heads embedded in a model whose name doesn't advertise them. A
+          // false negative shouldn't silently switch the user off draft-mtp —
+          // many MTP GGUFs carry the heads inline and need no drafter at all.
+          // Leave the choice intact; Configure surfaces a soft caution.
           if (!info.mtp_support && flags.spec_type === "draft-mtp" && !flags.model_draft_mtp) {
-            log.warn("model", "model lacks MTP heads — disabling speculative decoding");
-            useAppStore.getState().setFlag("spec_type", "none");
+            log.info(
+              "model",
+              "filename doesn't advertise MTP — keeping draft-mtp (drafter optional)",
+            );
           }
           const sibling = info.mmproj_siblings[0];
           const currentMmproj = (flags.mmproj as string) || "";
@@ -210,6 +215,36 @@ export function useAppEffects(initialFlags: FlagValues) {
         rows: BenchRow[];
       }>("bench-done", (event) => {
         useAppStore.getState().benchOnDone(event.payload);
+      }),
+    );
+    return () => {
+      cancelled = true;
+      for (const u of unlisteners) u();
+    };
+  }, []);
+
+  // Subscribe to engine download progress + terminal result events.
+  useEffect(() => {
+    let cancelled = false;
+    const unlisteners: UnlistenFn[] = [];
+    const track = (p: Promise<UnlistenFn>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlisteners.push(u);
+        })
+        .catch((e) =>
+          log.warn("engines", "failed to subscribe to engine events", { error: String(e) }),
+        );
+
+    track(
+      listen<EngineProgress>("engine-progress", (event) => {
+        useAppStore.getState().engineOnProgress(event.payload);
+      }),
+    );
+    track(
+      listen<EngineDone>("engine-done", (event) => {
+        useAppStore.getState().engineOnDone(event.payload);
       }),
     );
     return () => {

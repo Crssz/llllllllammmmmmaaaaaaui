@@ -233,6 +233,8 @@ export function ChatScreen() {
     setReasoningEnabled,
     pendingToolApproval,
     approveTool,
+    pendingUserChoice,
+    answerUserChoice,
     modelInfo,
   } = useAppStore(
     useShallow((s) => ({
@@ -252,6 +254,8 @@ export function ChatScreen() {
       setReasoningEnabled: s.setReasoningEnabled,
       pendingToolApproval: s.pendingToolApproval,
       approveTool: s.approveTool,
+      pendingUserChoice: s.pendingUserChoice,
+      answerUserChoice: s.answerUserChoice,
       modelInfo: s.modelInfo,
     })),
   );
@@ -315,6 +319,7 @@ export function ChatScreen() {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const approvalRef = useRef<HTMLDialogElement | null>(null);
+  const askRef = useRef<HTMLDialogElement | null>(null);
   const atBottomRef = useRef(true);
   // Mirror of atBottomRef for use in render. Scroll handler updates the ref
   // every event but only flips state when the threshold is actually crossed,
@@ -339,6 +344,14 @@ export function ChatScreen() {
     if (pendingToolApproval && !dlg.open) dlg.showModal();
     else if (!pendingToolApproval && dlg.open) dlg.close();
   }, [pendingToolApproval]);
+
+  // Same native-<dialog> treatment for the built-in ask_user question prompt.
+  useEffect(() => {
+    const dlg = askRef.current;
+    if (!dlg) return;
+    if (pendingUserChoice && !dlg.open) dlg.showModal();
+    else if (!pendingUserChoice && dlg.open) dlg.close();
+  }, [pendingUserChoice]);
 
   useEffect(() => {
     const ta = taRef.current;
@@ -1339,6 +1352,48 @@ export function ChatScreen() {
                 approveTool(pendingToolApproval.id, decision, remember)
               }
             />
+          </>
+        )}
+      </dialog>
+      <dialog
+        ref={askRef}
+        className="tool-approval-card"
+        onCancel={(e) => {
+          // Escape dismisses the question without an answer (the model is told
+          // it was dismissed). There's no click-outside-to-close.
+          e.preventDefault();
+          if (pendingUserChoice) answerUserChoice(pendingUserChoice.id, null);
+        }}
+      >
+        {pendingUserChoice && (
+          <>
+            <div className="tool-approval-head">
+              <I.Chat size={14} />
+              <span>The model is asking</span>
+            </div>
+            <div className="tool-approval-body">
+              <div className="ask-question">{pendingUserChoice.question}</div>
+              <div className="ask-choices">
+                {pendingUserChoice.choices.map((choice, i) => (
+                  <button
+                    key={i}
+                    className="btn ask-choice"
+                    onClick={() => answerUserChoice(pendingUserChoice.id, choice)}
+                  >
+                    {choice}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="tool-approval-foot">
+              <button
+                className="btn ghost"
+                style={{ marginLeft: "auto" }}
+                onClick={() => answerUserChoice(pendingUserChoice.id, null)}
+              >
+                <I.X size={11} /> Dismiss
+              </button>
+            </div>
           </>
         )}
       </dialog>

@@ -22,3 +22,11 @@ export type PendingToolApproval = {
   toolName: string;
   args: Record<string, unknown>;
 };
+
+/** An in-flight `ask_user` tool call: the model's question and the choices it
+ *  offered. Resolved when the user picks one (or dismisses). */
+export type PendingUserChoice = {
+  id: string;
+  question: string;
+  choices: string[];
+};

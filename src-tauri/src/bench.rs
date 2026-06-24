@@ -123,6 +123,10 @@ pub struct BenchRequest {
     #[serde(default)]
     pub ubatch: String,
     #[serde(default)]
+    pub cache_type_k: String,
+    #[serde(default)]
+    pub cache_type_v: String,
+    #[serde(default)]
     pub flash_attn: String,
     #[serde(default)]
     pub reps: u32,
@@ -147,8 +151,11 @@ struct BenchDoneEvent {
 }
 
 /// Assemble the `llama-bench` argv from a request. Uses llama-bench's own flag
-/// spellings (`-m`, `-p`, `-n`, `-ngl`, `-t`, `-b`, `-ub`, `-fa`, `-r`) — NOT
-/// the llama-server spellings `buildArgs` emits. Always appends `-o json` and
+/// spellings (`-m`, `-p`, `-n`, `-ngl`, `-t`, `-b`, `-ub`, `-ctk`, `-ctv`,
+/// `-fa`, `-r`) — NOT the llama-server spellings `buildArgs` emits. The cache
+/// types let the benchmark mirror the server's KV-cache quant (the Configure
+/// tab's `-ctk`/`-ctv`), which materially moves throughput. Always appends
+/// `-o json` and
 /// `--progress` last so we get a parseable result array on stdout and progress
 /// lines on stderr.
 fn build_bench_argv(req: &BenchRequest) -> Vec<String> {
@@ -167,6 +174,8 @@ fn build_bench_argv(req: &BenchRequest) -> Vec<String> {
     push_multi(&mut a, "-t", &req.threads);
     push_multi(&mut a, "-b", &req.batch);
     push_multi(&mut a, "-ub", &req.ubatch);
+    push_multi(&mut a, "-ctk", &req.cache_type_k);
+    push_multi(&mut a, "-ctv", &req.cache_type_v);
     push_multi(&mut a, "-fa", &req.flash_attn);
     if req.reps > 0 {
         a.push("-r".into());
@@ -396,6 +405,8 @@ mod tests {
             threads: "".into(),
             batch: "2048".into(),
             ubatch: "".into(),
+            cache_type_k: "q8_0".into(),
+            cache_type_v: "q8_0".into(),
             flash_attn: "on".into(),
             reps: 3,
             extra: vec![],
@@ -411,6 +422,8 @@ mod tests {
         assert!(joined.contains("-n 128"));
         assert!(joined.contains("-ngl 999"));
         assert!(joined.contains("-b 2048"));
+        assert!(joined.contains("-ctk q8_0"));
+        assert!(joined.contains("-ctv q8_0"));
         assert!(joined.contains("-fa on"));
         assert!(joined.contains("-r 3"));
         // Empty fields are skipped entirely.
@@ -424,11 +437,11 @@ mod tests {
     fn argv_skips_reps_when_zero_and_appends_extra() {
         let mut r = req();
         r.reps = 0;
-        r.extra = vec!["-ctk".into(), "q8_0".into()];
+        r.extra = vec!["-ot".into(), "exps=CPU".into()];
         let a = build_bench_argv(&r);
         let joined = a.join(" ");
         assert!(!joined.contains("-r "));
-        assert!(joined.contains("-ctk q8_0"));
+        assert!(joined.contains("-ot exps=CPU"));
     }
 
     #[test]

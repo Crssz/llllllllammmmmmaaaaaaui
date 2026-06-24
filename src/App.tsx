@@ -8,6 +8,7 @@ import { ModelsScreen } from "./screens/Models";
 import { McpScreen } from "./screens/Mcp";
 import { TranscribeScreen } from "./screens/Transcribe";
 import { BenchScreen } from "./screens/Bench";
+import { EngineManagerScreen } from "./screens/EngineManager";
 import { useAppStore } from "./state";
 import { useShallow } from "zustand/react/shallow";
 import { LogsPanel } from "./components/LogsPanel";
@@ -15,7 +16,16 @@ import { ModelLibraryOverlay } from "./components/ModelLibraryOverlay";
 import { Toasts } from "./components/Toasts";
 import { log } from "./lib/logger";
 
-type Tab = "chat" | "models" | "configure" | "hardware" | "profiles" | "mcp" | "audio" | "bench";
+type Tab =
+  | "chat"
+  | "models"
+  | "configure"
+  | "hardware"
+  | "profiles"
+  | "mcp"
+  | "audio"
+  | "bench"
+  | "engine";
 
 function basename(p: string): string {
   if (!p) return "";
@@ -44,12 +54,11 @@ function TopBar({
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
 }>) {
-  const { server, flags, stopServer, modelInfo } = useAppStore(
+  const { server, flags, stopServer } = useAppStore(
     useShallow((s) => ({
       server: s.server,
       flags: s.flags,
       stopServer: s.stopServer,
-      modelInfo: s.modelInfo,
     })),
   );
   const modelPath = (flags.model as string) || "";
@@ -80,12 +89,11 @@ function TopBar({
           }}
         />
         <span className="name">{modelName}</span>
-        {(modelInfo?.mtp_support || Boolean(flags.model_draft_mtp)) &&
-          flags.spec_type === "draft-mtp" && (
-            <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
-              + MTP
-            </span>
-          )}
+        {flags.spec_type === "draft-mtp" && (
+          <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
+            + MTP
+          </span>
+        )}
         <span className="meta mono">{serverStatusLabel(server)}</span>
         <I.Chevron
           size={12}
@@ -150,6 +158,7 @@ function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>
     { id: "mcp", label: "MCP", icon: "Globe", meta: "⌘6" },
     { id: "audio", label: "Audio", icon: "Mic", meta: "⌘7" },
     { id: "bench", label: "Bench", icon: "Bolt", meta: "⌘8" },
+    { id: "engine", label: "Engine", icon: "Download", meta: "⌘9" },
   ];
 
   const pinned = chats.filter((c) => c.pinned).sort((a, b) => b.updated_at - a.updated_at);
@@ -403,9 +412,10 @@ export function App() {
       "mcp",
       "audio",
       "bench",
+      "engine",
     ];
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
         e.preventDefault();
         setTab(tabs[Number(e.key) - 1]);
       } else if ((e.metaKey || e.ctrlKey) && e.key === "`") {
@@ -449,6 +459,7 @@ export function App() {
           {tab === "mcp" && <McpScreen />}
           {tab === "audio" && <TranscribeScreen />}
           {tab === "bench" && <BenchScreen />}
+          {tab === "engine" && <EngineManagerScreen />}
         </main>
       </div>
       <StatusBar />

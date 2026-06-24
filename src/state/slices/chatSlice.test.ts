@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { api } from "../../lib/api";
-import { freshStore, flush, makeChat, makeSettings, stubApi, useAppStore } from "../testUtils";
+import { freshStore, makeChat, makeSettings, stubApi, useAppStore } from "../testUtils";
 import type { StoredChatMessage } from "../../lib/api";
 
 // Build an SSE-style streaming Response for the chat-completions endpoint.
@@ -352,8 +352,12 @@ describe("chat slice — streaming roundtrip", () => {
       });
     });
     const p = useAppStore.getState().sendChat("hi");
-    // Give the fetch microtask a tick to install the listener.
-    await flush();
+    // Wait until the request is actually in-flight (abort controller installed)
+    // before cancelling — the reload-if-stale reconcile adds async hops before
+    // the fetch, so a single microtask flush isn't enough.
+    await vi.waitFor(() => {
+      if (!useAppStore.getState()._chatAbort) throw new Error("request not in-flight yet");
+    });
     useAppStore.getState().cancelChat();
     await p;
     expect(useAppStore.getState().chatPending).toBe(false);
@@ -812,6 +816,128 @@ describe("chat slice — streaming roundtrip", () => {
     const msgs = useAppStore.getState().chats[0].messages;
     const toolMsg = msgs.find((m: StoredChatMessage) => m.role === "tool")!;
     expect(toolMsg.content).toContain("Edited x.txt");
+  });
+
+  function askUserRound() {
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_q",
+                      function: {
+                        name: "ask__ask_user",
+                        arguments: JSON.stringify({ question: "Which?", choices: ["Red", "Blue"] }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      );
+  }
+
+  // Resolve the next pending ask_user question with `answer` (or dismiss).
+  function answerWhenAsked(answer: string | null): Promise<void> {
+    return new Promise((resolve) => {
+      const unsub = useAppStore.subscribe((s) => {
+        if (s.pendingUserChoice) {
+          unsub();
+          useAppStore.getState().answerUserChoice(s.pendingUserChoice.id, answer);
+          resolve();
+        }
+      });
+    });
+  }
+
+  it("always offers the built-in ask_user tool, even on a plain chat", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    await useAppStore.getState().sendChat("no tools configured");
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    const names = (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+    expect(names).toContain("ask__ask_user");
+  });
+
+  it("surfaces an ask_user question and returns the selection as the tool result", async () => {
+    askUserRound();
+    const sendP = useAppStore.getState().sendChat("help me choose");
+    await answerWhenAsked("Blue");
+    await sendP;
+
+    const msgs = useAppStore.getState().chats[0].messages;
+    const tool = msgs.find((m) => m.role === "tool")!;
+    expect(tool.content).toBe("The user selected: Blue");
+    expect(msgs.at(-1)?.content).toBe("ok");
+    // ask_user is auto-allowed — it never raises the approval modal.
+    expect(useAppStore.getState().pendingToolApproval).toBeNull();
+    expect(useAppStore.getState().pendingUserChoice).toBeNull();
+  });
+
+  it("reports a dismissal back to the model when the user closes the question", async () => {
+    askUserRound();
+    const sendP = useAppStore.getState().sendChat("help me choose");
+    await answerWhenAsked(null);
+    await sendP;
+
+    const tool = useAppStore.getState().chats[0].messages.find((m) => m.role === "tool")!;
+    expect(tool.content).toBe("The user dismissed the question without choosing an option.");
+  });
+
+  it("turns invalid ask_user arguments into a tool-error the model can retry", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_bad",
+                      function: {
+                        name: "ask__ask_user",
+                        arguments: JSON.stringify({ question: "Only one option?", choices: ["A"] }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+          `data: [DONE]\n`,
+        ]),
+      );
+    // No question is ever surfaced — the bad args are rejected before the prompt.
+    await useAppStore.getState().sendChat("ask badly");
+    const tool = useAppStore.getState().chats[0].messages.find((m) => m.role === "tool")!;
+    expect(tool.content).toMatch(/Tool execution failed:.*choices/i);
+    expect(useAppStore.getState().pendingUserChoice).toBeNull();
   });
 });
 
