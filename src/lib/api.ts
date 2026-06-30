@@ -77,6 +77,68 @@ export type EngineDone = {
   installed: InstalledEngine | null;
 };
 
+// ── Model catalog (HuggingFace GGUF) — mirror Rust catalog.rs ───────────────
+
+/** One model in the catalog search results (mirrors Rust `CatalogModel`). */
+export type CatalogModel = {
+  /** Full repo id, "owner/name". */
+  id: string;
+  owner: string;
+  name: string;
+  downloads: number;
+  likes: number;
+  /** True when the repo requires accepting terms / a token to download. */
+  gated: boolean;
+  /** "auto" | "manual" when gated, else null. */
+  gated_kind: string | null;
+  pipeline_tag: string | null;
+  library_name: string | null;
+  last_modified: string | null;
+  tags: string[];
+  /** Number of *.gguf siblings (quick indicator before the tree is fetched). */
+  gguf_count: number;
+  params: string | null;
+};
+
+/** One downloadable quant in a repo (a single file or a split group). */
+export type CatalogFile = {
+  filename: string;
+  tag: string;
+  bits: number;
+  /** Total bytes across all parts. */
+  size: number;
+  size_gb: number;
+  badges: string[];
+  is_split: boolean;
+  n_parts: number;
+  /** Repo-relative paths of every part, ordered. */
+  url_paths: string[];
+  is_mmproj: boolean;
+};
+
+/** `catalog-progress` event payload (mirrors Rust `CatalogProgress`). */
+export type CatalogProgress = {
+  generation: number;
+  repo_id: string;
+  filename: string;
+  downloaded: number;
+  total: number;
+  part: number;
+  parts: number;
+};
+
+/** `catalog-done` event payload (mirrors Rust `CatalogDone`). */
+export type CatalogDone = {
+  generation: number;
+  repo_id: string;
+  filename: string;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  dest_root: string | null;
+  model_path: string | null;
+};
+
 /** Audio clip attached to a chat message (mirrors Rust `AudioAttachment`). */
 export type AudioAttachment = {
   /** Absolute path to a wav/mp3 file on disk. */
@@ -216,6 +278,9 @@ export type Settings = {
   reasoning_enabled: boolean | null;
   mcp_servers: McpServerConfig[];
   chat_presets: ChatPreset[];
+  /** Optional HuggingFace access token, sent as a Bearer token on catalog
+   *  requests to lift rate-limiting, speed up downloads, and reach gated repos. */
+  hf_token: string | null;
 };
 
 export type RunningInfo = {
@@ -474,6 +539,35 @@ export const api = {
     }),
   cancelEngineDownload: () => invoke<void>("cancel_engine_download"),
   deleteEngine: (id: string) => invoke<void>("delete_engine", { id }),
+
+  // Model catalog. `searchCatalog`/`listCatalogFiles` hit the HuggingFace Hub
+  // API off the main thread. `downloadCatalogModel` resolves with the run's
+  // generation id; progress arrives via `catalog-progress` and the result via
+  // `catalog-done`.
+  searchCatalog: (query?: string, sort?: string, limit?: number, token?: string | null) =>
+    invoke<CatalogModel[]>("search_catalog", {
+      query: query ?? null,
+      sort: sort ?? null,
+      limit: limit ?? null,
+      token: token ?? null,
+    }),
+  listCatalogFiles: (repoId: string, token?: string | null) =>
+    invoke<CatalogFile[]>("list_catalog_files", { repoId, token: token ?? null }),
+  downloadCatalogModel: (
+    repoId: string,
+    file: CatalogFile,
+    modelsDir: string | null,
+    token?: string | null,
+  ) =>
+    invoke<number>("download_catalog_model", {
+      repoId,
+      filename: file.filename,
+      urlPaths: file.url_paths,
+      expectedSize: file.size,
+      modelsDir,
+      token: token ?? null,
+    }),
+  cancelCatalogDownload: () => invoke<void>("cancel_catalog_download"),
 
   mcpConnect: (id: string) => invoke<McpStatus>("mcp_connect", { id }),
   mcpDisconnect: (id: string) => invoke<void>("mcp_disconnect", { id }),

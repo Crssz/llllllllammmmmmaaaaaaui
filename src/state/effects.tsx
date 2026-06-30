@@ -1,6 +1,13 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { api, type BenchRow, type EngineDone, type EngineProgress } from "../lib/api";
+import {
+  api,
+  type BenchRow,
+  type CatalogDone,
+  type CatalogProgress,
+  type EngineDone,
+  type EngineProgress,
+} from "../lib/api";
 import { log } from "../lib/logger";
 import { useAppStore } from "./store";
 import type { FlagValues } from "./types";
@@ -240,6 +247,36 @@ export function useAppEffects(initialFlags: FlagValues) {
     track(
       listen<EngineDone>("engine-done", (event) => {
         useAppStore.getState().engineOnDone(event.payload);
+      }),
+    );
+    return () => {
+      cancelled = true;
+      for (const u of unlisteners) u();
+    };
+  }, []);
+
+  // Subscribe to model-catalog download progress + terminal result events.
+  useEffect(() => {
+    let cancelled = false;
+    const unlisteners: UnlistenFn[] = [];
+    const track = (p: Promise<UnlistenFn>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlisteners.push(u);
+        })
+        .catch((e) =>
+          log.warn("catalog", "failed to subscribe to catalog events", { error: String(e) }),
+        );
+
+    track(
+      listen<CatalogProgress>("catalog-progress", (event) => {
+        useAppStore.getState().catalogOnProgress(event.payload);
+      }),
+    );
+    track(
+      listen<CatalogDone>("catalog-done", (event) => {
+        useAppStore.getState().catalogOnDone(event.payload);
       }),
     );
     return () => {

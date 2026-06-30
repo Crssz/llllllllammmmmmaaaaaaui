@@ -64,6 +64,17 @@ export const I = {
       }
     />
   ),
+  Cloud: (p: IconProps) => (
+    <Icon
+      {...p}
+      paths={
+        <>
+          <path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17 9.5a3.5 3.5 0 0 1 .5 6.96" />
+          <path d="M12 12v6M9.5 15.5 12 18l2.5-2.5" />
+        </>
+      }
+    />
+  ),
   Trash: (p: IconProps) => (
     <Icon
       {...p}

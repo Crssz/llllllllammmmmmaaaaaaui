@@ -1,5 +1,6 @@
 mod bench;
 mod build_scan;
+mod catalog;
 mod chats;
 mod engines;
 mod gguf;
@@ -20,6 +21,10 @@ use sysinfo::System;
 use tauri::{AppHandle, Manager, State};
 
 use crate::bench::{cancel_bench, load_bench_runs, run_bench, save_bench_runs, BenchState};
+use crate::catalog::{
+    cancel_catalog_download, download_catalog_model, list_catalog_files, search_catalog,
+    CatalogState,
+};
 use crate::chats::{load_chats, save_chats};
 use crate::engines::{
     cancel_engine_download, delete_engine, download_engine, list_engine_releases,
@@ -154,6 +159,7 @@ pub fn run() {
         .manage(ServerState::default())
         .manage(BenchState::default())
         .manage(EngineState::default())
+        .manage(CatalogState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -194,6 +200,10 @@ pub fn run() {
             download_engine,
             cancel_engine_download,
             delete_engine,
+            search_catalog,
+            list_catalog_files,
+            download_catalog_model,
+            cancel_catalog_download,
             crate::workspace::workspace_list,
             crate::workspace::workspace_read,
             crate::workspace::workspace_write,

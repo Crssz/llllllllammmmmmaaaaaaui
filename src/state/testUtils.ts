@@ -132,6 +132,10 @@ export function stubApi() {
   vi.spyOn(api, "cancelBench").mockResolvedValue(undefined);
   vi.spyOn(api, "loadBenchRuns").mockResolvedValue([]);
   vi.spyOn(api, "saveBenchRuns").mockResolvedValue(undefined);
+  vi.spyOn(api, "searchCatalog").mockResolvedValue([]);
+  vi.spyOn(api, "listCatalogFiles").mockResolvedValue([]);
+  vi.spyOn(api, "downloadCatalogModel").mockResolvedValue(1);
+  vi.spyOn(api, "cancelCatalogDownload").mockResolvedValue(undefined);
 }
 
 // Drain microtasks so fire-and-forget persistence promises settle before the

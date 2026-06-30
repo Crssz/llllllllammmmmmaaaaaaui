@@ -15,6 +15,7 @@ export const EMPTY_SETTINGS: Settings = {
   reasoning_enabled: null,
   mcp_servers: [],
   chat_presets: [],
+  hf_token: null,
 };
 
 export type SettingsSlice = {

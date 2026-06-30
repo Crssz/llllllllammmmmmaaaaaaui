@@ -43,6 +43,11 @@ pub struct Settings {
     /// Reusable chat session presets (system prompt, MCP toggles, etc.).
     #[serde(default)]
     pub chat_presets: Vec<ChatPreset>,
+    /// Optional HuggingFace access token. When set, catalog requests send it as
+    /// a Bearer token — lifts anonymous rate-limiting/throttling, enables the
+    /// faster authenticated download path, and unlocks gated repos.
+    #[serde(default)]
+    pub hf_token: Option<String>,
 }
 
 /// Reusable bundle of per-session chat configuration. Saved at the top level
@@ -189,6 +194,7 @@ mod tests {
             reasoning_enabled: Some(false),
             mcp_servers: vec![],
             chat_presets: vec![],
+            hf_token: Some("hf_test".into()),
         };
         let encoded = serde_json::to_string(&s).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();
@@ -198,6 +204,7 @@ mod tests {
         assert_eq!(decoded.flags["ngl"], 99);
         assert_eq!(decoded.model_configs["/tmp/model.gguf"]["ctx"], 8192);
         assert_eq!(decoded.mmproj_pinned, vec!["/tmp/model.gguf".to_string()]);
+        assert_eq!(decoded.hf_token.as_deref(), Some("hf_test"));
     }
 
     #[test]

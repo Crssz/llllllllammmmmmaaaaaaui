@@ -5,6 +5,7 @@ import { ConfigureScreen } from "./screens/Configure";
 import { HardwareScreen } from "./screens/Hardware";
 import { ProfilesScreen } from "./screens/Profiles";
 import { ModelsScreen } from "./screens/Models";
+import { CatalogScreen } from "./screens/Catalog";
 import { McpScreen } from "./screens/Mcp";
 import { TranscribeScreen } from "./screens/Transcribe";
 import { BenchScreen } from "./screens/Bench";
@@ -19,6 +20,7 @@ import { log } from "./lib/logger";
 type Tab =
   | "chat"
   | "models"
+  | "catalog"
   | "configure"
   | "hardware"
   | "profiles"
@@ -157,13 +159,14 @@ function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>
   const NAV: { id: Tab; label: string; icon: keyof typeof I; meta: string }[] = [
     { id: "chat", label: "Chat", icon: "Chat", meta: "⌘1" },
     { id: "models", label: "Models", icon: "Folder", meta: "⌘2" },
-    { id: "configure", label: "Configure", icon: "Sliders", meta: "⌘3" },
-    { id: "hardware", label: "Hardware", icon: "Hardware", meta: "⌘4" },
-    { id: "profiles", label: "Profiles", icon: "Bookmark", meta: "⌘5" },
-    { id: "mcp", label: "MCP", icon: "Globe", meta: "⌘6" },
-    { id: "audio", label: "Audio", icon: "Mic", meta: "⌘7" },
-    { id: "bench", label: "Bench", icon: "Bolt", meta: "⌘8" },
-    { id: "engine", label: "Engine", icon: "Download", meta: "⌘9" },
+    { id: "catalog", label: "Catalog", icon: "Cloud", meta: "⌘3" },
+    { id: "configure", label: "Configure", icon: "Sliders", meta: "⌘4" },
+    { id: "hardware", label: "Hardware", icon: "Hardware", meta: "⌘5" },
+    { id: "profiles", label: "Profiles", icon: "Bookmark", meta: "⌘6" },
+    { id: "mcp", label: "MCP", icon: "Globe", meta: "⌘7" },
+    { id: "audio", label: "Audio", icon: "Mic", meta: "⌘8" },
+    { id: "bench", label: "Bench", icon: "Bolt", meta: "⌘9" },
+    { id: "engine", label: "Engine", icon: "Download", meta: "⌘0" },
   ];
 
   const pinned = chats.filter((c) => c.pinned).sort((a, b) => b.updated_at - a.updated_at);
@@ -411,6 +414,7 @@ export function App() {
     const tabs: Tab[] = [
       "chat",
       "models",
+      "catalog",
       "configure",
       "hardware",
       "profiles",
@@ -420,9 +424,11 @@ export function App() {
       "engine",
     ];
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[0-9]$/.test(e.key)) {
         e.preventDefault();
-        setTab(tabs[Number(e.key) - 1]);
+        // Keys 1-9 select the first nine tabs; 0 selects the tenth (Engine).
+        const idx = e.key === "0" ? 9 : Number(e.key) - 1;
+        if (idx < tabs.length) setTab(tabs[idx]);
       } else if ((e.metaKey || e.ctrlKey) && e.key === "`") {
         e.preventDefault();
         setLogsOpen((o) => !o);
@@ -453,6 +459,7 @@ export function App() {
         <main className="main" data-screen-label={tab}>
           {tab === "chat" && <ChatScreen />}
           {tab === "models" && <ModelsScreen />}
+          {tab === "catalog" && <CatalogScreen />}
           {tab === "configure" && (
             <ConfigureScreen
               initialTab={configureTabRequest}

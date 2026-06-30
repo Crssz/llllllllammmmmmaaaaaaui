@@ -11,6 +11,7 @@ import { createProfilesSlice, type ProfilesSlice } from "./slices/profilesSlice"
 import { createTranscribeSlice, type TranscribeSlice } from "./slices/transcribeSlice";
 import { createBenchSlice, type BenchSlice } from "./slices/benchSlice";
 import { createEngineSlice, type EngineSlice } from "./slices/engineSlice";
+import { createCatalogSlice, type CatalogSlice } from "./slices/catalogSlice";
 import { createInteractionSlice, type InteractionSlice } from "./slices/interactionSlice";
 
 export type AppStore = SettingsSlice &
@@ -25,6 +26,7 @@ export type AppStore = SettingsSlice &
   TranscribeSlice &
   BenchSlice &
   EngineSlice &
+  CatalogSlice &
   InteractionSlice;
 
 export const useAppStore = create<AppStore>()((...a) => ({
@@ -40,6 +42,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createTranscribeSlice(...a),
   ...createBenchSlice(...a),
   ...createEngineSlice(...a),
+  ...createCatalogSlice(...a),
   ...createInteractionSlice(...a),
 }));
 
