@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
-import { FLAG_GROUPS, MODEL, type FlagDef } from "../data";
+import { FLAG_GROUPS, MODEL, defaultFlags, type FlagDef } from "../data";
 import { BinaryLocator } from "./BinaryLocator";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
@@ -12,11 +12,13 @@ function FlagRow({
   value,
   onChange,
   onBrowse,
+  extra,
 }: Readonly<{
   f: FlagDef;
   value: FlagValue;
   onChange: (v: FlagValue) => void;
   onBrowse?: () => void;
+  extra?: React.ReactNode;
 }>) {
   let ctl: React.ReactNode = null;
   if (f.type === "slider") {
@@ -124,7 +126,10 @@ function FlagRow({
         <span className="name">{f.label}</span>
         <span className="desc">{f.desc}</span>
       </div>
-      <div className="ctl">{ctl}</div>
+      <div className="ctl">
+        {ctl}
+        {extra}
+      </div>
       <div className="flag mono">{f.flag}</div>
     </div>
   );
@@ -141,6 +146,9 @@ export function ConfigureScreen({
     flags: vals,
     setFlag,
     pickModel,
+    forgetModelConfig,
+    setMmproj,
+    unpinMmproj,
     startServer,
     stopServer,
     server,
@@ -153,6 +161,9 @@ export function ConfigureScreen({
       flags: s.flags,
       setFlag: s.setFlag,
       pickModel: s.pickModel,
+      forgetModelConfig: s.forgetModelConfig,
+      setMmproj: s.setMmproj,
+      unpinMmproj: s.unpinMmproj,
       startServer: s.startServer,
       stopServer: s.stopServer,
       server: s.server,
@@ -245,6 +256,38 @@ export function ConfigureScreen({
   };
 
   const modelPath = (vals.model as string) || "";
+  // True when the user has explicitly set/cleared mmproj for this model, so the
+  // projector auto-detect leaves it alone.
+  const mmprojPinned = !!modelPath && (settings.mmproj_pinned ?? []).includes(modelPath);
+  // Per-model config persists automatically (LM Studio style): selecting a
+  // model restores its saved flags, and tweaking flags re-saves them under the
+  // model path. Every loaded model gets a slot, so to keep the badge honest we
+  // only surface it (and the reset button) once the model has a real
+  // customization to remember: a flag that diverges from factory defaults
+  // (ignoring the auto-managed `mmproj`), or a pinned projector.
+  const hasSavedConfig = useMemo(() => {
+    if (!modelPath) return false;
+    if ((settings.mmproj_pinned ?? []).includes(modelPath)) return true;
+    const saved = settings.model_configs?.[modelPath];
+    if (!saved) return false;
+    const defaults = defaultFlags();
+    return Object.keys(saved).some(
+      (k) => k !== "model" && k !== "mmproj" && saved[k] !== defaults[k],
+    );
+  }, [modelPath, settings.model_configs, settings.mmproj_pinned]);
+
+  const resetModelConfig = () => {
+    if (!modelPath) return;
+    if (confirm(`Reset settings for "${basename(modelPath)}" back to defaults?`)) {
+      forgetModelConfig();
+    }
+  };
+
+  // Browse for a projector GGUF and pin it for this model (an explicit choice).
+  const pickMmproj = async () => {
+    const picked = await api.pickFile();
+    if (picked) setMmproj(picked);
+  };
 
   return (
     <>
@@ -291,6 +334,24 @@ export function ConfigureScreen({
             <span className="badge red" title={modelInfoError} style={{ cursor: "help" }}>
               GGUF read failed
             </span>
+          )}
+          {hasSavedConfig && (
+            <span
+              className="badge ghost"
+              title="This model's settings are saved automatically and restored whenever you select it. Click reset to return to defaults."
+              style={{ cursor: "help" }}
+            >
+              <I.Bookmark size={10} /> config saved
+            </span>
+          )}
+          {hasSavedConfig && (
+            <button
+              className="iconbtn"
+              onClick={resetModelConfig}
+              title="Reset this model's settings to defaults"
+            >
+              <I.History size={13} />
+            </button>
           )}
           {server.running ? (
             <span className="badge green">
@@ -446,18 +507,48 @@ export function ConfigureScreen({
                           const onBrowse =
                             f.key === "model"
                               ? () => pickModel().catch(() => {})
-                              : isModelPath
-                                ? () => pickGgufFor(f.key).catch(() => {})
-                                : isTemplatePath
-                                  ? () => pickTemplateFile().catch(() => {})
-                                  : undefined;
+                              : f.key === "mmproj"
+                                ? () => pickMmproj().catch(() => {})
+                                : isModelPath
+                                  ? () => pickGgufFor(f.key).catch(() => {})
+                                  : isTemplatePath
+                                    ? () => pickTemplateFile().catch(() => {})
+                                    : undefined;
+                          // mmproj is auto-detected from the model folder unless
+                          // the user takes control; editing it pins the choice,
+                          // and the trailing control flips between "auto" (a
+                          // hint) and a revert button (when pinned).
+                          const extra =
+                            f.key !== "mmproj" ? undefined : mmprojPinned ? (
+                              <button
+                                className="btn ghost"
+                                style={{ flexShrink: 0 }}
+                                title="Revert to auto-detecting the projector from the model's folder"
+                                onClick={() => unpinMmproj()}
+                              >
+                                <I.History size={11} /> auto
+                              </button>
+                            ) : modelInfo && modelInfo.mmproj_siblings.length > 0 ? (
+                              <span
+                                className="badge ghost"
+                                style={{ flexShrink: 0, cursor: "help" }}
+                                title="Auto-detected from the model's folder. Edit or clear to override."
+                              >
+                                auto
+                              </span>
+                            ) : undefined;
                           return (
                             <FlagRow
                               key={f.key}
                               f={f}
                               value={vals[f.key] ?? f.value}
-                              onChange={(v) => set(f.key, v)}
+                              onChange={
+                                f.key === "mmproj"
+                                  ? (v) => setMmproj(String(v))
+                                  : (v) => set(f.key, v)
+                              }
                               onBrowse={onBrowse}
+                              extra={extra}
                             />
                           );
                         })}

@@ -622,6 +622,19 @@ export const FLAG_GROUPS: FlagGroup[] = [
   },
 ];
 
+// Flatten the FLAG_GROUPS defaults into a single flag-values record. Used to
+// seed the store on first run (main.tsx) and to reset a model's config back to
+// defaults (the per-model "reset" escape hatch).
+export function defaultFlags(): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const g of FLAG_GROUPS) {
+    for (const f of g.flags) {
+      out[f.key] = f.value;
+    }
+  }
+  return out;
+}
+
 export type BuildBinary = {
   name: string;
   size: string;

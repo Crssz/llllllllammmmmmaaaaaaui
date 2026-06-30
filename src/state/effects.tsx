@@ -49,9 +49,11 @@ export function useAppEffects(initialFlags: FlagValues) {
           useAppStore.setState({ reasoningEnabled: s.reasoning_enabled });
         }
         if (s.model_path) {
-          useAppStore.setState((prev) => ({
-            flags: { ...prev.flags, model: s.model_path as string },
-          }));
+          // Route through setFlag so the model's saved per-model config (if
+          // any) is restored at launch — same path every in-app model switch
+          // takes. Falls back to the just-merged global flags when the model
+          // has no saved slot yet (e.g. first run after upgrading).
+          useAppStore.getState().setFlag("model", s.model_path);
         }
         if (s.build_dir) await useAppStore.getState().scanBuild(s.build_dir);
         if (s.models_dir) await useAppStore.getState().scanModels(s.models_dir);
@@ -118,16 +120,9 @@ export function useAppEffects(initialFlags: FlagValues) {
               "filename doesn't advertise MTP — keeping draft-mtp (drafter optional)",
             );
           }
-          const sibling = info.mmproj_siblings[0];
-          const currentMmproj = (flags.mmproj as string) || "";
-          const currentIsValid = currentMmproj && info.mmproj_siblings.includes(currentMmproj);
-          if (sibling && !currentIsValid) {
-            log.info("model", `auto-set --mmproj: ${sibling}`);
-            useAppStore.getState().setFlag("mmproj", sibling);
-          } else if (!sibling && currentMmproj) {
-            log.info("model", "clearing --mmproj (no sibling in model dir)");
-            useAppStore.getState().setFlag("mmproj", "");
-          }
+          // Auto-fill --mmproj from a sibling projector, unless the user has
+          // pinned mmproj for this model (deliberately set or cleared it).
+          useAppStore.getState().autoDetectMmproj();
         })
         .catch((e: unknown) => {
           if (cancelled) return;

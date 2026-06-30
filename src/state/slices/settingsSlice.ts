@@ -7,6 +7,8 @@ export const EMPTY_SETTINGS: Settings = {
   recent_dirs: [],
   model_path: null,
   flags: {},
+  model_configs: {},
+  mmproj_pinned: [],
   models_dir: null,
   models_recent: [],
   profiles: [],

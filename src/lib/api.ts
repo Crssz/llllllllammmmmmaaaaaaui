@@ -202,6 +202,14 @@ export type Settings = {
   recent_dirs: string[];
   model_path: string | null;
   flags: Record<string, unknown>;
+  /** Per-model runtime config, keyed by absolute model path. Each model
+   *  remembers its own flags (everything except the `model` path key, which is
+   *  the map key); selecting a model auto-restores its saved config. */
+  model_configs: Record<string, Record<string, unknown>>;
+  /** Model paths whose `mmproj` projector the user set or cleared explicitly.
+   *  For these, the loader leaves `mmproj` alone instead of auto-detecting a
+   *  sibling projector from the model's folder. */
+  mmproj_pinned: string[];
   models_dir: string | null;
   models_recent: string[];
   profiles: SavedProfile[];

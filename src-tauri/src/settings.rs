@@ -17,6 +17,16 @@ pub struct Settings {
     pub model_path: Option<String>,
     #[serde(default)]
     pub flags: serde_json::Value,
+    /// Per-model runtime config, keyed by absolute model path. Each model
+    /// remembers its own flags (everything except the `model` path key, which
+    /// is the map key) so selecting it again restores the same config.
+    #[serde(default)]
+    pub model_configs: std::collections::HashMap<String, serde_json::Value>,
+    /// Model paths whose `mmproj` projector the user has set or cleared
+    /// explicitly. For these the loader leaves `mmproj` alone instead of
+    /// auto-detecting a sibling projector from the model's folder.
+    #[serde(default)]
+    pub mmproj_pinned: Vec<String>,
     #[serde(default)]
     pub models_dir: Option<String>,
     #[serde(default)]
@@ -166,6 +176,13 @@ mod tests {
             recent_dirs: vec!["/a".into(), "/b".into()],
             model_path: Some("/tmp/model.gguf".into()),
             flags: serde_json::json!({ "ngl": 99, "fa": true }),
+            model_configs: [(
+                "/tmp/model.gguf".to_string(),
+                serde_json::json!({ "ngl": 99, "ctx": 8192 }),
+            )]
+            .into_iter()
+            .collect(),
+            mmproj_pinned: vec!["/tmp/model.gguf".to_string()],
             models_dir: None,
             models_recent: vec![],
             profiles: vec![],
@@ -179,6 +196,8 @@ mod tests {
         assert_eq!(decoded.recent_dirs, vec!["/a", "/b"]);
         assert_eq!(decoded.reasoning_enabled, Some(false));
         assert_eq!(decoded.flags["ngl"], 99);
+        assert_eq!(decoded.model_configs["/tmp/model.gguf"]["ctx"], 8192);
+        assert_eq!(decoded.mmproj_pinned, vec!["/tmp/model.gguf".to_string()]);
     }
 
     #[test]
@@ -188,6 +207,8 @@ mod tests {
         assert!(decoded.recent_dirs.is_empty());
         assert!(decoded.profiles.is_empty());
         assert_eq!(decoded.reasoning_enabled, None);
+        assert!(decoded.model_configs.is_empty());
+        assert!(decoded.mmproj_pinned.is_empty());
     }
 
     #[test]
