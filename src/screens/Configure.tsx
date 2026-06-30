@@ -470,6 +470,10 @@ export function ConfigureScreen({
                   // the drafter is optional and many MTP GGUFs embed the heads
                   // without advertising them in the name.
                   const mtpUnconfirmed = !!modelInfo && !modelInfo.mtp_support && !mtpDrafter;
+                  // DFlash needs an explicit drafter GGUF; without one buildArgs
+                  // emits no --spec-type and llama-server runs unaccelerated.
+                  const dflashMissing =
+                    vals.spec_type === "draft-dflash" && !vals.model_draft_dflash;
                   return (
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
                       <button
@@ -488,7 +492,9 @@ export function ConfigureScreen({
                                 ? "MTP heads"
                                 : vals.spec_type === "draft-simple"
                                   ? "draft model"
-                                  : (vals.spec_type as string)}
+                                  : vals.spec_type === "draft-dflash"
+                                    ? "DFlash drafter"
+                                    : (vals.spec_type as string)}
                             </span>
                           )}
                         <span className="sec-count">
@@ -502,6 +508,7 @@ export function ConfigureScreen({
                             f.key === "model" ||
                             f.key === "model_draft" ||
                             f.key === "model_draft_mtp" ||
+                            f.key === "model_draft_dflash" ||
                             f.key === "mmproj";
                           const isTemplatePath = f.key === "chat_template_file";
                           const onBrowse =
@@ -598,6 +605,48 @@ export function ConfigureScreen({
                                   MTP heads load from the model GGUF — no separate draft model
                                   needed. Memory overhead is ~10% of the target. Best with Qwen 3.6
                                   MTP and DeepSeek-V3 MTP GGUFs.
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {g.id === "spec" && vals.spec_type === "draft-dflash" && (
+                          <div
+                            style={{
+                              padding: "10px 16px",
+                              borderTop: "1px solid var(--border)",
+                              background: dflashMissing ? "var(--yellow-soft)" : "var(--surface)",
+                              fontSize: 11.5,
+                              color: dflashMissing ? "var(--yellow)" : "var(--muted)",
+                              display: "flex",
+                              gap: 10,
+                              alignItems: "flex-start",
+                            }}
+                          >
+                            <I.Info
+                              size={13}
+                              style={{
+                                marginTop: 1,
+                                color: dflashMissing ? "var(--yellow)" : "var(--accent)",
+                              }}
+                            />
+                            <div>
+                              {dflashMissing ? (
+                                <>
+                                  No DFlash drafter set yet — pick a{" "}
+                                  <span className="mono">--model-draft</span> GGUF above, or DFlash
+                                  stays off and llama-server runs without speculation.
+                                </>
+                              ) : (
+                                <>
+                                  DFlash drafts a whole <strong>block</strong> of tokens per step
+                                  with a small block-diffusion drafter, then the target verifies
+                                  them — lossless, and strongest on code and structured output.
+                                  Block size, target layers and mask token are read from the drafter
+                                  GGUF&apos;s metadata;{" "}
+                                  <span className="mono">--spec-draft-n-max</span> is clamped to
+                                  that block size. Requires a llama.cpp build with the DFlash patch
+                                  (<span className="mono">draft-dflash</span>, PR #22105).
                                 </>
                               )}
                             </div>

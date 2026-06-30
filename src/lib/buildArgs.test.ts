@@ -35,6 +35,11 @@ function baseVals(overrides: Partial<Values> = {}): Values {
     draft_min: 5,
     draft_p_min: 0.5,
     device_draft: "auto",
+    model_draft_dflash: "",
+    spec_dflash_n_max: 16,
+    spec_dflash_n_min: 0,
+    ngld_dflash: 99,
+    ctx_draft_dflash: 256,
     jinja: false,
     chat_template: "",
     chat_template_file: "",
@@ -121,6 +126,42 @@ describe("buildArgs", () => {
     );
     expect(withDraft).toContain("--spec-type");
     expect(withDraft).toContain("--model-draft");
+  });
+
+  it("draft-dflash without a drafter omits --spec-type", () => {
+    const args = buildArgs(baseVals({ spec_type: "draft-dflash", model_draft_dflash: "" }));
+    expect(args).not.toContain("--spec-type");
+    expect(args).not.toContain("--model-draft");
+  });
+
+  it("draft-dflash with a drafter emits spec-type, model-draft and block flags", () => {
+    const args = buildArgs(
+      baseVals({
+        spec_type: "draft-dflash",
+        model_draft_dflash: "/dflash/drafter.gguf",
+        spec_dflash_n_max: 15,
+        ngld_dflash: 99,
+        ctx_draft_dflash: 256,
+      }),
+    );
+    expect(args[args.indexOf("--spec-type") + 1]).toBe("draft-dflash");
+    expect(args[args.indexOf("--model-draft") + 1]).toBe("/dflash/drafter.gguf");
+    expect(args[args.indexOf("--spec-draft-n-max") + 1]).toBe("15");
+    expect(args[args.indexOf("--n-gpu-layers-draft") + 1]).toBe("99");
+    expect(args[args.indexOf("--ctx-size-draft") + 1]).toBe("256");
+    // n-min defaults to 0, which is omitted
+    expect(args).not.toContain("--spec-draft-n-min");
+  });
+
+  it("draft-dflash emits --spec-draft-n-min only when > 0", () => {
+    const args = buildArgs(
+      baseVals({
+        spec_type: "draft-dflash",
+        model_draft_dflash: "/d.gguf",
+        spec_dflash_n_min: 2,
+      }),
+    );
+    expect(args[args.indexOf("--spec-draft-n-min") + 1]).toBe("2");
   });
 
   it("rope defaults are omitted (none/auto)", () => {

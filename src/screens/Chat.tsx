@@ -627,6 +627,11 @@ export function ChatScreen() {
                 <I.Spark size={11} /> MTP
               </span>
             )}
+            {flags.spec_type === "draft-dflash" && (
+              <span className="badge ghost">
+                <I.Spark size={11} /> DFlash
+              </span>
+            )}
             {currentChat?.config?.workspace_root && (
               <span
                 className="badge ghost"

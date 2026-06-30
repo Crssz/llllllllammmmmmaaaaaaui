@@ -53,6 +53,18 @@ export function buildArgs(vals: Values): string[] {
     if (M("device_draft") !== "auto") push("--device-draft", M("device_draft") as string);
   } else if (specType === "draft-eagle3") {
     push("--spec-type", "draft-eagle3");
+  } else if (specType === "draft-dflash" && truthy(M("model_draft_dflash"))) {
+    // DFlash always needs a separate trained block-diffusion drafter GGUF, so
+    // (like draft-simple) emit nothing until one is set. The DFlash internals
+    // (block size, target layers, mask token) come from the drafter's GGUF
+    // metadata — only the draft model + n-max/n-min/ngld/ctx are CLI knobs.
+    push("--spec-type", "draft-dflash");
+    push("--model-draft", M("model_draft_dflash") as string);
+    push("--n-gpu-layers-draft", M("ngld_dflash") as number);
+    push("--ctx-size-draft", M("ctx_draft_dflash") as number);
+    push("--spec-draft-n-max", M("spec_dflash_n_max") as number);
+    if ((M("spec_dflash_n_min") as number) > 0)
+      push("--spec-draft-n-min", M("spec_dflash_n_min") as number);
   }
   // "none" or anything else: emit nothing so llama-server uses its default.
   // Templates

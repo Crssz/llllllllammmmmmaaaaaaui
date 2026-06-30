@@ -94,6 +94,11 @@ function TopBar({
             + MTP
           </span>
         )}
+        {flags.spec_type === "draft-dflash" && (
+          <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
+            + DFlash
+          </span>
+        )}
         <span className="meta mono">{serverStatusLabel(server)}</span>
         <I.Chevron
           size={12}
