@@ -34,7 +34,7 @@ function argsEqual(a: string[], b: string[]): boolean {
 async function waitForServerReady(get: () => AppStore, timeoutMs: number): Promise<boolean> {
   const start = performance.now();
   while (performance.now() - start < timeoutMs) {
-    let st: ServerStatus | null = null;
+    let st: ServerStatus | null;
     try {
       st = await api.serverStatus();
     } catch {
