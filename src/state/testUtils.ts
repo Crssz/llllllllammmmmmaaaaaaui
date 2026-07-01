@@ -1,6 +1,12 @@
 import { vi } from "vitest";
 import { resetAppStore } from "./store";
-import { api, type Settings, type ChatSession } from "../lib/api";
+import {
+  api,
+  defaultSessionConfig,
+  type Settings,
+  type ChatSession,
+  type Workspace,
+} from "../lib/api";
 import { EMPTY_SETTINGS } from "./slices/settingsSlice";
 
 export { useAppStore, resetAppStore } from "./store";
@@ -23,6 +29,16 @@ export function makeChat(over: Partial<ChatSession> = {}): ChatSession {
     updated_at: 1,
     pinned: false,
     messages: [],
+    ...over,
+  };
+}
+
+export function makeWorkspace(over: Partial<Workspace> = {}): Workspace {
+  return {
+    id: "w1",
+    name: "n",
+    created_at: 1,
+    config: defaultSessionConfig(),
     ...over,
   };
 }

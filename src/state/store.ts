@@ -6,6 +6,7 @@ import { createFlagsSlice, type FlagsSlice } from "./slices/flagsSlice";
 import { createModelsSlice, type ModelsSlice } from "./slices/modelsSlice";
 import { createHwSlice, type HwSlice } from "./slices/hwSlice";
 import { createChatSlice, type ChatSlice } from "./slices/chatSlice";
+import { createWorkspaceSlice, type WorkspaceSlice } from "./slices/workspaceSlice";
 import { createMcpSlice, type McpSlice } from "./slices/mcpSlice";
 import { createProfilesSlice, type ProfilesSlice } from "./slices/profilesSlice";
 import { createTranscribeSlice, type TranscribeSlice } from "./slices/transcribeSlice";
@@ -21,6 +22,7 @@ export type AppStore = SettingsSlice &
   ModelsSlice &
   HwSlice &
   ChatSlice &
+  WorkspaceSlice &
   McpSlice &
   ProfilesSlice &
   TranscribeSlice &
@@ -37,6 +39,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createModelsSlice(...a),
   ...createHwSlice(...a),
   ...createChatSlice(...a),
+  ...createWorkspaceSlice(...a),
   ...createMcpSlice(...a),
   ...createProfilesSlice(...a),
   ...createTranscribeSlice(...a),

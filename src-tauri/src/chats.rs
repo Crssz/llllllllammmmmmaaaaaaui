@@ -62,6 +62,11 @@ pub struct ChatSession {
     pub updated_at: i64,
     #[serde(default)]
     pub pinned: bool,
+    /// Workspace this chat belongs to, if any. `None` = no workspace (shows
+    /// under "All chats", ungrouped). Independent of `config` — the
+    /// workspace's config is only a seed at chat-creation time.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub messages: Vec<ChatMessage>,
     /// Per-session overrides (system prompt, MCP toggles, etc.). None means
     /// fall back to the global defaults.
@@ -181,6 +186,7 @@ mod tests {
         let s: ChatSession = serde_json::from_str(json).unwrap();
         assert!(!s.pinned);
         assert!(s.config.is_none());
+        assert!(s.workspace_id.is_none());
         assert!(s.messages.is_empty());
     }
 
@@ -192,6 +198,7 @@ mod tests {
             created_at: 1,
             updated_at: 2,
             pinned: true,
+            workspace_id: Some("w1".into()),
             messages: vec![ChatMessage {
                 role: "user".into(),
                 content: "hi".into(),
@@ -208,6 +215,7 @@ mod tests {
         let decoded: ChatSession = serde_json::from_str(&encoded).unwrap();
         assert!(decoded.pinned);
         assert!(decoded.config.is_some());
+        assert_eq!(decoded.workspace_id.as_deref(), Some("w1"));
         assert_eq!(decoded.messages.len(), 1);
     }
 }

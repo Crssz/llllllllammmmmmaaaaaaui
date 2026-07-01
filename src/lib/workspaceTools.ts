@@ -9,7 +9,7 @@ import { api } from "./api";
  */
 
 export const WORKSPACE_SERVER_ID = "workspace";
-export const WORKSPACE_SERVER_NAME = "Workspace";
+export const WORKSPACE_SERVER_NAME = "Project folder";
 
 export type WorkspaceToolDef = {
   name: string;

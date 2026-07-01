@@ -14,6 +14,7 @@ import { useAppStore } from "./state";
 import { useShallow } from "zustand/react/shallow";
 import { LogsPanel } from "./components/LogsPanel";
 import { ModelLibraryOverlay } from "./components/ModelLibraryOverlay";
+import { WorkspaceConfigOverlay } from "./components/WorkspaceConfigOverlay";
 import { Toasts } from "./components/Toasts";
 import { log } from "./lib/logger";
 
@@ -145,8 +146,22 @@ function TopBar({
   );
 }
 
-function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>) {
-  const { server, settings, chats, currentChatId, selectChat, newChat } = useAppStore(
+function Sidebar({
+  tab,
+  onTab,
+  onEditWorkspace,
+}: Readonly<{ tab: Tab; onTab: (t: Tab) => void; onEditWorkspace: (id: string) => void }>) {
+  const {
+    server,
+    settings,
+    chats,
+    currentChatId,
+    selectChat,
+    newChat,
+    currentWorkspaceId,
+    selectWorkspace,
+    createWorkspace,
+  } = useAppStore(
     useShallow((s) => ({
       server: s.server,
       settings: s.settings,
@@ -154,8 +169,23 @@ function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>
       currentChatId: s.currentChatId,
       selectChat: s.selectChat,
       newChat: s.newChat,
+      currentWorkspaceId: s.currentWorkspaceId,
+      selectWorkspace: s.selectWorkspace,
+      createWorkspace: s.createWorkspace,
     })),
   );
+
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [newWsName, setNewWsName] = useState("");
+
+  const commitCreateWorkspace = async () => {
+    const name = newWsName.trim();
+    if (!name) return;
+    const id = await createWorkspace(name);
+    selectWorkspace(id);
+    setNewWsName("");
+    setCreatingWorkspace(false);
+  };
   const NAV: { id: Tab; label: string; icon: keyof typeof I; meta: string }[] = [
     { id: "chat", label: "Chat", icon: "Chat", meta: "⌘1" },
     { id: "models", label: "Models", icon: "Folder", meta: "⌘2" },
@@ -169,8 +199,12 @@ function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>
     { id: "engine", label: "Engine", icon: "Download", meta: "⌘0" },
   ];
 
-  const pinned = chats.filter((c) => c.pinned).sort((a, b) => b.updated_at - a.updated_at);
-  const recents = chats
+  const scopedChats =
+    currentWorkspaceId === null
+      ? chats
+      : chats.filter((c) => c.workspace_id === currentWorkspaceId);
+  const pinned = scopedChats.filter((c) => c.pinned).sort((a, b) => b.updated_at - a.updated_at);
+  const recents = scopedChats
     .filter((c) => !c.pinned)
     .sort((a, b) => b.updated_at - a.updated_at)
     .slice(0, 8);
@@ -189,7 +223,7 @@ function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>
 
   return (
     <aside className="sidebar">
-      <div className="nav-label">Workspace</div>
+      <div className="nav-label">Navigate</div>
       {NAV.map((n) => {
         const IconCmp = I[n.icon];
         return (
@@ -204,6 +238,86 @@ function Sidebar({ tab, onTab }: Readonly<{ tab: Tab; onTab: (t: Tab) => void }>
           </button>
         );
       })}
+
+      <div className="nav-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ flex: 1 }}>Workspaces</span>
+        <button
+          className="iconbtn"
+          title="New workspace"
+          onClick={() => setCreatingWorkspace((o) => !o)}
+          style={{ width: 18, height: 18 }}
+        >
+          <I.Plus size={11} />
+        </button>
+      </div>
+      <button
+        className={"nav-item" + (currentWorkspaceId === null ? " active" : "")}
+        onClick={() => selectWorkspace(null)}
+      >
+        <I.Layers className="nav-icon" />
+        <span>All chats</span>
+        <span className="nav-meta">{chats.length}</span>
+      </button>
+      {settings.workspaces.map((w) => {
+        const count = chats.filter((c) => c.workspace_id === w.id).length;
+        return (
+          <div key={w.id} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <button
+              className={"nav-item" + (currentWorkspaceId === w.id ? " active" : "")}
+              onClick={() => selectWorkspace(w.id)}
+              title={w.name}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              <I.Layers className="nav-icon" />
+              <span
+                style={{
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  flex: 1,
+                }}
+              >
+                {w.name}
+              </span>
+              <span className="nav-meta">{count}</span>
+            </button>
+            <button
+              className="iconbtn"
+              title="Edit workspace"
+              onClick={() => onEditWorkspace(w.id)}
+              style={{ width: 20, height: 20, flexShrink: 0 }}
+            >
+              <I.Settings size={10} />
+            </button>
+          </div>
+        );
+      })}
+      {creatingWorkspace && (
+        <div className="chat-side-row" style={{ padding: "2px 10px 6px" }}>
+          <input
+            className="input"
+            placeholder="Workspace name…"
+            value={newWsName}
+            autoFocus
+            onChange={(e) => setNewWsName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitCreateWorkspace();
+              if (e.key === "Escape") {
+                setCreatingWorkspace(false);
+                setNewWsName("");
+              }
+            }}
+          />
+          <button
+            className="btn primary"
+            disabled={!newWsName.trim()}
+            onClick={commitCreateWorkspace}
+            style={{ width: 28, height: 28, padding: 0, justifyContent: "center" }}
+          >
+            <I.Plus size={11} />
+          </button>
+        </div>
+      )}
 
       <div className="nav-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ flex: 1 }}>Pinned</span>
@@ -409,6 +523,7 @@ export function App() {
   const [configureTabRequest, setConfigureTabRequest] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
 
   useEffect(() => {
     const tabs: Tab[] = [
@@ -455,7 +570,7 @@ export function App() {
         setPickerOpen={setPickerOpen}
       />
       <div className="layout">
-        <Sidebar tab={tab} onTab={setTab} />
+        <Sidebar tab={tab} onTab={setTab} onEditWorkspace={setEditingWorkspaceId} />
         <main className="main" data-screen-label={tab}>
           {tab === "chat" && <ChatScreen />}
           {tab === "models" && <ModelsScreen />}
@@ -480,6 +595,10 @@ export function App() {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         onOpenModelsTab={() => setTab("models")}
+      />
+      <WorkspaceConfigOverlay
+        workspaceId={editingWorkspaceId}
+        onClose={() => setEditingWorkspaceId(null)}
       />
       <Toasts />
     </div>

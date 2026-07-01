@@ -236,6 +236,7 @@ export function ChatScreen() {
     pendingUserChoice,
     answerUserChoice,
     modelInfo,
+    workspaces,
   } = useAppStore(
     useShallow((s) => ({
       chatPending: s.chatPending,
@@ -257,6 +258,7 @@ export function ChatScreen() {
       pendingUserChoice: s.pendingUserChoice,
       answerUserChoice: s.answerUserChoice,
       modelInfo: s.modelInfo,
+      workspaces: s.settings.workspaces,
     })),
   );
   const [sideOpen, setSideOpen] = useState(true);
@@ -635,11 +637,20 @@ export function ChatScreen() {
             {currentChat?.config?.workspace_root && (
               <span
                 className="badge ghost"
-                title={`Workspace: ${currentChat.config.workspace_root}`}
+                title={`Project folder: ${currentChat.config.workspace_root}`}
               >
                 <I.Folder size={11} /> {basename(currentChat.config.workspace_root)}
               </span>
             )}
+            {currentChat?.workspace_id &&
+              (() => {
+                const ws = workspaces.find((w) => w.id === currentChat.workspace_id);
+                return ws ? (
+                  <span className="badge ghost" title={`Workspace: ${ws.name}`}>
+                    <I.Layers size={11} /> {ws.name}
+                  </span>
+                ) : null;
+              })()}
             {currentChat && (
               <button
                 className="btn ghost"

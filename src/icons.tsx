@@ -367,6 +367,17 @@ export const I = {
       }
     />
   ),
+  Layers: (p: IconProps) => (
+    <Icon
+      {...p}
+      paths={
+        <>
+          <path d="M12 3 2 8l10 5 10-5-10-5Z" />
+          <path d="m2 13 10 5 10-5" />
+        </>
+      }
+    />
+  ),
 } as const;
 
 export type IconName = keyof typeof I;

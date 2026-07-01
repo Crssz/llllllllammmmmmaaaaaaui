@@ -43,6 +43,10 @@ pub struct Settings {
     /// Reusable chat session presets (system prompt, MCP toggles, etc.).
     #[serde(default)]
     pub chat_presets: Vec<ChatPreset>,
+    /// Workspaces group chats under a shared default config (system prompt,
+    /// project folder, MCP servers, tool permissions). See `Workspace`.
+    #[serde(default)]
+    pub workspaces: Vec<Workspace>,
     /// Optional HuggingFace access token. When set, catalog requests send it as
     /// a Bearer token — lifts anonymous rate-limiting/throttling, enables the
     /// faster authenticated download path, and unlocks gated repos.
@@ -57,6 +61,20 @@ pub struct ChatPreset {
     pub id: String,
     pub name: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub config: ChatSessionConfig,
+}
+
+/// Groups multiple chats under a shared default config. Membership is
+/// tracked on each `ChatSession` via `workspace_id`, independent of
+/// `ChatPreset` linkage — a chat can belong to a workspace, optionally apply
+/// a preset, and diverge in its own config without affecting either.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    /// Default config applied to new chats created inside this workspace.
     #[serde(default)]
     pub config: ChatSessionConfig,
 }
@@ -194,6 +212,7 @@ mod tests {
             reasoning_enabled: Some(false),
             mcp_servers: vec![],
             chat_presets: vec![],
+            workspaces: vec![],
             hf_token: Some("hf_test".into()),
         };
         let encoded = serde_json::to_string(&s).unwrap();
@@ -216,6 +235,7 @@ mod tests {
         assert_eq!(decoded.reasoning_enabled, None);
         assert!(decoded.model_configs.is_empty());
         assert!(decoded.mmproj_pinned.is_empty());
+        assert!(decoded.workspaces.is_empty());
     }
 
     #[test]
@@ -256,6 +276,33 @@ mod tests {
         };
         let encoded = serde_json::to_string(&p).unwrap();
         let decoded: ChatPreset = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.config.system_prompt.as_deref(), Some("be brief"));
+        assert_eq!(decoded.config.tool_permissions.default, "allow");
+        assert_eq!(decoded.config.tool_permissions.per_tool["s1:t"], "deny");
+        assert_eq!(decoded.config.workspace_root.as_deref(), Some("C:/proj"));
+    }
+
+    #[test]
+    fn workspace_roundtrip_with_nested_config() {
+        let w = Workspace {
+            id: "w1".into(),
+            name: "first".into(),
+            created_at: 42,
+            config: ChatSessionConfig {
+                system_prompt: Some("be brief".into()),
+                chat_template: None,
+                mcp_server_ids: vec!["s1".into()],
+                tool_permissions: ToolPermissions {
+                    default: "allow".into(),
+                    per_tool: [("s1:t".into(), "deny".into())].into_iter().collect(),
+                },
+                workspace_root: Some("C:/proj".into()),
+                preset_id: None,
+            },
+        };
+        let encoded = serde_json::to_string(&w).unwrap();
+        let decoded: Workspace = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.name, "first");
         assert_eq!(decoded.config.system_prompt.as_deref(), Some("be brief"));
         assert_eq!(decoded.config.tool_permissions.default, "allow");
         assert_eq!(decoded.config.tool_permissions.per_tool["s1:t"], "deny");

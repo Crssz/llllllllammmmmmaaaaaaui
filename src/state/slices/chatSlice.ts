@@ -45,6 +45,9 @@ export type ChatSlice = {
   deleteChat: (id: string) => void;
   togglePinChat: (id: string) => void;
   renameChat: (id: string, title: string) => void;
+  /** Moves every chat in the given workspace to "no workspace" (does not
+   *  delete them) — called when a workspace is deleted. */
+  clearWorkspaceFromChats: (workspaceId: string) => void;
   editMessage: (chatId: string, index: number, content: string) => void;
   deleteMessage: (chatId: string, index: number) => void;
   resendFromMessage: (chatId: string, index: number) => Promise<void>;
@@ -81,6 +84,28 @@ function mutateChats(
 }
 
 export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, get) => {
+  // Build a fresh blank session, stamped with the active workspace (if any)
+  // and seeded with that workspace's default config — a one-time copy, not a
+  // live link (mirrors saveSessionAsPreset's `{ ...config, preset_id: null }`).
+  const buildBlankSession = (): ChatSession => {
+    const id = newChatId();
+    const now = Date.now();
+    const workspaceId = get().currentWorkspaceId;
+    const workspace = workspaceId
+      ? get().settings.workspaces.find((w) => w.id === workspaceId)
+      : undefined;
+    return {
+      id,
+      title: "New chat",
+      created_at: now,
+      updated_at: now,
+      pinned: false,
+      workspace_id: workspaceId ?? null,
+      messages: [],
+      config: workspace ? { ...workspace.config, preset_id: null } : undefined,
+    };
+  };
+
   // Patch the in-progress assistant message without persisting (called many
   // times per second while streaming).
   const patchAssistantContent = (chatId: string, content: string, reasoning: string | null) => {
@@ -690,23 +715,21 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     setCurrentChatId: (id) => set({ currentChatId: id }),
 
     newChat: () => {
-      const id = newChatId();
-      const now = Date.now();
-      const session: ChatSession = {
-        id,
-        title: "New chat",
-        created_at: now,
-        updated_at: now,
-        pinned: false,
-        messages: [],
-      };
+      const session = buildBlankSession();
       set((s) => ({
         chats: mutateChats(s, (chats) => [session, ...chats]),
-        currentChatId: id,
+        currentChatId: session.id,
         chatError: null,
       }));
-      log.info("chat", `new session: ${id}`);
+      log.info("chat", `new session: ${session.id}`, { workspaceId: session.workspace_id });
     },
+
+    clearWorkspaceFromChats: (workspaceId) =>
+      set((s) => ({
+        chats: mutateChats(s, (chats) =>
+          chats.map((c) => (c.workspace_id === workspaceId ? { ...c, workspace_id: null } : c)),
+        ),
+      })),
 
     selectChat: (id) => set({ currentChatId: id, chatError: null }),
 
@@ -795,16 +818,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       }
       let targetSession = chats.find((c) => c.id === currentChatId) ?? null;
       if (!targetSession) {
-        const id = newChatId();
-        const now = Date.now();
-        targetSession = {
-          id,
-          title: "New chat",
-          created_at: now,
-          updated_at: now,
-          pinned: false,
-          messages: [],
-        };
+        targetSession = buildBlankSession();
       }
       const userMsg: StoredChatMessage = {
         role: "user",

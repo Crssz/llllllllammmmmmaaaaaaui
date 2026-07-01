@@ -211,12 +211,25 @@ export type ChatPreset = {
   config: ChatSessionConfig;
 };
 
+/** Groups multiple chats under a shared default config (system prompt,
+ *  project folder, MCP servers, tool permissions). Membership is tracked on
+ *  each ChatSession via `workspace_id`, independent of preset linkage. */
+export type Workspace = {
+  id: string;
+  name: string;
+  created_at: number;
+  config: ChatSessionConfig;
+};
+
 export type ChatSession = {
   id: string;
   title: string;
   created_at: number;
   updated_at: number;
   pinned: boolean;
+  /** Workspace this chat belongs to. Undefined/null = no workspace (shows
+   *  under "All chats", ungrouped). */
+  workspace_id?: string | null;
   messages: StoredChatMessage[];
   config?: ChatSessionConfig | null;
 };
@@ -278,6 +291,8 @@ export type Settings = {
   reasoning_enabled: boolean | null;
   mcp_servers: McpServerConfig[];
   chat_presets: ChatPreset[];
+  /** Chat-grouping workspaces — see `Workspace`. */
+  workspaces: Workspace[];
   /** Optional HuggingFace access token, sent as a Bearer token on catalog
    *  requests to lift rate-limiting, speed up downloads, and reach gated repos. */
   hf_token: string | null;
@@ -458,6 +473,15 @@ export function defaultSessionConfig(): ChatSessionConfig {
     tool_permissions: { default: "ask", per_tool: {} },
     workspace_root: null,
     preset_id: null,
+  };
+}
+
+export function makeWorkspace(name: string): Workspace {
+  return {
+    id: `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    name: name || "Untitled workspace",
+    created_at: Date.now(),
+    config: defaultSessionConfig(),
   };
 }
 

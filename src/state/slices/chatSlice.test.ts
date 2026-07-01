@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, defaultSessionConfig } from "../../lib/api";
 import { freshStore, makeChat, makeSettings, stubApi, useAppStore } from "../testUtils";
 import type { StoredChatMessage } from "../../lib/api";
 
@@ -44,6 +44,43 @@ describe("chat slice — CRUD", () => {
     useAppStore.getState().newChat();
     expect(useAppStore.getState().chats).toHaveLength(1);
     expect(useAppStore.getState().currentChatId).toBe(useAppStore.getState().chats[0].id);
+  });
+
+  it("newChat stamps workspace_id and seeds config from the active workspace", () => {
+    const ws = {
+      id: "w1",
+      name: "Proj",
+      created_at: 1,
+      config: { ...defaultSessionConfig(), system_prompt: "be terse", preset_id: "some-preset" },
+    };
+    useAppStore.getState().setSettings(makeSettings({ workspaces: [ws] }));
+    useAppStore.getState().selectWorkspace("w1");
+    useAppStore.getState().newChat();
+    const chat = useAppStore.getState().chats[0];
+    expect(chat.workspace_id).toBe("w1");
+    expect(chat.config?.system_prompt).toBe("be terse");
+    // Inheriting a workspace's config is a one-time copy, not a live preset link.
+    expect(chat.config?.preset_id).toBeNull();
+  });
+
+  it("newChat leaves config undefined when no workspace is active", () => {
+    useAppStore.getState().newChat();
+    const chat = useAppStore.getState().chats[0];
+    expect(chat.workspace_id).toBeNull();
+    expect(chat.config).toBeUndefined();
+  });
+
+  it("clearWorkspaceFromChats clears workspace_id only on matching chats", () => {
+    useAppStore
+      .getState()
+      .setChats([
+        makeChat({ id: "a", workspace_id: "w1" }),
+        makeChat({ id: "b", workspace_id: "w2" }),
+      ]);
+    useAppStore.getState().clearWorkspaceFromChats("w1");
+    const chats = useAppStore.getState().chats;
+    expect(chats.find((c) => c.id === "a")?.workspace_id).toBeNull();
+    expect(chats.find((c) => c.id === "b")?.workspace_id).toBe("w2");
   });
 
   it("selectChat sets currentChatId and clears chatError", () => {
