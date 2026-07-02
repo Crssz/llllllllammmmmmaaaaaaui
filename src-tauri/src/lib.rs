@@ -174,6 +174,7 @@ pub fn run() {
             save_settings,
             crate::build_scan::scan_build,
             crate::models_scan::scan_models,
+            crate::models_scan::delete_model_file,
             inspect_gguf,
             start_server,
             stop_server,

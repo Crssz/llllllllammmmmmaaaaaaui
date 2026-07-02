@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { I } from "../icons";
-import { api, type BenchRequest, type BenchRow } from "../lib/api";
+import { api, type BenchRequest, type BenchRow, type BenchRun } from "../lib/api";
 import { useAppStore, type FlagValues } from "../state";
 import { useShallow } from "zustand/react/shallow";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { useTextPrompt } from "../components/TextPromptDialog";
 
 // llama-bench shares a subset of llama-server's flags, so the benchmark can
 // inherit them from the live Configure config and measure the model the way the
@@ -62,6 +64,43 @@ function relTime(ms: number): string {
 
 function bestTs(rows: BenchRow[]): number {
   return rows.reduce((mx, r) => Math.max(mx, r.avg_ts), 0);
+}
+
+function kvLabel(r: BenchRow): string {
+  return r.type_k && r.type_v ? `${r.type_k}/${r.type_v}` : "—";
+}
+
+// Clipboard exports for a saved run, mirroring the ResultsTable columns.
+function runToMarkdown(r: BenchRun): string {
+  const lines = r.rows.map(
+    (row) =>
+      `| ${rowLabel(row)} | ${nglLabel(row.n_gpu_layers)} | ${row.n_batch || "—"} | ` +
+      `${faLabel(row.flash_attn)} | ${kvLabel(row)} | ${row.avg_ts.toFixed(2)} | ` +
+      `${row.stddev_ts > 0 ? row.stddev_ts.toFixed(2) : "—"} |`,
+  );
+  return [
+    `### ${r.label} — ${basename(r.model_path)}`,
+    "",
+    "| test | ngl | batch | fa | kv | t/s | ± stddev |",
+    "| --- | ---: | ---: | --- | --- | ---: | ---: |",
+    ...lines,
+  ].join("\n");
+}
+
+function runToCsv(r: BenchRun): string {
+  const lines = r.rows.map((row) =>
+    [
+      rowLabel(row),
+      nglLabel(row.n_gpu_layers),
+      row.n_batch,
+      faLabel(row.flash_attn),
+      kvLabel(row),
+      row.avg_ts,
+      row.stddev_ts,
+      row.avg_ns,
+    ].join(","),
+  );
+  return ["test,ngl,batch,fa,kv,avg_ts,stddev_ts,avg_ns", ...lines].join("\n");
 }
 
 // A numeric/text field that accepts a single value or a comma-separated sweep.
@@ -170,6 +209,7 @@ export function BenchScreen() {
     benchCancel,
     benchSelectRun,
     benchDeleteRun,
+    benchRenameRun,
   } = useAppStore(
     useShallow((s) => ({
       buildDir: s.settings.build_dir,
@@ -181,8 +221,59 @@ export function BenchScreen() {
       benchCancel: s.benchCancel,
       benchSelectRun: s.benchSelectRun,
       benchDeleteRun: s.benchDeleteRun,
+      benchRenameRun: s.benchRenameRun,
     })),
   );
+
+  const openMenu = useContextMenu();
+  const { promptElement, openPrompt } = useTextPrompt();
+
+  const runMenuItems = (r: BenchRun): MenuItem[] => [
+    { label: "View results", icon: "History", onClick: () => benchSelectRun(r.id) },
+    {
+      label: "Rename…",
+      icon: "Pencil",
+      onClick: () =>
+        openPrompt({
+          title: "Rename benchmark run",
+          initial: r.label,
+          onSubmit: (v) => benchRenameRun(r.id, v),
+        }),
+    },
+    {
+      label: "Copy as",
+      icon: "Copy",
+      submenu: [
+        {
+          label: "Markdown table",
+          onClick: () => navigator.clipboard?.writeText(runToMarkdown(r)).catch(() => {}),
+        },
+        {
+          label: "CSV",
+          onClick: () => navigator.clipboard?.writeText(runToCsv(r)).catch(() => {}),
+        },
+        {
+          label: "JSON",
+          onClick: () => navigator.clipboard?.writeText(JSON.stringify(r, null, 2)).catch(() => {}),
+        },
+      ],
+    },
+    {
+      label: "Copy model path",
+      icon: "Copy",
+      disabled: !r.model_path,
+      onClick: () => navigator.clipboard?.writeText(r.model_path).catch(() => {}),
+    },
+    "separator",
+    {
+      label: "Delete run…",
+      icon: "Trash",
+      danger: true,
+      onClick: () => {
+        if (confirm(`Delete benchmark run "${r.label}"?`)) benchDeleteRun(r.id);
+      },
+    },
+  ];
 
   // Seed the form from the current server config so the benchmark reflects how
   // the user actually runs the model. These are local copies — running a
@@ -488,6 +579,7 @@ export function BenchScreen() {
                       key={r.id}
                       className={"bench-run" + (benchViewingId === r.id ? " active" : "")}
                       onClick={() => benchSelectRun(r.id)}
+                      onContextMenu={(e) => openMenu(e, runMenuItems(r))}
                     >
                       <I.Bolt size={13} style={{ color: "var(--muted)", flexShrink: 0 }} />
                       <span className="rname">
@@ -518,6 +610,7 @@ export function BenchScreen() {
           </div>
         )}
       </div>
+      {promptElement}
     </>
   );
 }

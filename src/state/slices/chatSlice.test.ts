@@ -129,6 +129,61 @@ describe("chat slice — CRUD", () => {
     expect(useAppStore.getState().chats[0].title).toBe("Untitled");
   });
 
+  it("duplicateChat clones messages/config into a new unpinned session and selects it", () => {
+    const src = makeChat({
+      id: "a",
+      title: "orig",
+      pinned: true,
+      workspace_id: "w1",
+      messages: [{ role: "user", content: "hi", time: 1 }],
+      config: { ...defaultSessionConfig(), system_prompt: "sp" },
+    });
+    useAppStore.setState({ chats: [src], currentChatId: "a" });
+    useAppStore.getState().duplicateChat("a");
+    const chats = useAppStore.getState().chats;
+    expect(chats).toHaveLength(2);
+    const copy = chats[0];
+    expect(copy.id).not.toBe("a");
+    expect(copy.title).toBe("orig (copy)");
+    expect(copy.pinned).toBe(false);
+    expect(copy.workspace_id).toBe("w1");
+    expect(copy.messages).toEqual(src.messages);
+    expect(copy.config?.system_prompt).toBe("sp");
+    expect(useAppStore.getState().currentChatId).toBe(copy.id);
+    // Deep copy: mutating the clone must not touch the source.
+    expect(copy.messages).not.toBe(src.messages);
+    expect(copy.config).not.toBe(src.config);
+  });
+
+  it("duplicateChat no-ops on unknown id", () => {
+    useAppStore.setState({ chats: [makeChat({ id: "a" })], currentChatId: "a" });
+    useAppStore.getState().duplicateChat("nope");
+    expect(useAppStore.getState().chats).toHaveLength(1);
+    expect(useAppStore.getState().currentChatId).toBe("a");
+  });
+
+  it("duplicateChat refuses while that chat is streaming", () => {
+    useAppStore.setState({
+      chats: [makeChat({ id: "a" })],
+      currentChatId: "a",
+      chatPending: true,
+      chatStreamingId: "a",
+    });
+    useAppStore.getState().duplicateChat("a");
+    expect(useAppStore.getState().chats).toHaveLength(1);
+  });
+
+  it("setChatWorkspace assigns and clears a chat's workspace", () => {
+    useAppStore.setState({
+      chats: [makeChat({ id: "a", workspace_id: null }), makeChat({ id: "b", workspace_id: "w1" })],
+    });
+    useAppStore.getState().setChatWorkspace("a", "w2");
+    expect(useAppStore.getState().chats.find((c) => c.id === "a")?.workspace_id).toBe("w2");
+    expect(useAppStore.getState().chats.find((c) => c.id === "b")?.workspace_id).toBe("w1");
+    useAppStore.getState().setChatWorkspace("a", null);
+    expect(useAppStore.getState().chats.find((c) => c.id === "a")?.workspace_id).toBeNull();
+  });
+
   it("editMessage replaces content at index, ignores out-of-bounds", () => {
     useAppStore.setState({
       chats: [makeChat({ id: "a", messages: [{ role: "user", content: "hi", time: 1 }] })],

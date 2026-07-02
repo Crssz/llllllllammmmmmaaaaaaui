@@ -4,6 +4,7 @@ import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { api, type GgufInfo } from "../lib/api";
 import { ExpandedRow, bitsClass, flatten, type FlatRow } from "../screens/Models";
+import { useContextMenu, type MenuItem } from "./ContextMenu";
 
 type SortBy = "recent" | "size" | "name";
 
@@ -53,6 +54,7 @@ export function ModelLibraryOverlay({
   );
 
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const openMenu = useContextMenu();
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortBy>("recent");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -73,12 +75,17 @@ export function ModelLibraryOverlay({
   useEffect(() => {
     if (!open) return;
     const onDocMouseDown = (e: MouseEvent) => {
+      // Ignore clicks inside a context menu spawned from this overlay — the
+      // menu is rendered at the app root, outside panelRef. (`Element`, not
+      // `HTMLElement`: the click target may be an SVG icon inside the menu.)
+      if (e.target instanceof Element && e.target.closest(".ctx-menu")) return;
       if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) {
         onClose();
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // While a context menu is open, Escape should close only the menu.
+      if (e.key === "Escape" && !document.querySelector(".ctx-menu")) onClose();
     };
     globalThis.addEventListener("mousedown", onDocMouseDown);
     globalThis.addEventListener("keydown", onKey);
@@ -139,6 +146,37 @@ export function ModelLibraryOverlay({
     // model (or just starts it if it was stopped).
     reloadServer().catch(() => {});
   };
+
+  const rowMenuItems = (r: FlatRow, isLoaded: boolean): MenuItem[] => [
+    {
+      label: "Load & restart server",
+      icon: "Play",
+      disabled: isLoaded,
+      onClick: () => doLoad(r.quant.path, true),
+    },
+    {
+      label: "Load (keep library open)",
+      icon: "Play",
+      disabled: isLoaded,
+      onClick: () => doLoad(r.quant.path, false),
+    },
+    {
+      label: expandedKey === r.quant.path ? "Collapse details" : "Configure / details",
+      icon: "Sliders",
+      onClick: () => toggleRow(r.quant.path, r.quant.path),
+    },
+    "separator",
+    {
+      label: "Reveal in Explorer",
+      icon: "Folder",
+      onClick: () => api.revealInExplorer(r.quant.path).catch(() => {}),
+    },
+    {
+      label: "Copy path",
+      icon: "Copy",
+      onClick: () => navigator.clipboard?.writeText(r.quant.path).catch(() => {}),
+    },
+  ];
 
   return (
     <>
@@ -355,6 +393,7 @@ export function ModelLibraryOverlay({
                         (isLoaded ? " loaded-row" : "") +
                         (isExpanded ? " active" : "")
                       }
+                      onContextMenu={(e) => openMenu(e, rowMenuItems(r, isLoaded))}
                     >
                       <div className="model-row-name">
                         <span className={"quant-tag mono " + bitsClass(r.quant.bits)}>

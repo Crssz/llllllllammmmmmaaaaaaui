@@ -149,4 +149,19 @@ describe("bench slice", () => {
     expect(b.benchViewingId).toBeNull();
     expect(api.saveBenchRuns).toHaveBeenCalled();
   });
+
+  it("benchRenameRun updates the label and persists, ignoring blank labels", async () => {
+    const s = useAppStore.getState();
+    await s.benchStart("/b", REQ, "x");
+    await flush();
+    useAppStore.getState().benchOnDone(done());
+    const id = useAppStore.getState().benchRuns[0].id;
+
+    useAppStore.getState().benchRenameRun(id, "  faster run  ");
+    expect(useAppStore.getState().benchRuns[0].label).toBe("faster run");
+    expect(api.saveBenchRuns).toHaveBeenCalled();
+
+    useAppStore.getState().benchRenameRun(id, "   ");
+    expect(useAppStore.getState().benchRuns[0].label).toBe("faster run");
+  });
 });

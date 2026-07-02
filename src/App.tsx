@@ -16,6 +16,9 @@ import { LogsPanel } from "./components/LogsPanel";
 import { ModelLibraryOverlay } from "./components/ModelLibraryOverlay";
 import { WorkspaceConfigOverlay } from "./components/WorkspaceConfigOverlay";
 import { Toasts } from "./components/Toasts";
+import { ContextMenuProvider, useContextMenu, type MenuItem } from "./components/ContextMenu";
+import { useTextPrompt } from "./components/TextPromptDialog";
+import type { ChatSession, Workspace } from "./lib/api";
 import { log } from "./lib/logger";
 
 type Tab =
@@ -161,6 +164,14 @@ function Sidebar({
     currentWorkspaceId,
     selectWorkspace,
     createWorkspace,
+    togglePinChat,
+    renameChat,
+    deleteChat,
+    duplicateChat,
+    setChatWorkspace,
+    renameWorkspace,
+    deleteWorkspace,
+    chatStreamingId,
   } = useAppStore(
     useShallow((s) => ({
       server: s.server,
@@ -172,8 +183,19 @@ function Sidebar({
       currentWorkspaceId: s.currentWorkspaceId,
       selectWorkspace: s.selectWorkspace,
       createWorkspace: s.createWorkspace,
+      togglePinChat: s.togglePinChat,
+      renameChat: s.renameChat,
+      deleteChat: s.deleteChat,
+      duplicateChat: s.duplicateChat,
+      setChatWorkspace: s.setChatWorkspace,
+      renameWorkspace: s.renameWorkspace,
+      deleteWorkspace: s.deleteWorkspace,
+      chatStreamingId: s.chatStreamingId,
     })),
   );
+
+  const openMenu = useContextMenu();
+  const { promptElement, openPrompt } = useTextPrompt();
 
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [newWsName, setNewWsName] = useState("");
@@ -213,6 +235,95 @@ function Sidebar({
     selectChat(id);
     onTab("chat");
   };
+
+  // Right-click menu for a chat row (pinned or recent).
+  const chatMenuItems = (c: ChatSession): MenuItem[] => [
+    { label: "Open", icon: "Chat", onClick: () => openChat(c.id) },
+    { label: c.pinned ? "Unpin" : "Pin", icon: "Pin", onClick: () => togglePinChat(c.id) },
+    {
+      label: "Rename…",
+      icon: "Pencil",
+      onClick: () =>
+        openPrompt({
+          title: "Rename chat",
+          initial: c.title,
+          onSubmit: (v) => renameChat(c.id, v),
+        }),
+    },
+    {
+      label: "Duplicate",
+      icon: "Copy",
+      disabled: chatStreamingId === c.id,
+      onClick: () => {
+        duplicateChat(c.id);
+        onTab("chat");
+      },
+    },
+    {
+      label: "Move to workspace",
+      icon: "Layers",
+      submenu: [
+        {
+          label: "All chats (none)",
+          icon: c.workspace_id == null ? "Check" : undefined,
+          disabled: c.workspace_id == null,
+          onClick: () => setChatWorkspace(c.id, null),
+        },
+        ...settings.workspaces.map(
+          (w): MenuItem => ({
+            label: w.name,
+            icon: c.workspace_id === w.id ? "Check" : undefined,
+            disabled: c.workspace_id === w.id,
+            onClick: () => setChatWorkspace(c.id, w.id),
+          }),
+        ),
+      ],
+    },
+    "separator",
+    {
+      label: "Delete chat…",
+      icon: "Trash",
+      danger: true,
+      onClick: () => {
+        if (confirm(`Delete "${c.title}"?`)) deleteChat(c.id);
+      },
+    },
+  ];
+
+  const workspaceMenuItems = (w: Workspace): MenuItem[] => [
+    { label: "Open workspace", icon: "Layers", onClick: () => selectWorkspace(w.id) },
+    {
+      label: "New chat here",
+      icon: "Plus",
+      onClick: () => {
+        selectWorkspace(w.id);
+        newChat();
+        onTab("chat");
+      },
+    },
+    "separator",
+    {
+      label: "Rename…",
+      icon: "Pencil",
+      onClick: () =>
+        openPrompt({
+          title: "Rename workspace",
+          initial: w.name,
+          onSubmit: (v) => renameWorkspace(w.id, v).catch(() => {}),
+        }),
+    },
+    { label: "Edit config…", icon: "Settings", onClick: () => onEditWorkspace(w.id) },
+    "separator",
+    {
+      label: "Delete workspace…",
+      icon: "Trash",
+      danger: true,
+      onClick: () => {
+        if (confirm(`Delete workspace "${w.name}"? Its chats move to "All chats".`))
+          deleteWorkspace(w.id).catch(() => {});
+      },
+    },
+  ];
 
   const tokensFor = (msgs: { content: string }[]) =>
     msgs.reduce((n, m) => n + Math.ceil(m.content.length / 4), 0);
@@ -261,7 +372,11 @@ function Sidebar({
       {settings.workspaces.map((w) => {
         const count = chats.filter((c) => c.workspace_id === w.id).length;
         return (
-          <div key={w.id} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <div
+            key={w.id}
+            style={{ display: "flex", alignItems: "center", gap: 2 }}
+            onContextMenu={(e) => openMenu(e, workspaceMenuItems(w))}
+          >
             <button
               className={"nav-item" + (currentWorkspaceId === w.id ? " active" : "")}
               onClick={() => selectWorkspace(w.id)}
@@ -339,6 +454,7 @@ function Sidebar({
           key={c.id}
           className={"nav-item" + (currentChatId === c.id && tab === "chat" ? " active" : "")}
           onClick={() => openChat(c.id)}
+          onContextMenu={(e) => openMenu(e, chatMenuItems(c))}
           title={c.title}
         >
           <I.Pin className="nav-icon" />
@@ -387,6 +503,7 @@ function Sidebar({
             key={c.id}
             className={"nav-item" + (currentChatId === c.id && tab === "chat" ? " active" : "")}
             onClick={() => openChat(c.id)}
+            onContextMenu={(e) => openMenu(e, chatMenuItems(c))}
             title={c.title}
           >
             <I.Chat className="nav-icon" />
@@ -447,6 +564,7 @@ function Sidebar({
           </div>
         )}
       </div>
+      {promptElement}
     </aside>
   );
 }
@@ -558,49 +676,51 @@ export function App() {
   }, [tab]);
 
   return (
-    <div className="app">
-      <TopBar
-        onSwitchToBinary={() => {
-          setTab("configure");
-          setConfigureTabRequest("binary");
-        }}
-        logsOpen={logsOpen}
-        onToggleLogs={() => setLogsOpen((o) => !o)}
-        pickerOpen={pickerOpen}
-        setPickerOpen={setPickerOpen}
-      />
-      <div className="layout">
-        <Sidebar tab={tab} onTab={setTab} onEditWorkspace={setEditingWorkspaceId} />
-        <main className="main" data-screen-label={tab}>
-          {tab === "chat" && <ChatScreen />}
-          {tab === "models" && <ModelsScreen />}
-          {tab === "catalog" && <CatalogScreen />}
-          {tab === "configure" && (
-            <ConfigureScreen
-              initialTab={configureTabRequest}
-              onTabConsumed={() => setConfigureTabRequest(null)}
-            />
-          )}
-          {tab === "hardware" && <HardwareScreen />}
-          {tab === "profiles" && <ProfilesScreen />}
-          {tab === "mcp" && <McpScreen />}
-          {tab === "audio" && <TranscribeScreen />}
-          {tab === "bench" && <BenchScreen />}
-          {tab === "engine" && <EngineManagerScreen />}
-        </main>
+    <ContextMenuProvider>
+      <div className="app">
+        <TopBar
+          onSwitchToBinary={() => {
+            setTab("configure");
+            setConfigureTabRequest("binary");
+          }}
+          logsOpen={logsOpen}
+          onToggleLogs={() => setLogsOpen((o) => !o)}
+          pickerOpen={pickerOpen}
+          setPickerOpen={setPickerOpen}
+        />
+        <div className="layout">
+          <Sidebar tab={tab} onTab={setTab} onEditWorkspace={setEditingWorkspaceId} />
+          <main className="main" data-screen-label={tab}>
+            {tab === "chat" && <ChatScreen />}
+            {tab === "models" && <ModelsScreen />}
+            {tab === "catalog" && <CatalogScreen />}
+            {tab === "configure" && (
+              <ConfigureScreen
+                initialTab={configureTabRequest}
+                onTabConsumed={() => setConfigureTabRequest(null)}
+              />
+            )}
+            {tab === "hardware" && <HardwareScreen />}
+            {tab === "profiles" && <ProfilesScreen />}
+            {tab === "mcp" && <McpScreen />}
+            {tab === "audio" && <TranscribeScreen />}
+            {tab === "bench" && <BenchScreen />}
+            {tab === "engine" && <EngineManagerScreen />}
+          </main>
+        </div>
+        <StatusBar />
+        <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
+        <ModelLibraryOverlay
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          onOpenModelsTab={() => setTab("models")}
+        />
+        <WorkspaceConfigOverlay
+          workspaceId={editingWorkspaceId}
+          onClose={() => setEditingWorkspaceId(null)}
+        />
+        <Toasts />
       </div>
-      <StatusBar />
-      <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
-      <ModelLibraryOverlay
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onOpenModelsTab={() => setTab("models")}
-      />
-      <WorkspaceConfigOverlay
-        workspaceId={editingWorkspaceId}
-        onClose={() => setEditingWorkspaceId(null)}
-      />
-      <Toasts />
-    </div>
+    </ContextMenuProvider>
   );
 }

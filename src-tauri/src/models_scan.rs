@@ -154,6 +154,93 @@ pub fn guess_family(model_name: &str) -> Option<String> {
     }
 }
 
+/// Parse llama.cpp's split-model suffix `<base>-NNNNN-of-MMMMM` out of a
+/// filename stem; None for regular single-file models. The part number must
+/// be within 1..=total — otherwise expanding 1..=total would NOT include the
+/// clicked file itself, and deletion would remove siblings but leave it.
+fn parse_split(stem: &str) -> Option<(&str, u32)> {
+    let (rest, total) = stem.rsplit_once("-of-")?;
+    if total.len() != 5 || !total.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (base, part) = rest.rsplit_once('-')?;
+    if part.len() != 5 || !part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let total: u32 = total.parse().ok()?;
+    let part: u32 = part.parse().ok()?;
+    if total == 0 || part == 0 || part > total {
+        return None;
+    }
+    Some((base, total))
+}
+
+/// Every filename that makes up a (possibly split) GGUF model. Non-split
+/// files map to just themselves; split parts expand to all sibling parts.
+pub fn split_part_filenames(filename: &str) -> Vec<String> {
+    if !filename.to_lowercase().ends_with(".gguf") {
+        return vec![filename.to_string()];
+    }
+    let stem = &filename[..filename.len() - ".gguf".len()];
+    match parse_split(stem) {
+        Some((base, total)) => (1..=total)
+            .map(|i| format!("{base}-{i:05}-of-{total:05}.gguf"))
+            .collect(),
+        None => vec![filename.to_string()],
+    }
+}
+
+/// Delete a model file from disk. Split GGUFs (`…-00001-of-00003.gguf`) lose
+/// every sibling part so the library doesn't keep an unloadable stub.
+/// Returns the number of files removed. Async + spawn_blocking because sync
+/// commands run on the webview's main thread and disk deletes can stall it.
+#[tauri::command]
+pub async fn delete_model_file(path: String) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || delete_model_file_impl(&path))
+        .await
+        .map_err(|e| format!("delete_model_file task failed: {e}"))?
+}
+
+fn delete_model_file_impl(path: &str) -> Result<u32, String> {
+    let p = std::path::Path::new(path);
+    let name = p
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("not a file path: {path}"))?;
+    if !name.to_lowercase().ends_with(".gguf") {
+        return Err(format!("refusing to delete non-GGUF file: {name}"));
+    }
+    if !p.is_file() {
+        return Err(format!("file not found: {path}"));
+    }
+    let dir = p.parent().ok_or_else(|| format!("no parent dir: {path}"))?;
+    // Best-effort across all parts: bailing on the first error would leave
+    // exactly the unloadable partial-model stub this function exists to
+    // prevent (e.g. one part locked on Windows).
+    let mut removed = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+    for part in split_part_filenames(name) {
+        let fp = dir.join(&part);
+        if !fp.is_file() {
+            continue;
+        }
+        match fs::remove_file(&fp) {
+            Ok(()) => {
+                info!("delete_model_file: removed {}", fp.display());
+                removed += 1;
+            }
+            Err(e) => errors.push(format!("{}: {e}", fp.display())),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "removed {removed} file(s), but failed to delete: {}",
+            errors.join("; ")
+        ));
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 pub fn scan_models(dir: String) -> Result<ModelsScan, String> {
     info!("scan_models start: {dir}");
@@ -395,5 +482,79 @@ mod tests {
         assert_eq!(guess_family("Mixtral-8x7B").as_deref(), Some("MoE"));
         assert_eq!(guess_family("Qwen-MoE").as_deref(), Some("MoE"));
         assert_eq!(guess_family("Qwen-7B").as_deref(), Some("Dense"));
+    }
+
+    #[test]
+    fn split_part_filenames_non_split_passthrough() {
+        assert_eq!(
+            split_part_filenames("model-Q4_K_M.gguf"),
+            vec!["model-Q4_K_M.gguf"]
+        );
+        assert_eq!(split_part_filenames("no-extension"), vec!["no-extension"]);
+    }
+
+    #[test]
+    fn split_part_filenames_expands_all_parts() {
+        assert_eq!(
+            split_part_filenames("big-Q8_0-00002-of-00003.gguf"),
+            vec![
+                "big-Q8_0-00001-of-00003.gguf",
+                "big-Q8_0-00002-of-00003.gguf",
+                "big-Q8_0-00003-of-00003.gguf",
+            ]
+        );
+    }
+
+    #[test]
+    fn split_part_filenames_rejects_malformed_split_markers() {
+        // Part/total must be exactly five digits.
+        assert_eq!(
+            split_part_filenames("model-123-of-456.gguf"),
+            vec!["model-123-of-456.gguf"]
+        );
+        // No part number before "-of-".
+        assert_eq!(
+            split_part_filenames("model-of-00003.gguf"),
+            vec!["model-of-00003.gguf"]
+        );
+        assert_eq!(
+            split_part_filenames("model-00001-of-00000.gguf"),
+            vec!["model-00001-of-00000.gguf"]
+        );
+        // Part number outside 1..=total: expanding would not include the
+        // clicked file itself, so it must be treated as non-split.
+        assert_eq!(
+            split_part_filenames("model-00004-of-00003.gguf"),
+            vec!["model-00004-of-00003.gguf"]
+        );
+        assert_eq!(
+            split_part_filenames("model-00000-of-00003.gguf"),
+            vec!["model-00000-of-00003.gguf"]
+        );
+    }
+
+    #[test]
+    fn delete_model_file_refuses_non_gguf() {
+        assert!(delete_model_file_impl("bar.txt").is_err());
+    }
+
+    #[test]
+    fn delete_model_file_removes_split_siblings() {
+        let dir = std::env::temp_dir().join(format!("lmst_delete_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mk = |n: &str| {
+            let p = dir.join(n);
+            fs::write(&p, b"x").unwrap();
+            p
+        };
+        let p1 = mk("m-00001-of-00002.gguf");
+        let p2 = mk("m-00002-of-00002.gguf");
+        let keep = mk("other-Q4.gguf");
+        let removed = delete_model_file_impl(&p1.to_string_lossy()).unwrap();
+        assert_eq!(removed, 2);
+        assert!(!p1.exists());
+        assert!(!p2.exists());
+        assert!(keep.exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

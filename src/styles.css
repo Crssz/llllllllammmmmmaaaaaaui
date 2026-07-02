@@ -3347,3 +3347,89 @@ button {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* ── Context menu ──────────────────────────────────────────────────────── */
+/* Above full overlays (z 70-71) and the rename dialog (z 90 backdrop opens
+   after the menu closes), below toasts (z 9999). */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 190px;
+  max-width: 320px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+}
+.ctx-item-wrap {
+  position: relative;
+}
+.ctx-menu.ctx-submenu {
+  position: absolute;
+  top: -5px;
+  left: calc(100% + 2px);
+}
+.ctx-menu.ctx-submenu.flip {
+  left: auto;
+  right: calc(100% + 2px);
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ctx-item:hover:not(.disabled),
+.ctx-item.sub-open {
+  background: var(--surface);
+  color: var(--text);
+}
+.ctx-item.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ctx-item.danger {
+  color: var(--red);
+}
+.ctx-item.danger:hover:not(.disabled) {
+  background: var(--red-soft);
+}
+.ctx-item .ctx-ico {
+  width: 15px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.ctx-item:hover:not(.disabled) .ctx-ico,
+.ctx-item.danger .ctx-ico {
+  color: inherit;
+}
+.ctx-item .ctx-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  flex-shrink: 0;
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 6px;
+}

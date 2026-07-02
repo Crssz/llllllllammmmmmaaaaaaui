@@ -35,6 +35,10 @@ export type ChatSlice = {
   chats: ChatSession[];
   currentChatId: string | null;
   chatPending: boolean;
+  /** Id of the session a reply is currently streaming into (null when idle).
+   *  chatPending alone can't tell WHICH chat streams — the user may have
+   *  switched to another one whose last message is also an assistant's. */
+  chatStreamingId: string | null;
   chatError: string | null;
   _chatAbort: AbortController | null;
 
@@ -45,6 +49,10 @@ export type ChatSlice = {
   deleteChat: (id: string) => void;
   togglePinChat: (id: string) => void;
   renameChat: (id: string, title: string) => void;
+  /** Clone a chat (messages + config) into a new unpinned session and select it. */
+  duplicateChat: (id: string) => void;
+  /** Assign a chat to a workspace, or to none (null). */
+  setChatWorkspace: (chatId: string, workspaceId: string | null) => void;
   /** Moves every chat in the given workspace to "no workspace" (does not
    *  delete them) — called when a workspace is deleted. */
   clearWorkspaceFromChats: (workspaceId: string) => void;
@@ -493,6 +501,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       chats: mutateChats(s, (chats) => [working, ...chats.filter((c) => c.id !== working.id)]),
       currentChatId: working.id,
       chatPending: true,
+      chatStreamingId: working.id,
     }));
 
     let liveMessages: StoredChatMessage[] = [...composedMessages];
@@ -700,7 +709,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         }));
       }
     } finally {
-      set({ chatPending: false });
+      set({ chatPending: false, chatStreamingId: null });
     }
   };
 
@@ -708,6 +717,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     chats: [],
     currentChatId: null,
     chatPending: false,
+    chatStreamingId: null,
     chatError: null,
     _chatAbort: null,
 
@@ -758,6 +768,38 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       set((s) => ({
         chats: mutateChats(s, (chats) =>
           chats.map((c) => (c.id === id ? { ...c, title: title || "Untitled" } : c)),
+        ),
+      })),
+
+    duplicateChat: (id) => {
+      // Refuse while this chat streams — the clone would freeze a half-
+      // streamed placeholder and yank the user off the live stream.
+      if (get().chatStreamingId === id) return;
+      const src = get().chats.find((c) => c.id === id);
+      if (!src) return;
+      const now = Date.now();
+      const copy: ChatSession = {
+        ...src,
+        id: newChatId(),
+        title: `${src.title} (copy)`,
+        created_at: now,
+        updated_at: now,
+        pinned: false,
+        messages: structuredClone(src.messages),
+        config: src.config ? structuredClone(src.config) : src.config,
+      };
+      set((s) => ({
+        chats: mutateChats(s, (chats) => [copy, ...chats]),
+        currentChatId: copy.id,
+        chatError: null,
+      }));
+      log.info("chat", `duplicated session ${id} → ${copy.id}`);
+    },
+
+    setChatWorkspace: (chatId, workspaceId) =>
+      set((s) => ({
+        chats: mutateChats(s, (chats) =>
+          chats.map((c) => (c.id === chatId ? { ...c, workspace_id: workspaceId } : c)),
         ),
       })),
 

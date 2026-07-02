@@ -517,7 +517,16 @@ export const api = {
   scanBuild: (dir: string) => invoke<BuildInfo>("scan_build", { dir }),
   scanModels: (dir: string) => invoke<ModelsScan>("scan_models", { dir }),
   inspectGguf: (path: string) => invoke<GgufInfo>("inspect_gguf", { path }),
+  // Delete a .gguf from disk (split models lose all sibling parts); resolves
+  // with the number of files removed.
+  deleteModelFile: (path: string) => invoke<number>("delete_model_file", { path }),
   hwSnapshot: () => invoke<HwSnapshot>("hw_snapshot"),
+
+  // OS integrations via tauri-plugin-opener — the plugin is initialized on
+  // the backend and `opener:default` grants both commands, but the npm
+  // binding isn't installed, so invoke the plugin commands directly.
+  revealInExplorer: (path: string) => invoke<void>("plugin:opener|reveal_item_in_dir", { path }),
+  openUrl: (url: string) => invoke<void>("plugin:opener|open_url", { url }),
 
   startServer: (buildDir: string, args: string[]) =>
     invoke<RunningInfo>("start_server", { buildDir, args }),

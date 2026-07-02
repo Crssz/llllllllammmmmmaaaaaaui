@@ -3,6 +3,8 @@ import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import type { McpServerConfig, McpStatus, McpTool, McpTransport } from "../lib/api";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { useTextPrompt } from "../components/TextPromptDialog";
 
 function emptyServer(): McpServerConfig {
   return {
@@ -378,6 +380,86 @@ export function McpScreen() {
     }
   };
 
+  const openMenu = useContextMenu();
+  const { promptElement, openPrompt } = useTextPrompt();
+
+  // Row-targeted variants of the header actions: they act on the clicked
+  // server (not the selection) and skip the dirty-draft save, which only
+  // applies to the selected server's editor.
+  const connectServer = async (id: string) => {
+    setBusyId(id);
+    try {
+      await mcpConnect(id);
+    } catch (e) {
+      alert(`Connect failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const deleteServer = async (s: McpServerConfig) => {
+    if (!confirm(`Delete MCP server "${s.name}"?`)) return;
+    await mcpDeleteServer(s.id);
+    if (selectedId === s.id) {
+      setSelectedId(null);
+      setDraft(null);
+    }
+  };
+
+  const serverMenuItems = (s: McpServerConfig): MenuItem[] => {
+    const st = mcpStatuses[s.id];
+    return [
+      st?.connected
+        ? {
+            label: "Disconnect",
+            icon: "Eject",
+            disabled: busyId === s.id,
+            onClick: () => mcpDisconnect(s.id).catch(() => {}),
+          }
+        : {
+            label: "Connect",
+            icon: "Bolt",
+            disabled: busyId === s.id,
+            onClick: () => connectServer(s.id).catch(() => {}),
+          },
+      "separator",
+      {
+        label: "Rename…",
+        icon: "Pencil",
+        onClick: () =>
+          openPrompt({
+            title: "Rename MCP server",
+            initial: s.name,
+            onSubmit: (v) => mcpUpsertServer({ ...s, name: v }).catch(() => {}),
+          }),
+      },
+      {
+        label: s.enabled ? "Disable" : "Enable",
+        icon: s.enabled ? "X" : "Check",
+        onClick: () => mcpUpsertServer({ ...s, enabled: !s.enabled }).catch(() => {}),
+      },
+      {
+        label: s.autostart ? "Autostart: on" : "Autostart: off",
+        icon: s.autostart ? "Check" : undefined,
+        hint: "toggle",
+        onClick: () => mcpUpsertServer({ ...s, autostart: !s.autostart }).catch(() => {}),
+      },
+      {
+        label: "Duplicate",
+        icon: "Copy",
+        onClick: () =>
+          mcpUpsertServer({ ...s, id: emptyServer().id, name: `${s.name} copy` }).catch(() => {}),
+      },
+      "separator",
+      {
+        label: "Delete…",
+        icon: "Trash",
+        danger: true,
+        onClick: () => deleteServer(s).catch(() => {}),
+      },
+    ];
+  };
+
   const status = selectedId ? mcpStatuses[selectedId] : undefined;
   const tools = selectedId ? mcpTools[selectedId] : undefined;
 
@@ -424,6 +506,13 @@ export function McpScreen() {
                 key={s.id}
                 className={"mcp-sidebar-item" + (active ? " active" : "")}
                 onClick={() => setSelectedId(s.id)}
+                onContextMenu={(e) => {
+                  // Select the row so the detail pane matches the menu target
+                  // — but never at the cost of clobbering an unsaved draft on
+                  // another server (the hydration effect would wipe it).
+                  if (!dirty || selectedId === s.id) setSelectedId(s.id);
+                  openMenu(e, serverMenuItems(s));
+                }}
               >
                 <span
                   className="dot"
@@ -538,6 +627,7 @@ export function McpScreen() {
           )}
         </section>
       </div>
+      {promptElement}
     </>
   );
 }

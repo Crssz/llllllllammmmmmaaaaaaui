@@ -71,4 +71,43 @@ describe("profiles slice", () => {
     expect(left).toHaveLength(1);
     expect(left[0].id).toBe("b");
   });
+
+  it("renameProfile updates the name (with fallback) and persists", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        profiles: [{ id: "a", name: "old", created_at: 1, flags: {}, model_path: null }],
+      }),
+    );
+    await useAppStore.getState().renameProfile("a", "new");
+    expect(useAppStore.getState().settings.profiles[0].name).toBe("new");
+    await useAppStore.getState().renameProfile("a", "");
+    expect(useAppStore.getState().settings.profiles[0].name).toBe("Untitled profile");
+  });
+
+  it("renameProfile no-ops (no save) on unknown id", async () => {
+    await useAppStore.getState().renameProfile("nope", "x");
+    expect(api.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it("duplicateProfile prepends a copy with fresh id and copied flags", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        profiles: [{ id: "a", name: "p", created_at: 1, flags: { ctx: 2048 }, model_path: "/m" }],
+      }),
+    );
+    await useAppStore.getState().duplicateProfile("a");
+    const profiles = useAppStore.getState().settings.profiles;
+    expect(profiles).toHaveLength(2);
+    expect(profiles[0].id).not.toBe("a");
+    expect(profiles[0].name).toBe("p (copy)");
+    expect(profiles[0].flags).toEqual({ ctx: 2048 });
+    expect(profiles[0].flags).not.toBe(profiles[1].flags);
+    expect(profiles[0].model_path).toBe("/m");
+  });
+
+  it("duplicateProfile no-ops on unknown id", async () => {
+    await useAppStore.getState().duplicateProfile("nope");
+    expect(useAppStore.getState().settings.profiles).toHaveLength(0);
+    expect(api.saveSettings).not.toHaveBeenCalled();
+  });
 });

@@ -7,13 +7,19 @@ export type ProfilesSlice = {
   saveProfile: (name: string) => Promise<void>;
   loadProfile: (id: string) => void;
   deleteProfile: (id: string) => Promise<void>;
+  renameProfile: (id: string, name: string) => Promise<void>;
+  duplicateProfile: (id: string) => Promise<void>;
 };
+
+function profileId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> = (_set, get) => ({
   saveProfile: async (name) => {
     const { flags, settings } = get();
     const profile: SavedProfile = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: profileId(),
       name: name || "Untitled profile",
       created_at: Date.now(),
       flags: flags as Record<string, unknown>,
@@ -41,6 +47,38 @@ export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> 
     const updated: Settings = {
       ...settings,
       profiles: settings.profiles.filter((p) => p.id !== id),
+    };
+    await api.saveSettings(updated);
+    get().setSettings(updated);
+  },
+
+  renameProfile: async (id, name) => {
+    const { settings } = get();
+    if (!settings.profiles.some((p) => p.id === id)) return;
+    const updated: Settings = {
+      ...settings,
+      profiles: settings.profiles.map((p) =>
+        p.id === id ? { ...p, name: name || "Untitled profile" } : p,
+      ),
+    };
+    await api.saveSettings(updated);
+    get().setSettings(updated);
+  },
+
+  duplicateProfile: async (id) => {
+    const { settings } = get();
+    const src = settings.profiles.find((p) => p.id === id);
+    if (!src) return;
+    const copy: SavedProfile = {
+      ...src,
+      id: profileId(),
+      name: `${src.name} (copy)`,
+      created_at: Date.now(),
+      flags: { ...src.flags },
+    };
+    const updated: Settings = {
+      ...settings,
+      profiles: [copy, ...settings.profiles].slice(0, 50),
     };
     await api.saveSettings(updated);
     get().setSettings(updated);

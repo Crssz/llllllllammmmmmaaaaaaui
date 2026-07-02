@@ -1,8 +1,9 @@
 import { useEffect, useMemo } from "react";
 import { I } from "../icons";
-import { type EngineAsset, type EngineRelease, type InstalledEngine } from "../lib/api";
+import { api, type EngineAsset, type EngineRelease, type InstalledEngine } from "../lib/api";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 
 function fmtBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
@@ -38,6 +39,7 @@ function InstalledRow({
   onActivate: () => void;
   onDelete: () => void;
 }>) {
+  const openMenu = useContextMenu();
   const meta = [
     engine.version,
     engine.commit,
@@ -47,8 +49,41 @@ function InstalledRow({
   ]
     .filter(Boolean)
     .join(" · ");
+  const menuItems = (): MenuItem[] => [
+    {
+      label: "Activate",
+      icon: "Check",
+      disabled: engine.active,
+      onClick: onActivate,
+    },
+    "separator",
+    {
+      label: "Reveal in Explorer",
+      icon: "Folder",
+      onClick: () => api.revealInExplorer(engine.path).catch(() => {}),
+    },
+    {
+      label: "Copy path",
+      icon: "Copy",
+      onClick: () => navigator.clipboard?.writeText(engine.path).catch(() => {}),
+    },
+    "separator",
+    {
+      label: "Delete engine…",
+      icon: "Trash",
+      danger: true,
+      disabled: engine.active || busy,
+      hint: engine.active ? "in use" : undefined,
+      onClick: () => {
+        if (confirm(`Delete engine "${engine.tag ?? engine.id}" from disk?`)) onDelete();
+      },
+    },
+  ];
   return (
-    <div className={"engine-row" + (engine.active ? " active" : "")}>
+    <div
+      className={"engine-row" + (engine.active ? " active" : "")}
+      onContextMenu={(e) => openMenu(e, menuItems())}
+    >
       <div className="engine-row-icon">
         {engine.active ? <I.Bolt size={14} /> : <I.Cpu size={14} />}
       </div>

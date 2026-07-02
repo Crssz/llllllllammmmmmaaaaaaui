@@ -53,12 +53,17 @@ export function WorkspaceConfigOverlay({
   useEffect(() => {
     if (!open) return;
     const onDocMouseDown = (e: MouseEvent) => {
+      // Ignore clicks inside a context menu — it renders at the app root,
+      // outside panelRef. (`Element`, not `HTMLElement`: the click target
+      // may be an SVG icon inside the menu.)
+      if (e.target instanceof Element && e.target.closest(".ctx-menu")) return;
       if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) {
         onClose();
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // While a context menu is open, Escape should close only the menu.
+      if (e.key === "Escape" && !document.querySelector(".ctx-menu")) onClose();
     };
     globalThis.addEventListener("mousedown", onDocMouseDown);
     globalThis.addEventListener("keydown", onKey);

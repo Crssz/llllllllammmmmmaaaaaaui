@@ -3,6 +3,8 @@ import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { api, type GgufInfo, type ModelEntry, type OwnerEntry, type QuantFile } from "../lib/api";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { log } from "../lib/logger";
 
 type SortBy = "recent" | "size" | "name";
 
@@ -23,6 +25,14 @@ export function flatten(tree: OwnerEntry[]): FlatRow[] {
     }
   }
   return out;
+}
+
+// Mirror of the backend's split-shard grouping ("…-00001-of-00003.gguf"):
+// deleting any part deletes the whole group, so the in-use guard must treat
+// every sibling of the loaded model as in use too.
+export function splitGroupKey(path: string): string {
+  const m = /^(.*)-\d{5}-of-(\d{5})\.gguf$/i.exec(path);
+  return m ? `${m[1]}-of-${m[2]}` : path;
 }
 
 export function bitsClass(bits: number): string {
@@ -49,6 +59,7 @@ export function ModelsScreen() {
     loadModelPath,
     setFlag,
     reloadServer,
+    server,
   } = useAppStore(
     useShallow((s) => ({
       flags: s.flags,
@@ -63,6 +74,7 @@ export function ModelsScreen() {
       loadModelPath: s.loadModelPath,
       setFlag: s.setFlag,
       reloadServer: s.reloadServer,
+      server: s.server,
     })),
   );
 
@@ -125,6 +137,88 @@ export function ModelsScreen() {
     // stops a running server first, then starts with the new model (or just
     // starts it if it was stopped), using the current flags.
     await reloadServer();
+  };
+
+  const openMenu = useContextMenu();
+
+  const onDeleteModel = async (r: FlatRow) => {
+    if (!confirm(`Delete "${r.quant.filename}" from disk? This cannot be undone.`)) return;
+    try {
+      const n = await api.deleteModelFile(r.quant.path);
+      log.info("models", `deleted ${n} file${n === 1 ? "" : "s"} for ${r.quant.filename}`);
+    } catch (e: unknown) {
+      log.notify("error", "models", `Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // Rescan even on error — a split delete may have removed some parts.
+      await rescanModels().catch(() => {});
+    }
+  };
+
+  const modelMenuItems = (r: FlatRow, isLoaded: boolean): MenuItem[] => {
+    // Deleting removes ALL split siblings, so block the delete whenever any
+    // model the running server uses (main or speculative drafter) belongs to
+    // the same split group — not just on exact path match.
+    const inUsePaths = [
+      loadedKey,
+      flags.model_draft as string,
+      flags.model_draft_mtp as string,
+      flags.model_draft_dflash as string,
+    ].filter(Boolean);
+    const rowKey = splitGroupKey(r.quant.path);
+    const deleteBlocked = server.running && inUsePaths.some((p) => splitGroupKey(p) === rowKey);
+    return [
+      {
+        label: "Load & restart server",
+        icon: "Play",
+        disabled: isLoaded,
+        onClick: () => onLoad(r.quant.path).catch(() => {}),
+      },
+      {
+        label: "Set as model (no restart)",
+        icon: "Check",
+        disabled: isLoaded,
+        onClick: () => loadModelPath(r.quant.path),
+      },
+      {
+        label: expandedKey === r.quant.path ? "Collapse details" : "Configure / details",
+        icon: "Sliders",
+        onClick: () => onToggle(r.quant.path, r.quant.path),
+      },
+      "separator",
+      {
+        label: "Reveal in Explorer",
+        icon: "Folder",
+        onClick: () => api.revealInExplorer(r.quant.path).catch(() => {}),
+      },
+      {
+        label: "Copy path",
+        icon: "Copy",
+        onClick: () => navigator.clipboard?.writeText(r.quant.path).catch(() => {}),
+      },
+      {
+        label: "Copy filename",
+        icon: "Copy",
+        onClick: () => navigator.clipboard?.writeText(r.quant.filename).catch(() => {}),
+      },
+      "separator",
+      {
+        label: "Re-scan library",
+        icon: "Refresh",
+        disabled: modelsScanning,
+        onClick: () => rescanModels().catch(() => {}),
+      },
+      "separator",
+      {
+        label: "Delete from disk…",
+        icon: "Trash",
+        danger: true,
+        disabled: deleteBlocked,
+        hint: deleteBlocked ? "in use" : undefined,
+        onClick: () => {
+          onDeleteModel(r).catch(() => {});
+        },
+      },
+    ];
   };
 
   return (
@@ -311,6 +405,7 @@ export function ModelsScreen() {
                     className={
                       "model-row" + (isLoaded ? " loaded-row" : "") + (isExpanded ? " active" : "")
                     }
+                    onContextMenu={(e) => openMenu(e, modelMenuItems(r, isLoaded))}
                   >
                     <div className="model-row-name">
                       <span className={"quant-tag mono " + bitsClass(r.quant.bits)}>

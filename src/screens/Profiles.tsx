@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { useTextPrompt } from "../components/TextPromptDialog";
+import type { SavedProfile } from "../lib/api";
 
 function fmtN(n: number | undefined | null): string {
   if (n === undefined || n === null) return "—";
@@ -37,19 +40,62 @@ function timeAgo(ts: number): string {
 }
 
 export function ProfilesScreen() {
-  const { settings, flags, saveProfile, loadProfile, deleteProfile } = useAppStore(
+  const {
+    settings,
+    flags,
+    saveProfile,
+    loadProfile,
+    deleteProfile,
+    renameProfile,
+    duplicateProfile,
+  } = useAppStore(
     useShallow((s) => ({
       settings: s.settings,
       flags: s.flags,
       saveProfile: s.saveProfile,
       loadProfile: s.loadProfile,
       deleteProfile: s.deleteProfile,
+      renameProfile: s.renameProfile,
+      duplicateProfile: s.duplicateProfile,
     })),
   );
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
+  const openMenu = useContextMenu();
+  const { promptElement, openPrompt } = useTextPrompt();
+
+  const profileMenuItems = (p: SavedProfile): MenuItem[] => [
+    { label: "Load profile", icon: "Play", onClick: () => loadProfile(p.id) },
+    "separator",
+    {
+      label: "Rename…",
+      icon: "Pencil",
+      onClick: () =>
+        openPrompt({
+          title: "Rename profile",
+          initial: p.name,
+          onSubmit: (v) => renameProfile(p.id, v).catch(() => {}),
+        }),
+    },
+    { label: "Duplicate", icon: "Copy", onClick: () => duplicateProfile(p.id).catch(() => {}) },
+    {
+      label: "Copy model path",
+      icon: "Copy",
+      disabled: !p.model_path,
+      onClick: () => navigator.clipboard?.writeText(p.model_path ?? "").catch(() => {}),
+    },
+    "separator",
+    {
+      label: "Delete…",
+      icon: "Trash",
+      danger: true,
+      onClick: () => {
+        if (confirm(`Delete profile "${p.name}"?`)) deleteProfile(p.id).catch(() => {});
+      },
+    },
+  ];
 
   const profiles = settings.profiles;
   const filtered = useMemo(
@@ -173,7 +219,11 @@ export function ProfilesScreen() {
             const f = (p.flags ?? {}) as Record<string, unknown>;
             const modelDisplay = p.model_path ? basename(p.model_path) : "no model";
             return (
-              <div key={p.id} className="prof-card">
+              <div
+                key={p.id}
+                className="prof-card"
+                onContextMenu={(e) => openMenu(e, profileMenuItems(p))}
+              >
                 <div className="prof-card-head">
                   <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                     <div className="prof-name">{p.name}</div>
@@ -247,6 +297,7 @@ export function ProfilesScreen() {
           })}
         </div>
       </div>
+      {promptElement}
     </>
   );
 }

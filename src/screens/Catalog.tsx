@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
-import { type CatalogFile, type CatalogModel } from "../lib/api";
+import { api, type CatalogFile, type CatalogModel } from "../lib/api";
 import { bitsClass } from "./Models";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 
 type SortBy = "downloads" | "likes" | "trending" | "modified";
 
@@ -76,6 +77,7 @@ export function CatalogScreen() {
   const [showToken, setShowToken] = useState(false);
   const [tokenDraft, setTokenDraft] = useState("");
   const hasToken = !!settings.hf_token;
+  const openMenu = useContextMenu();
 
   // Run an initial search on first open so the page isn't blank.
   useEffect(() => {
@@ -254,7 +256,32 @@ export function CatalogScreen() {
 
         {/* ── Active download ── */}
         {downloading && catalogDownload && (
-          <div className="panel">
+          <div
+            className="panel"
+            onContextMenu={(e) =>
+              openMenu(e, [
+                {
+                  label: "Cancel download…",
+                  icon: "X",
+                  danger: true,
+                  onClick: () => cancelCatalogDownload().catch(() => {}),
+                },
+                "separator",
+                {
+                  label: "Open HuggingFace page",
+                  icon: "ExternalLink",
+                  onClick: () =>
+                    api.openUrl(`https://huggingface.co/${catalogDownload.repoId}`).catch(() => {}),
+                },
+                {
+                  label: "Copy repo id",
+                  icon: "Copy",
+                  onClick: () =>
+                    navigator.clipboard?.writeText(catalogDownload.repoId).catch(() => {}),
+                },
+              ])
+            }
+          >
             <div className="panel-head">
               <I.Cloud size={14} /> Downloading{" "}
               <span className="mono" style={{ marginLeft: 4 }}>
@@ -317,6 +344,7 @@ export function CatalogScreen() {
                 onToggle={() => onToggle(m.id)}
                 onDownload={(f) => startCatalogDownload(m.id, f).catch(() => {})}
                 onLoad={(path) => onLoad(path).catch(() => {})}
+                onCancel={() => cancelCatalogDownload().catch(() => {})}
               />
             ))}
           </div>
@@ -344,6 +372,7 @@ function CatalogCard({
   onToggle,
   onDownload,
   onLoad,
+  onCancel,
 }: Readonly<{
   model: CatalogModel;
   expanded: boolean;
@@ -354,10 +383,91 @@ function CatalogCard({
   onToggle: () => void;
   onDownload: (f: CatalogFile) => void;
   onLoad: (path: string) => void;
+  onCancel: () => void;
 }>) {
+  const openMenu = useContextMenu();
+  const hfUrl = `https://huggingface.co/${model.id}`;
+
+  const cardMenuItems = (): MenuItem[] => [
+    { label: expanded ? "Hide files" : "Show files", icon: "ChevR", onClick: onToggle },
+    "separator",
+    {
+      label: "Open HuggingFace page",
+      icon: "ExternalLink",
+      onClick: () => api.openUrl(hfUrl).catch(() => {}),
+    },
+    {
+      label: "Copy repo id",
+      icon: "Copy",
+      onClick: () => navigator.clipboard?.writeText(model.id).catch(() => {}),
+    },
+    {
+      label: "Copy page URL",
+      icon: "Copy",
+      onClick: () => navigator.clipboard?.writeText(hfUrl).catch(() => {}),
+    },
+  ];
+
+  const fileMenuItems = (
+    f: CatalogFile,
+    localPath: string | undefined,
+    isActive: boolean,
+  ): MenuItem[] => {
+    const items: MenuItem[] = [];
+    if (isActive) {
+      items.push({ label: "Cancel download…", icon: "X", danger: true, onClick: onCancel });
+    } else if (localPath) {
+      items.push(
+        {
+          label: "Load & restart server",
+          icon: "Play",
+          onClick: () => onLoad(localPath),
+        },
+        {
+          label: "Reveal in Explorer",
+          icon: "Folder",
+          onClick: () => api.revealInExplorer(localPath).catch(() => {}),
+        },
+      );
+    } else {
+      items.push({
+        label: "Download",
+        icon: "Download",
+        disabled: downloadBusy,
+        onClick: () => onDownload(f),
+      });
+    }
+    items.push(
+      "separator",
+      {
+        label: "Open file on HuggingFace",
+        icon: "ExternalLink",
+        disabled: f.url_paths.length === 0,
+        onClick: () => api.openUrl(`${hfUrl}/blob/main/${f.url_paths[0]}`).catch(() => {}),
+      },
+      {
+        label: "Copy download URL",
+        icon: "Copy",
+        disabled: f.url_paths.length === 0,
+        onClick: () =>
+          navigator.clipboard?.writeText(`${hfUrl}/resolve/main/${f.url_paths[0]}`).catch(() => {}),
+      },
+      {
+        label: "Copy filename",
+        icon: "Copy",
+        onClick: () => navigator.clipboard?.writeText(f.filename).catch(() => {}),
+      },
+    );
+    return items;
+  };
+
   return (
     <div className={"catalog-card" + (expanded ? " active" : "")}>
-      <button className="catalog-card-head" onClick={onToggle}>
+      <button
+        className="catalog-card-head"
+        onClick={onToggle}
+        onContextMenu={(e) => openMenu(e, cardMenuItems())}
+      >
         <I.Cloud size={14} className="catalog-card-icon" />
         <span className="catalog-id mono" title={model.id}>
           <span className="catalog-owner">{model.owner}/</span>
@@ -413,7 +523,11 @@ function CatalogCard({
               const localPath = downloadedByKey.get(`${model.owner}/${f.filename}`);
               const isActive = activeFile === f.filename;
               return (
-                <div className="catalog-file" key={f.filename}>
+                <div
+                  className="catalog-file"
+                  key={f.filename}
+                  onContextMenu={(e) => openMenu(e, fileMenuItems(f, localPath, isActive))}
+                >
                   <span className={"quant-tag mono " + bitsClass(f.bits)}>{f.tag}</span>
                   <span className="catalog-file-name mono" title={f.filename}>
                     {f.filename}

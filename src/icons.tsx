@@ -378,6 +378,29 @@ export const I = {
       }
     />
   ),
+  Pencil: (p: IconProps) => (
+    <Icon
+      {...p}
+      paths={
+        <>
+          <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 3 21l.5-4.5L17 3Z" />
+          <path d="m14 6 4 4" />
+        </>
+      }
+    />
+  ),
+  ExternalLink: (p: IconProps) => (
+    <Icon
+      {...p}
+      paths={
+        <>
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <path d="M15 3h6v6" />
+          <path d="M10 14 21 3" />
+        </>
+      }
+    />
+  ),
 } as const;
 
 export type IconName = keyof typeof I;

@@ -44,6 +44,7 @@ export type BenchSlice = {
   benchOnDone: (ev: BenchDoneEvent) => void;
   benchSelectRun: (id: string | null) => void;
   benchDeleteRun: (id: string) => void;
+  benchRenameRun: (id: string, label: string) => void;
 };
 
 const IDLE: BenchUi = {
@@ -163,5 +164,13 @@ export const createBenchSlice: StateCreator<AppStore, [], [], BenchSlice> = (set
       benchViewingId: s.benchViewingId === id ? null : s.benchViewingId,
     }));
     log.info("bench", `deleted saved run ${id}`);
+  },
+
+  benchRenameRun: (id, label) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    const runs = get().benchRuns.map((r) => (r.id === id ? { ...r, label: trimmed } : r));
+    persistBenchRuns(runs);
+    set({ benchRuns: runs });
   },
 });

@@ -5,7 +5,14 @@ import { useAppStore, useCurrentChat, useChatMessages } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { ChatSidebar } from "../components/ChatSidebar";
 import { Recorder, fmtRecDuration } from "../components/Recorder";
-import { api, type AudioAttachment, type ImageAttachment } from "../lib/api";
+import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { useTextPrompt } from "../components/TextPromptDialog";
+import {
+  api,
+  type AudioAttachment,
+  type ImageAttachment,
+  type StoredChatMessage,
+} from "../lib/api";
 import type { Recording } from "../lib/useAudioRecorder";
 
 // Custom <pre> wrapper for code blocks: hides streamdown's built-in icons
@@ -14,6 +21,7 @@ import type { Recording } from "../lib/useAudioRecorder";
 function CodeBlockPre(props: Readonly<HTMLAttributes<HTMLPreElement>>) {
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
+  const openMenu = useContextMenu();
   // Pull the language hint from the child <code className="language-xyz">.
   const child = props.children as ReactElement<{ className?: string }> | undefined;
   const langMatch = child?.props?.className && /language-(\S+)/.exec(child.props.className);
@@ -33,7 +41,10 @@ function CodeBlockPre(props: Readonly<HTMLAttributes<HTMLPreElement>>) {
   };
 
   return (
-    <div className="md-codeblock">
+    <div
+      className="md-codeblock"
+      onContextMenu={(e) => openMenu(e, [{ label: "Copy code", icon: "Copy", onClick: copy }])}
+    >
       {lang && <span className="md-codeblock-lang mono">{lang}</span>}
       <button
         type="button"
@@ -66,6 +77,7 @@ const STREAMDOWN_COMPONENTS = { pre: CodeBlockPre } as const;
 function MessageAudio({ audio }: Readonly<{ audio: AudioAttachment }>) {
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const openMenu = useContextMenu();
 
   useEffect(() => {
     let alive = true;
@@ -97,7 +109,23 @@ function MessageAudio({ audio }: Readonly<{ audio: AudioAttachment }>) {
   }, [audio.path]);
 
   return (
-    <div className="msg-audio">
+    <div
+      className="msg-audio"
+      onContextMenu={(e) =>
+        openMenu(e, [
+          {
+            label: "Copy file path",
+            icon: "Copy",
+            onClick: () => navigator.clipboard?.writeText(audio.path).catch(() => {}),
+          },
+          {
+            label: "Reveal in Explorer",
+            icon: "Folder",
+            onClick: () => api.revealInExplorer(audio.path).catch(() => {}),
+          },
+        ])
+      }
+    >
       <I.Mic size={12} style={{ color: "var(--accent)" }} />
       {url ? (
         <audio controls preload="metadata" src={url} />
@@ -135,6 +163,7 @@ function MessageImage({ image }: Readonly<{ image: ImageAttachment }>) {
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState(false);
+  const openMenu = useContextMenu();
 
   useEffect(() => {
     let alive = true;
@@ -157,7 +186,30 @@ function MessageImage({ image }: Readonly<{ image: ImageAttachment }>) {
   }, [image.path]);
 
   return (
-    <div className="msg-image">
+    <div
+      className="msg-image"
+      onContextMenu={(e) =>
+        openMenu(e, [
+          {
+            label: "View full size",
+            icon: "Image",
+            disabled: !src,
+            onClick: () => setZoomed(true),
+          },
+          "separator",
+          {
+            label: "Copy file path",
+            icon: "Copy",
+            onClick: () => navigator.clipboard?.writeText(image.path).catch(() => {}),
+          },
+          {
+            label: "Reveal in Explorer",
+            icon: "Folder",
+            onClick: () => api.revealInExplorer(image.path).catch(() => {}),
+          },
+        ])
+      }
+    >
       {src ? (
         <button
           type="button"
@@ -218,6 +270,7 @@ export function ChatScreen() {
   const currentChat = useCurrentChat();
   const {
     chatPending,
+    chatStreamingId,
     chatError,
     sendChat,
     cancelChat,
@@ -226,6 +279,9 @@ export function ChatScreen() {
     newChat,
     deleteChat,
     togglePinChat,
+    renameChat,
+    duplicateChat,
+    setChatWorkspace,
     editMessage,
     deleteMessage,
     resendFromMessage,
@@ -240,6 +296,7 @@ export function ChatScreen() {
   } = useAppStore(
     useShallow((s) => ({
       chatPending: s.chatPending,
+      chatStreamingId: s.chatStreamingId,
       chatError: s.chatError,
       sendChat: s.sendChat,
       cancelChat: s.cancelChat,
@@ -248,6 +305,9 @@ export function ChatScreen() {
       newChat: s.newChat,
       deleteChat: s.deleteChat,
       togglePinChat: s.togglePinChat,
+      renameChat: s.renameChat,
+      duplicateChat: s.duplicateChat,
+      setChatWorkspace: s.setChatWorkspace,
       editMessage: s.editMessage,
       deleteMessage: s.deleteMessage,
       resendFromMessage: s.resendFromMessage,
@@ -397,6 +457,167 @@ export function ChatScreen() {
   const onResend = (idx: number) => {
     if (!currentChat || chatPending) return;
     resendFromMessage(currentChat.id, idx).catch(() => {});
+  };
+
+  const openMenu = useContextMenu();
+  const { promptElement, openPrompt } = useTextPrompt();
+
+  const toggleThink = (idx: number) =>
+    setHiddenThink((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+
+  // "Regenerate" on an assistant bubble = resend from the nearest preceding
+  // user message (resendFromMessage truncates everything after it).
+  const precedingUserIdx = (idx: number): number => {
+    for (let j = idx - 1; j >= 0; j--) {
+      if (chatMessages[j].role === "user") return j;
+    }
+    return -1;
+  };
+
+  const headerMenuItems = (): MenuItem[] => {
+    if (!currentChat) return [{ label: "New chat", icon: "Plus", onClick: newChat }];
+    const c = currentChat;
+    return [
+      {
+        label: "Rename…",
+        icon: "Pencil",
+        onClick: () =>
+          openPrompt({
+            title: "Rename chat",
+            initial: c.title,
+            onSubmit: (v) => renameChat(c.id, v),
+          }),
+      },
+      {
+        label: c.pinned ? "Unpin" : "Pin",
+        icon: "Pin",
+        onClick: () => togglePinChat(c.id),
+      },
+      {
+        label: "Duplicate",
+        icon: "Copy",
+        disabled: chatPending && chatStreamingId === c.id,
+        onClick: () => duplicateChat(c.id),
+      },
+      {
+        label: "Move to workspace",
+        icon: "Layers",
+        submenu: [
+          {
+            label: "All chats (none)",
+            icon: c.workspace_id == null ? "Check" : undefined,
+            disabled: c.workspace_id == null,
+            onClick: () => setChatWorkspace(c.id, null),
+          },
+          ...workspaces.map(
+            (w): MenuItem => ({
+              label: w.name,
+              icon: c.workspace_id === w.id ? "Check" : undefined,
+              disabled: c.workspace_id === w.id,
+              onClick: () => setChatWorkspace(c.id, w.id),
+            }),
+          ),
+        ],
+      },
+      "separator",
+      { label: "New chat", icon: "Plus", onClick: newChat },
+      "separator",
+      {
+        label: "Delete chat…",
+        icon: "Trash",
+        danger: true,
+        onClick: () => {
+          if (confirm("Delete this conversation?")) deleteChat(c.id);
+        },
+      },
+    ];
+  };
+
+  // Menu for tool-result and stored-system messages, which have no .msg-tools
+  // action row at all.
+  const rawMessageMenuItems = (m: StoredChatMessage, i: number): MenuItem[] => [
+    {
+      label: "Copy content",
+      icon: "Copy",
+      disabled: !m.content,
+      onClick: () => copyText(m.content, String(i)),
+    },
+    "separator",
+    {
+      label: "Delete message",
+      icon: "Trash",
+      danger: true,
+      disabled: chatPending,
+      onClick: () => onDelete(i),
+    },
+  ];
+
+  const messageMenuItems = (m: StoredChatMessage, i: number): MenuItem[] => {
+    const isLast = i === chatMessages.length - 1;
+    if (chatPending && chatStreamingId === currentChat?.id && isLast && m.role === "assistant") {
+      return [{ label: "Stop generating", icon: "Stop", onClick: cancelChat }];
+    }
+    const reasoning = m.reasoning?.trim();
+    const items: MenuItem[] = [
+      {
+        label: "Copy message",
+        icon: "Copy",
+        disabled: !m.content,
+        onClick: () => copyText(m.content, String(i)),
+      },
+    ];
+    if (reasoning) {
+      items.push(
+        {
+          label: "Copy reasoning",
+          icon: "Brain",
+          onClick: () => copyText(reasoning, `${i}:think`),
+        },
+        {
+          label: hiddenThink.has(i) ? "Show reasoning" : "Hide reasoning",
+          icon: "Brain",
+          onClick: () => toggleThink(i),
+        },
+      );
+    }
+    items.push("separator");
+    if (m.role === "user") {
+      items.push({
+        label: "Resend from here",
+        icon: "Refresh",
+        disabled: chatPending || !server.ready,
+        onClick: () => onResend(i),
+      });
+    } else {
+      items.push({
+        label: "Regenerate response",
+        icon: "Refresh",
+        disabled: chatPending || !server.ready || precedingUserIdx(i) < 0,
+        onClick: () => onResend(precedingUserIdx(i)),
+      });
+    }
+    items.push(
+      {
+        label: "Edit message",
+        icon: "Pencil",
+        disabled: chatPending,
+        onClick: () => startEdit(i, m.content),
+      },
+      "separator",
+      {
+        label: "Delete message",
+        icon: "Trash",
+        danger: true,
+        disabled: chatPending,
+        onClick: () => onDelete(i),
+      },
+    );
+    return items;
   };
 
   // Track whether the user is near the bottom; only auto-scroll if so.
@@ -600,7 +821,7 @@ export function ChatScreen() {
   return (
     <div className="chat-shell">
       <div className="chat-wrap">
-        <div className="page-head">
+        <div className="page-head" onContextMenu={(e) => openMenu(e, headerMenuItems())}>
           <div>
             <div className="crumb">
               Chats / {currentChat?.pinned ? "Pinned" : currentChat ? "Recent" : "New"}
@@ -721,7 +942,11 @@ export function ChatScreen() {
           {chatMessages.map((m, i) => {
             if (m.role === "tool") {
               return (
-                <div key={i} className="msg tool-msg">
+                <div
+                  key={i}
+                  className="msg tool-msg"
+                  onContextMenu={(e) => openMenu(e, rawMessageMenuItems(m, i))}
+                >
                   <div className="msg-head">
                     <I.Globe size={11} style={{ color: "var(--accent)" }} />
                     <span className="who mono" style={{ color: "var(--accent)" }}>
@@ -735,7 +960,11 @@ export function ChatScreen() {
             }
             if (m.role === "system") {
               return (
-                <div key={i} className="msg system-msg">
+                <div
+                  key={i}
+                  className="msg system-msg"
+                  onContextMenu={(e) => openMenu(e, rawMessageMenuItems(m, i))}
+                >
                   <div className="msg-head">
                     <I.Info size={11} style={{ color: "var(--muted)" }} />
                     <span className="who" style={{ color: "var(--muted)" }}>
@@ -748,7 +977,14 @@ export function ChatScreen() {
               );
             }
             const isLast = i === chatMessages.length - 1;
-            const streaming = chatPending && isLast && m.role === "assistant";
+            // Guard on chatStreamingId, not just chatPending: another chat
+            // may be the one streaming while this one's last message is also
+            // an assistant reply.
+            const streaming =
+              chatPending &&
+              chatStreamingId === currentChat?.id &&
+              isLast &&
+              m.role === "assistant";
             const reasoning = m.reasoning?.trim();
             const showReasoning = !!reasoning && !hiddenThink.has(i);
             const thinkingOnly = streaming && !m.content && reasoning;
@@ -767,7 +1003,11 @@ export function ChatScreen() {
               : null;
             const elapsedS = streaming ? (nowTick - m.time) / 1000 : 0;
             return (
-              <div key={i} className={"msg " + (m.role === "user" ? "user" : "model")}>
+              <div
+                key={i}
+                className={"msg " + (m.role === "user" ? "user" : "model")}
+                onContextMenu={(e) => openMenu(e, messageMenuItems(m, i))}
+              >
                 <div className="msg-head">
                   <span
                     className="who"
@@ -1330,6 +1570,7 @@ export function ChatScreen() {
         </div>
       </div>
       <ChatSidebar open={sideOpen} onToggle={() => setSideOpen((o) => !o)} />
+      {promptElement}
       <dialog
         ref={approvalRef}
         className="tool-approval-card"
