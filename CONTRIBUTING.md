@@ -5,10 +5,8 @@ Thanks for your interest. This is a small Tauri + React app; the contribution lo
 ## Setup
 
 ```pwsh
-npm install --legacy-peer-deps
+npm install
 ```
-
-`--legacy-peer-deps` is needed because some plugins haven't published peer-dep ranges for ESLint 9.
 
 ## Quality gates
 
