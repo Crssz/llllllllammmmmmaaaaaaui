@@ -38,7 +38,7 @@ wmi = "0.14"
 # Used only by hw.rs tests to force an STA apartment and prove the WMI/MTA
 # apartment behaviour the GPU-util sampler depends on. Pinned to the version
 # wmi already resolves so no extra crate is compiled.
-windows = { version = "0.59", features = ["Win32_System_Com"] }
+windows = { version = "0.62", features = ["Win32_System_Com"] }
 
 [features]
 default = ["nvml"]

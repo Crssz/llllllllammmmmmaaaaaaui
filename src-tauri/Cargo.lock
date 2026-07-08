@@ -2146,7 +2146,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "ureq",
- "windows 0.59.0",
+ "windows 0.62.2",
  "wmi",
  "zip",
 ]
