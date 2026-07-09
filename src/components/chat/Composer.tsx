@@ -75,12 +75,18 @@ export function Composer({
 
   // Reset pending attachments + their errors when switching chats. The draft
   // is intentionally preserved across chat switches (matches prior behavior).
+  // Also focus the composer on chat switch / first mount so the user can type
+  // straight away — but don't steal focus from an open modal (e.g. the
+  // tool-approval dialog). Focusing a disabled textarea is a harmless no-op.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingAudio(null);
     setAudioError(null);
     setPendingImage(null);
     setImageError(null);
+    if (typeof document !== "undefined" && !document.querySelector("dialog[open]")) {
+      taRef.current?.focus();
+    }
   }, [chatId]);
 
   useEffect(() => {
@@ -209,6 +215,15 @@ export function Composer({
   // Anything queued to send: text OR an audio/image attachment.
   const hasInput = draft.trim().length > 0 || !!pendingAudio || !!pendingImage;
 
+  // Explains why the attach buttons are disabled, mirroring their disable
+  // conditions. canSend is `server.ready && a model is loaded`, so a false
+  // canSend means the server isn't up, is still loading, or has no model.
+  const notReadyReason = !server.running
+    ? "Start the server on the Configure tab first"
+    : !server.ready
+      ? "Server is still loading the model"
+      : "Pick a model first";
+
   // ── Token usage estimate ─────────────────────────────────────────────────
   const { draftTokens, usedTokens, pctOfCtx } = estimateTokenUsage(messages, draft, ctxMax);
   const tokenColor =
@@ -238,7 +253,15 @@ export function Composer({
           className="composer-chip"
           onClick={pickAudioFile}
           disabled={chatPending || savingAudio || !canSend}
-          title="Attach a wav/mp3 file"
+          title={
+            !canSend
+              ? notReadyReason
+              : savingAudio
+                ? "Waiting for the recording to save…"
+                : chatPending
+                  ? "Wait for the current response to finish"
+                  : "Attach a wav/mp3 file"
+          }
         >
           <I.Folder size={11} /> Audio file
         </button>
@@ -246,7 +269,13 @@ export function Composer({
           className="composer-chip"
           onClick={pickImageFile}
           disabled={chatPending || !canSend}
-          title="Attach an image (vision model required)"
+          title={
+            !canSend
+              ? notReadyReason
+              : chatPending
+                ? "Wait for the current response to finish"
+                : "Attach an image (vision model required)"
+          }
         >
           <I.Image size={11} /> Image
         </button>
@@ -305,7 +334,7 @@ export function Composer({
             "composer-chip" + (reasoningEnabled && reasoningToggleActive ? " toggled" : "")
           }
           onClick={() => setReasoningEnabled(!reasoningEnabled)}
-          disabled={thinkingKnownUnsupported}
+          disabled={!reasoningToggleActive}
           title={reasoningTitle}
           style={reasoningToggleActive ? undefined : { opacity: 0.6 }}
         >

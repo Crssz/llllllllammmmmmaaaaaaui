@@ -18,6 +18,9 @@ import { WorkspaceConfigOverlay } from "./components/WorkspaceConfigOverlay";
 import { Toasts } from "./components/Toasts";
 import { ContextMenuProvider, useContextMenu, type MenuItem } from "./components/ContextMenu";
 import { useTextPrompt } from "./components/TextPromptDialog";
+import { useConfirm } from "./components/ConfirmDialog";
+import { CommandPalette, type CommandPaletteNavItem } from "./components/CommandPalette";
+import { shortcut } from "./lib/platform";
 import type { ChatSession, Workspace } from "./lib/api";
 import { log } from "./lib/logger";
 
@@ -32,6 +35,23 @@ type Tab =
   | "audio"
   | "bench"
   | "engine";
+
+// Single source of truth for the primary tabs: drives the sidebar nav, the
+// Ctrl/⌘+digit shortcuts, and the command palette's "Go to …" entries. `key`
+// is the digit the tab binds to ("1"…"9", "0" for the tenth); labels render
+// via shortcut() so they follow the host OS (Ctrl on Windows, ⌘ on Mac).
+const NAV: CommandPaletteNavItem[] = [
+  { id: "chat", label: "Chat", icon: "Chat", key: "1" },
+  { id: "models", label: "Models", icon: "Folder", key: "2" },
+  { id: "catalog", label: "Catalog", icon: "Cloud", key: "3" },
+  { id: "configure", label: "Configure", icon: "Sliders", key: "4" },
+  { id: "hardware", label: "Hardware", icon: "Hardware", key: "5" },
+  { id: "profiles", label: "Profiles", icon: "Bookmark", key: "6" },
+  { id: "mcp", label: "MCP", icon: "Globe", key: "7" },
+  { id: "audio", label: "Audio", icon: "Mic", key: "8" },
+  { id: "bench", label: "Bench", icon: "Bolt", key: "9" },
+  { id: "engine", label: "Engine", icon: "Download", key: "0" },
+];
 
 function basename(p: string): string {
   if (!p) return "";
@@ -50,12 +70,14 @@ function serverStatusLabel(server: ServerLike): string {
 function TopBar({
   onSwitchToBinary,
   onToggleLogs,
+  onOpenPalette,
   logsOpen,
   pickerOpen,
   setPickerOpen,
 }: Readonly<{
   onSwitchToBinary: () => void;
   onToggleLogs: () => void;
+  onOpenPalette: () => void;
   logsOpen: boolean;
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
@@ -116,14 +138,14 @@ function TopBar({
       </button>
 
       <div className="top-actions">
-        <button className="searchbtn">
+        <button className="searchbtn" onClick={onOpenPalette}>
           <I.Search />
           <span>Jump to…</span>
-          <span className="kbd">⌘K</span>
+          <span className="kbd">{shortcut("K")}</span>
         </button>
         <button
           className="iconbtn"
-          title={logsOpen ? "Hide logs" : "Show logs"}
+          title={logsOpen ? `Hide logs (${shortcut("`")})` : `Show logs (${shortcut("`")})`}
           onClick={onToggleLogs}
           style={{
             color: logsOpen ? "var(--accent)" : undefined,
@@ -196,6 +218,7 @@ function Sidebar({
 
   const openMenu = useContextMenu();
   const { promptElement, openPrompt } = useTextPrompt();
+  const { confirmElement, confirm } = useConfirm();
 
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [newWsName, setNewWsName] = useState("");
@@ -208,18 +231,6 @@ function Sidebar({
     setNewWsName("");
     setCreatingWorkspace(false);
   };
-  const NAV: { id: Tab; label: string; icon: keyof typeof I; meta: string }[] = [
-    { id: "chat", label: "Chat", icon: "Chat", meta: "⌘1" },
-    { id: "models", label: "Models", icon: "Folder", meta: "⌘2" },
-    { id: "catalog", label: "Catalog", icon: "Cloud", meta: "⌘3" },
-    { id: "configure", label: "Configure", icon: "Sliders", meta: "⌘4" },
-    { id: "hardware", label: "Hardware", icon: "Hardware", meta: "⌘5" },
-    { id: "profiles", label: "Profiles", icon: "Bookmark", meta: "⌘6" },
-    { id: "mcp", label: "MCP", icon: "Globe", meta: "⌘7" },
-    { id: "audio", label: "Audio", icon: "Mic", meta: "⌘8" },
-    { id: "bench", label: "Bench", icon: "Bolt", meta: "⌘9" },
-    { id: "engine", label: "Engine", icon: "Download", meta: "⌘0" },
-  ];
 
   const scopedChats =
     currentWorkspaceId === null
@@ -284,8 +295,9 @@ function Sidebar({
       label: "Delete chat…",
       icon: "Trash",
       danger: true,
-      onClick: () => {
-        if (confirm(`Delete "${c.title}"?`)) deleteChat(c.id);
+      onClick: async () => {
+        if (await confirm({ title: `Delete "${c.title}"?`, danger: true, confirmLabel: "Delete" }))
+          deleteChat(c.id);
       },
     },
   ];
@@ -318,8 +330,15 @@ function Sidebar({
       label: "Delete workspace…",
       icon: "Trash",
       danger: true,
-      onClick: () => {
-        if (confirm(`Delete workspace "${w.name}"? Its chats move to "All chats".`))
+      onClick: async () => {
+        if (
+          await confirm({
+            title: `Delete workspace "${w.name}"?`,
+            body: `Its chats move to "All chats".`,
+            danger: true,
+            confirmLabel: "Delete",
+          })
+        )
           deleteWorkspace(w.id).catch(() => {});
       },
     },
@@ -341,11 +360,11 @@ function Sidebar({
           <button
             key={n.id}
             className={"nav-item" + (tab === n.id ? " active" : "")}
-            onClick={() => onTab(n.id)}
+            onClick={() => onTab(n.id as Tab)}
           >
             <IconCmp className="nav-icon" />
             <span>{n.label}</span>
-            <span className="nav-meta">{n.meta}</span>
+            <span className="nav-meta">{shortcut(n.key)}</span>
           </button>
         );
       })}
@@ -565,6 +584,7 @@ function Sidebar({
         )}
       </div>
       {promptElement}
+      {confirmElement}
     </aside>
   );
 }
@@ -641,28 +661,21 @@ export function App() {
   const [configureTabRequest, setConfigureTabRequest] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
 
   useEffect(() => {
-    const tabs: Tab[] = [
-      "chat",
-      "models",
-      "catalog",
-      "configure",
-      "hardware",
-      "profiles",
-      "mcp",
-      "audio",
-      "bench",
-      "engine",
-    ];
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[0-9]$/.test(e.key)) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        // Keys 1-9 select the first nine tabs; 0 selects the tenth (Engine).
-        const idx = e.key === "0" ? 9 : Number(e.key) - 1;
-        if (idx < tabs.length) setTab(tabs[idx]);
-      } else if ((e.metaKey || e.ctrlKey) && e.key === "`") {
+        setPaletteOpen((o) => !o);
+      } else if (mod && /^[0-9]$/.test(e.key)) {
+        e.preventDefault();
+        // NAV binds "1"…"9" to the first nine tabs and "0" to the tenth.
+        const item = NAV.find((n) => n.key === e.key);
+        if (item) setTab(item.id as Tab);
+      } else if (mod && e.key === "`") {
         e.preventDefault();
         setLogsOpen((o) => !o);
       }
@@ -685,6 +698,7 @@ export function App() {
           }}
           logsOpen={logsOpen}
           onToggleLogs={() => setLogsOpen((o) => !o)}
+          onOpenPalette={() => setPaletteOpen(true)}
           pickerOpen={pickerOpen}
           setPickerOpen={setPickerOpen}
         />
@@ -719,6 +733,14 @@ export function App() {
           workspaceId={editingWorkspaceId}
           onClose={() => setEditingWorkspaceId(null)}
         />
+        {paletteOpen && (
+          <CommandPalette
+            onClose={() => setPaletteOpen(false)}
+            nav={NAV}
+            onNavigate={(id) => setTab(id as Tab)}
+            onToggleLogs={() => setLogsOpen((o) => !o)}
+          />
+        )}
         <Toasts />
       </div>
     </ContextMenuProvider>

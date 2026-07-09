@@ -3,6 +3,7 @@ import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { SessionConfigFields } from "./SessionConfigFields";
+import { useConfirm } from "./ConfirmDialog";
 
 /**
  * Full-width editor for a workspace's default config (project folder, system
@@ -39,6 +40,7 @@ export function WorkspaceConfigOverlay({
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [name, setName] = useState("");
+  const { confirmElement, confirm } = useConfirm();
 
   useEffect(() => {
     if (workspace) {
@@ -53,17 +55,23 @@ export function WorkspaceConfigOverlay({
   useEffect(() => {
     if (!open) return;
     const onDocMouseDown = (e: MouseEvent) => {
-      // Ignore clicks inside a context menu — it renders at the app root,
-      // outside panelRef. (`Element`, not `HTMLElement`: the click target
-      // may be an SVG icon inside the menu.)
-      if (e.target instanceof Element && e.target.closest(".ctx-menu")) return;
+      // Ignore clicks inside a context menu or the delete-confirm dialog — both
+      // render at the app root, outside panelRef. (`Element`, not `HTMLElement`:
+      // the click target may be an SVG icon inside the menu/dialog.)
+      if (e.target instanceof Element && e.target.closest(".ctx-menu, .confirm-card")) return;
       if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) {
         onClose();
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      // While a context menu is open, Escape should close only the menu.
-      if (e.key === "Escape" && !document.querySelector(".ctx-menu")) onClose();
+      // While a context menu or confirm dialog is open, Escape should dismiss
+      // only that overlay, not this whole editor.
+      if (
+        e.key === "Escape" &&
+        !document.querySelector(".ctx-menu") &&
+        !document.querySelector(".confirm-card")
+      )
+        onClose();
     };
     globalThis.addEventListener("mousedown", onDocMouseDown);
     globalThis.addEventListener("keydown", onKey);
@@ -80,14 +88,14 @@ export function WorkspaceConfigOverlay({
     if (trimmed && trimmed !== workspace.name) renameWorkspace(workspace.id, trimmed);
   };
 
-  const onDelete = () => {
-    if (
-      !confirm(
-        `Delete workspace "${workspace.name}"? Its chats move to "All chats" — they are not deleted.`,
-      )
-    ) {
-      return;
-    }
+  const onDelete = async () => {
+    const ok = await confirm({
+      title: `Delete workspace "${workspace.name}"?`,
+      body: 'Its chats move to "All chats" — they are not deleted.',
+      danger: true,
+      confirmLabel: "Delete workspace",
+    });
+    if (!ok) return;
     deleteWorkspace(workspace.id);
     onClose();
   };
@@ -176,6 +184,7 @@ export function WorkspaceConfigOverlay({
           updated retroactively.
         </div>
       </div>
+      {confirmElement}
     </>
   );
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { api, type CatalogFile, type CatalogModel } from "../../lib/api";
+import { log } from "../../lib/logger";
 import { flush, freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
 
 const MODEL: CatalogModel = {
@@ -204,6 +205,26 @@ describe("catalog slice", () => {
     });
     expect(scan).toHaveBeenCalledWith("/models");
     expect(adopt).not.toHaveBeenCalled();
+  });
+
+  it("catalogOnDone (success) toasts that the file was added to the library", () => {
+    useAppStore.getState().setSettings(makeSettings({ models_dir: "/models" }));
+    const notify = vi.spyOn(log, "notify");
+    useAppStore.getState().catalogOnDone({
+      generation: 1,
+      repo_id: "owner/Foo-GGUF",
+      filename: "Foo-Q4_K_M.gguf",
+      ok: true,
+      cancelled: false,
+      error: null,
+      dest_root: "/models",
+      model_path: "/models/owner/Foo-GGUF/Foo-Q4_K_M.gguf",
+    });
+    expect(notify).toHaveBeenCalledWith(
+      "info",
+      "catalog",
+      expect.stringContaining("Foo-Q4_K_M.gguf"),
+    );
   });
 
   it("catalogOnDone (success) adopts the fallback root and scans it when no models dir is set", async () => {

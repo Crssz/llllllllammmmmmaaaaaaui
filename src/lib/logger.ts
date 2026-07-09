@@ -30,7 +30,7 @@ const CONSOLE_FN_BY_LEVEL: Record<LogLevel, (...args: unknown[]) => void> = {
 
 export type Toast = {
   id: number;
-  level: "warn" | "error";
+  level: "info" | "warn" | "error";
   area: string;
   message: string;
   time: number;
@@ -74,10 +74,10 @@ class Logger {
     };
   }
 
-  // Surface a user-facing notification AND log it. Use this for failures the
-  // user needs to see even when the logs panel is closed (persistence errors,
-  // server-spawn failures, etc.).
-  notify(level: "warn" | "error", area: string, message: string, meta?: unknown) {
+  // Surface a user-facing notification AND log it. Use this for events the
+  // user needs to see even when the logs panel is closed (persistence
+  // errors, server-spawn failures, success confirmations, etc.).
+  notify(level: "info" | "warn" | "error", area: string, message: string, meta?: unknown) {
     this.write(level, area, message, meta);
     const toast: Toast = {
       id: this.nextId,

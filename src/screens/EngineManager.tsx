@@ -4,6 +4,23 @@ import { api, type EngineAsset, type EngineRelease, type InstalledEngine } from 
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { useConfirm } from "../components/ConfirmDialog";
+
+// Plain-English guidance for the accelerator variants, so the filter/badges
+// aren't bare jargon ("vulkan", "hip", "cuda"). Keyed on the leading token so
+// "hip-gfx1100" still resolves to the HIP hint.
+const VARIANT_HINT: Record<string, string> = {
+  vulkan: "Works on most GPUs (AMD/Intel/NVIDIA)",
+  cuda: "NVIDIA GPUs only",
+  hip: "AMD GPUs via ROCm",
+  cpu: "No GPU acceleration",
+};
+
+function variantHint(variant: string | null | undefined): string | undefined {
+  if (!variant) return undefined;
+  const key = variant.toLowerCase().split(/[-\s]/)[0];
+  return VARIANT_HINT[key];
+}
 
 function fmtBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
@@ -40,6 +57,7 @@ function InstalledRow({
   onDelete: () => void;
 }>) {
   const openMenu = useContextMenu();
+  const { confirmElement, confirm } = useConfirm();
   const meta = [
     engine.version,
     engine.commit,
@@ -49,6 +67,17 @@ function InstalledRow({
   ]
     .filter(Boolean)
     .join(" · ");
+  // Single confirmed-delete path shared by the trash icon and the context menu,
+  // so deleting an engine always asks first (the icon used to delete instantly).
+  const requestDelete = async () => {
+    const ok = await confirm({
+      title: `Delete engine "${engine.tag ?? engine.id}"?`,
+      body: "This removes the downloaded engine from disk. You can re-download it later.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (ok) onDelete();
+  };
   const menuItems = (): MenuItem[] => [
     {
       label: "Activate",
@@ -75,55 +104,68 @@ function InstalledRow({
       disabled: engine.active || busy,
       hint: engine.active ? "in use" : undefined,
       onClick: () => {
-        if (confirm(`Delete engine "${engine.tag ?? engine.id}" from disk?`)) onDelete();
+        requestDelete().catch(() => {});
       },
     },
   ];
   return (
-    <div
-      className={"engine-row" + (engine.active ? " active" : "")}
-      onContextMenu={(e) => openMenu(e, menuItems())}
-    >
-      <div className="engine-row-icon">
-        {engine.active ? <I.Bolt size={14} /> : <I.Cpu size={14} />}
-      </div>
-      <div className="engine-row-main">
-        <div className="engine-row-name mono">
-          {engine.tag ?? engine.id}
-          {engine.variant && (
-            <span className="badge ghost mono" style={{ marginLeft: 6, fontSize: 10 }}>
-              {engine.variant}
-              {engine.arch ? ` · ${engine.arch}` : ""}
-            </span>
-          )}
-          {engine.active && (
-            <span className="badge accent" style={{ marginLeft: 6, fontSize: 9.5 }}>
-              active
-            </span>
-          )}
+    <>
+      {confirmElement}
+      <div
+        className={"engine-row" + (engine.active ? " active" : "")}
+        onContextMenu={(e) => openMenu(e, menuItems())}
+      >
+        <div className="engine-row-icon">
+          {engine.active ? <I.Bolt size={14} /> : <I.Cpu size={14} />}
         </div>
-        <div className="engine-row-desc">{meta || engine.id}</div>
-      </div>
-      <div className="engine-row-actions">
-        {engine.active ? (
-          <span className="badge green" style={{ fontSize: 10 }}>
-            <span className="dot" /> in use
-          </span>
-        ) : (
-          <button className="btn" onClick={onActivate} title="Make this the active engine">
-            <I.Check size={12} /> Activate
+        <div className="engine-row-main">
+          <div className="engine-row-name mono">
+            {engine.tag ?? engine.id}
+            {engine.variant && (
+              <span
+                className="badge ghost mono"
+                style={{ marginLeft: 6, fontSize: 10 }}
+                title={variantHint(engine.variant)}
+              >
+                {engine.variant}
+                {engine.arch ? ` · ${engine.arch}` : ""}
+              </span>
+            )}
+            {engine.active && (
+              <span className="badge accent" style={{ marginLeft: 6, fontSize: 9.5 }}>
+                active
+              </span>
+            )}
+          </div>
+          <div className="engine-row-desc">{meta || engine.id}</div>
+        </div>
+        <div className="engine-row-actions">
+          {engine.active ? (
+            <span className="badge green" style={{ fontSize: 10 }}>
+              <span className="dot" /> in use
+            </span>
+          ) : (
+            <button className="btn" onClick={onActivate} title="Make this the active engine">
+              <I.Check size={12} /> Activate
+            </button>
+          )}
+          <button
+            className="iconbtn"
+            onClick={() => requestDelete().catch(() => {})}
+            disabled={engine.active || busy}
+            title={
+              engine.active
+                ? "Switch to another engine first"
+                : busy
+                  ? "Wait for the current download to finish"
+                  : "Delete this engine"
+            }
+          >
+            <I.Trash size={13} />
           </button>
-        )}
-        <button
-          className="iconbtn"
-          onClick={onDelete}
-          disabled={engine.active || busy}
-          title={engine.active ? "Switch to another engine first" : "Delete this engine"}
-        >
-          <I.Trash size={13} />
-        </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -143,7 +185,7 @@ function AssetRow({
   return (
     <div className="engine-asset">
       <div className="engine-asset-main">
-        <span className="badge ghost mono engine-variant">
+        <span className="badge ghost mono engine-variant" title={variantHint(asset.variant)}>
           {asset.variant}
           {asset.arch ? ` · ${asset.arch}` : ""}
         </span>
@@ -284,9 +326,26 @@ export function EngineManagerScreen() {
       <div className="page-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {engineError && !downloading && (
           <div className="panel">
-            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--red)" }}>
-              <I.X size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-              {engineError}
+            <div
+              className="panel-body"
+              style={{
+                fontSize: 12.5,
+                color: "var(--red)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <I.X size={12} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{engineError}</span>
+              <button
+                className="btn ghost"
+                style={{ color: "var(--text)" }}
+                onClick={() => refreshInstalledEngines().catch(() => {})}
+                title="Re-read the installed engines"
+              >
+                <I.Refresh size={12} /> Retry
+              </button>
             </div>
           </div>
         )}
@@ -378,9 +437,11 @@ export function EngineManagerScreen() {
                 onChange={(e) => setEngineVariantFilter(e.target.value)}
                 title="Filter by accelerator variant"
               >
-                <option value="all">All variants</option>
+                <option value="all" title="All accelerator variants">
+                  All variants
+                </option>
                 {variants.map((v) => (
-                  <option key={v} value={v}>
+                  <option key={v} value={v} title={variantHint(v)}>
                     {v}
                   </option>
                 ))}
@@ -389,9 +450,32 @@ export function EngineManagerScreen() {
           </div>
           <div className="panel-body">
             {engineReleasesError ? (
-              <div style={{ fontSize: 12.5, color: "var(--red)" }}>
-                <I.X size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-                {engineReleasesError}
+              <div
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--red)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <I.X size={12} style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>{engineReleasesError}</span>
+                <button
+                  className="btn ghost"
+                  style={{ color: "var(--text)" }}
+                  onClick={() => fetchEngineReleases(true).catch(() => {})}
+                  disabled={engineReleasesLoading}
+                  title="Re-fetch releases from GitHub"
+                >
+                  <I.Refresh
+                    size={12}
+                    style={{
+                      animation: engineReleasesLoading ? "spin 0.9s linear infinite" : "none",
+                    }}
+                  />{" "}
+                  Retry
+                </button>
               </div>
             ) : engineReleasesLoading && engineReleases.length === 0 ? (
               <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Loading releases…</div>

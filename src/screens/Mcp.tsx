@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { McpServerConfig, McpStatus, McpTool, McpTransport } from "../lib/api";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useTextPrompt } from "../components/TextPromptDialog";
+import { useConfirm } from "../components/ConfirmDialog";
 
 function emptyServer(): McpServerConfig {
   return {
@@ -332,6 +333,8 @@ export function McpScreen() {
     return JSON.stringify(persisted) !== JSON.stringify(draft);
   }, [draft, selectedId, mcpServers]);
 
+  const { confirmElement, confirm } = useConfirm();
+
   const onAdd = () => {
     const fresh = emptyServer();
     setDraft(fresh);
@@ -348,9 +351,36 @@ export function McpScreen() {
     }
   };
 
+  // Switching the sidebar selection while the current draft has unsaved edits
+  // used to discard them silently. Guard with a confirmation before hydrating
+  // the new draft over the old one.
+  const selectServer = async (id: string) => {
+    if (id === selectedId) return;
+    if (
+      dirty &&
+      !(await confirm({
+        title: "Discard unsaved changes?",
+        body: "Your edits to this server haven't been saved.",
+        confirmLabel: "Discard",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    setSelectedId(id);
+  };
+
   const onDelete = async () => {
-    if (!selectedId) return;
-    if (!confirm("Delete this MCP server?")) return;
+    if (!selectedId || !draft) return;
+    if (
+      !(await confirm({
+        title: `Delete MCP server "${draft.name}"?`,
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     await mcpDeleteServer(selectedId);
     setSelectedId(null);
     setDraft(null);
@@ -363,8 +393,9 @@ export function McpScreen() {
       // Save first so the backend sees the latest config.
       if (draft && dirty) await mcpUpsertServer(draft);
       await mcpConnect(selectedId);
-    } catch (e) {
-      alert(`Connect failed: ${e instanceof Error ? e.message : String(e)}`);
+    } catch {
+      // mcpConnect already writes the failure into mcpStatuses[id].error,
+      // which the styled error box in the detail header surfaces.
     } finally {
       setBusyId(null);
     }
@@ -390,15 +421,23 @@ export function McpScreen() {
     setBusyId(id);
     try {
       await mcpConnect(id);
-    } catch (e) {
-      alert(`Connect failed: ${e instanceof Error ? e.message : String(e)}`);
+    } catch {
+      // mcpConnect already writes the failure into mcpStatuses[id].error.
     } finally {
       setBusyId(null);
     }
   };
 
   const deleteServer = async (s: McpServerConfig) => {
-    if (!confirm(`Delete MCP server "${s.name}"?`)) return;
+    if (
+      !(await confirm({
+        title: `Delete MCP server "${s.name}"?`,
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     await mcpDeleteServer(s.id);
     if (selectedId === s.id) {
       setSelectedId(null);
@@ -505,7 +544,9 @@ export function McpScreen() {
               <button
                 key={s.id}
                 className={"mcp-sidebar-item" + (active ? " active" : "")}
-                onClick={() => setSelectedId(s.id)}
+                onClick={() => {
+                  selectServer(s.id).catch(() => {});
+                }}
                 onContextMenu={(e) => {
                   // Select the row so the detail pane matches the menu target
                   // — but never at the cost of clobbering an unsaved draft on
@@ -592,7 +633,7 @@ export function McpScreen() {
                       disabled={busyId === selectedId}
                       title="Connect and load tools"
                     >
-                      <I.Play size={11} /> Connect
+                      <I.Play size={11} /> {busyId === selectedId ? "Connecting…" : "Connect"}
                     </button>
                   )}
                   <button
@@ -628,6 +669,7 @@ export function McpScreen() {
         </section>
       </div>
       {promptElement}
+      {confirmElement}
     </>
   );
 }

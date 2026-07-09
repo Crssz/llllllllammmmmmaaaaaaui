@@ -179,6 +179,9 @@ export const createCatalogSlice: StateCreator<AppStore, [], [], CatalogSlice> = 
       return;
     }
     log.info("catalog", `downloaded ${ev.repo_id}/${ev.filename}`);
+    // Confirm completion — the download panel just vanishes otherwise, leaving
+    // no sign the (often long) download actually finished.
+    log.notify("info", "catalog", `Downloaded ${ev.filename} — added to your library`);
     set({ catalogDownload: null, catalogError: null });
     // Make the new file show up in the Models library. The backend reports the
     // dir the file actually landed in (dest_root) — the configured models_dir,

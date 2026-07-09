@@ -5,6 +5,8 @@ import { useAppStore, type FlagValues } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useTextPrompt } from "../components/TextPromptDialog";
+import { useConfirm } from "../components/ConfirmDialog";
+import { log } from "../lib/logger";
 
 // llama-bench shares a subset of llama-server's flags, so the benchmark can
 // inherit them from the live Configure config and measure the model the way the
@@ -143,11 +145,15 @@ function ResultsTable({ rows }: Readonly<{ rows: BenchRow[] }>) {
       <thead>
         <tr>
           <th>test</th>
-          <th className="num">ngl</th>
+          <th className="num" title="GPU layers">
+            ngl
+          </th>
           <th className="num">batch</th>
-          <th>fa</th>
-          <th>kv</th>
-          <th className="num">t/s</th>
+          <th title="Flash attention">fa</th>
+          <th title="KV cache type">kv</th>
+          <th className="num" title="Tokens per second">
+            t/s
+          </th>
           <th className="num">± stddev</th>
           <th className="num">latency</th>
         </tr>
@@ -227,6 +233,28 @@ export function BenchScreen() {
 
   const openMenu = useContextMenu();
   const { promptElement, openPrompt } = useTextPrompt();
+  const { confirmElement, confirm } = useConfirm();
+
+  // Fire-and-forget clipboard write with a house toast for success/failure —
+  // silent copies leave the user guessing whether the click did anything.
+  const copyToClipboard = (text: string, what: string) => {
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => log.notify("info", "bench", `Copied ${what}`))
+      .catch(() => log.notify("error", "bench", `Copy failed: ${what}`));
+  };
+
+  const requestDeleteRun = async (r: BenchRun) => {
+    if (
+      await confirm({
+        title: `Delete run "${r.label}"?`,
+        confirmLabel: "Delete",
+        danger: true,
+      })
+    ) {
+      benchDeleteRun(r.id);
+    }
+  };
 
   const runMenuItems = (r: BenchRun): MenuItem[] => [
     { label: "View results", icon: "History", onClick: () => benchSelectRun(r.id) },
@@ -246,15 +274,15 @@ export function BenchScreen() {
       submenu: [
         {
           label: "Markdown table",
-          onClick: () => navigator.clipboard?.writeText(runToMarkdown(r)).catch(() => {}),
+          onClick: () => copyToClipboard(runToMarkdown(r), "Markdown"),
         },
         {
           label: "CSV",
-          onClick: () => navigator.clipboard?.writeText(runToCsv(r)).catch(() => {}),
+          onClick: () => copyToClipboard(runToCsv(r), "CSV"),
         },
         {
           label: "JSON",
-          onClick: () => navigator.clipboard?.writeText(JSON.stringify(r, null, 2)).catch(() => {}),
+          onClick: () => copyToClipboard(JSON.stringify(r, null, 2), "JSON"),
         },
       ],
     },
@@ -262,7 +290,7 @@ export function BenchScreen() {
       label: "Copy model path",
       icon: "Copy",
       disabled: !r.model_path,
-      onClick: () => navigator.clipboard?.writeText(r.model_path).catch(() => {}),
+      onClick: () => copyToClipboard(r.model_path, "model path"),
     },
     "separator",
     {
@@ -270,7 +298,7 @@ export function BenchScreen() {
       icon: "Trash",
       danger: true,
       onClick: () => {
-        if (confirm(`Delete benchmark run "${r.label}"?`)) benchDeleteRun(r.id);
+        requestDeleteRun(r);
       },
     },
   ];
@@ -294,6 +322,17 @@ export function BenchScreen() {
 
   const benchMissing = Boolean(buildDir) && benchBinary != null && !benchBinary.ok;
   const canRun = !bench.running && Boolean(model) && Boolean(buildDir) && !benchMissing;
+  // First missing prerequisite, surfaced as the disabled button's tooltip so
+  // the user isn't left guessing why "Run benchmark" won't click.
+  const runDisabledReason = bench.running
+    ? "A benchmark is already running"
+    : !buildDir
+      ? "Pick a llama.cpp build directory first"
+      : benchMissing
+        ? "llama-bench isn't in this build"
+        : !model
+          ? "Pick a model first"
+          : null;
 
   const onRun = () => {
     if (!buildDir) return;
@@ -358,7 +397,12 @@ export function BenchScreen() {
               <I.Stop /> Cancel
             </button>
           ) : (
-            <button className="btn primary" onClick={onRun} disabled={!canRun}>
+            <button
+              className="btn primary"
+              onClick={onRun}
+              disabled={!canRun}
+              title={runDisabledReason ?? "Run benchmark"}
+            >
               <I.Bolt /> Run benchmark
             </button>
           )}
@@ -549,6 +593,9 @@ export function BenchScreen() {
               <div style={{ overflowX: "auto" }}>
                 <ResultsTable rows={rows} />
               </div>
+              <div style={{ fontSize: 11, color: "var(--subtle)", fontStyle: "italic" }}>
+                pp = prompt processing · tg = token generation · d = context depth
+              </div>
             </div>
           </div>
         )}
@@ -593,11 +640,11 @@ export function BenchScreen() {
                       <span
                         className="iconbtn rdel"
                         role="button"
-                        tabIndex={-1}
+                        tabIndex={0}
                         title="Delete run"
                         onClick={(e) => {
                           e.stopPropagation();
-                          benchDeleteRun(r.id);
+                          requestDeleteRun(r);
                         }}
                       >
                         <I.X size={12} />
@@ -611,6 +658,7 @@ export function BenchScreen() {
         )}
       </div>
       {promptElement}
+      {confirmElement}
     </>
   );
 }

@@ -10,7 +10,9 @@
   --text: oklch(0.965 0.004 270);
   --text-2: oklch(0.82 0.008 270);
   --muted: oklch(0.62 0.012 270);
-  --subtle: oklch(0.46 0.013 270);
+  /* Used for real content (empty states, hints, placeholders). Lightened from
+     0.46 → 0.58 so it clears ~4.5:1 contrast on the 0.158 background. */
+  --subtle: oklch(0.58 0.013 270);
   --faint: oklch(0.34 0.011 270);
 
   /* accents */
@@ -21,10 +23,17 @@
 
   --green: oklch(0.74 0.15 155);
   --green-soft: oklch(0.42 0.11 155 / 0.22);
+  /* Dark green-tinted surface for success/info backgrounds (e.g. info
+     toasts), so near-white text stays readable while --green drives the
+     border/accent. */
+  --green-bg: oklch(0.24 0.05 155);
   --yellow: oklch(0.82 0.14 85);
   --yellow-soft: oklch(0.5 0.11 85 / 0.22);
   --red: oklch(0.7 0.2 25);
   --red-soft: oklch(0.42 0.14 25 / 0.22);
+  /* Dark red-tinted surface for error backgrounds (e.g. error toasts), so
+     near-white text stays readable while --red drives the border/accent. */
+  --red-bg: oklch(0.24 0.06 25);
   --cyan: oklch(0.78 0.11 210);
 
   --radius: 8px;
@@ -111,6 +120,17 @@ button {
   border: 0;
   cursor: pointer;
   padding: 0;
+}
+/* Disabled affordance — no pointer-events:none so title tooltips still show. */
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* App-wide keyboard focus ring (only a handful of elements had focus styles). */
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 ::-webkit-scrollbar {
   width: 10px;
@@ -629,6 +649,18 @@ button {
 .btn.ghost:hover {
   background: var(--surface);
 }
+/* Filled destructive variant — mirrors .btn.primary but uses the --red token,
+   for confirm buttons on dangerous actions (e.g. delete). */
+.btn.danger {
+  background: var(--red);
+  color: oklch(0.16 0.02 25);
+  border-color: oklch(0.55 0.18 25);
+  font-weight: 500;
+}
+.btn.danger:hover {
+  background: oklch(0.76 0.2 25);
+  color: oklch(0.13 0.02 25);
+}
 .btn svg {
   width: 13px;
   height: 13px;
@@ -775,7 +807,7 @@ button {
   gap: 3px;
 }
 .bin-meta-lbl {
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
@@ -1530,7 +1562,8 @@ button {
   opacity: 0;
   transition: opacity 0.15s;
 }
-.msg:hover .msg-tools {
+.msg:hover .msg-tools,
+.msg:focus-within .msg-tools {
   opacity: 1;
 }
 
@@ -1947,7 +1980,7 @@ button {
   overflow: hidden;
 }
 .stat-card .label {
-  font-size: 10.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
@@ -2051,7 +2084,7 @@ button {
   flex: var(--w, 1);
   display: grid;
   place-items: center;
-  font-size: 10.5px;
+  font-size: 11px;
   font-family: var(--font-mono);
   color: rgba(0, 0, 0, 0.7);
   font-weight: 600;
@@ -2362,6 +2395,53 @@ button {
   color: var(--text-2);
   font-size: 12.5px;
   white-space: pre-wrap;
+}
+
+/* ───────── Confirm dialog ───────── */
+/* Reusable app-styled replacement for window.confirm(), rendered as a native
+   <dialog> opened with showModal() (backdrop + Esc + focus trap for free),
+   mirroring the tool-approval modal convention below. padding:0 lets the inner
+   card fill the box so a click whose target is the <dialog> means the backdrop. */
+.confirm-card {
+  margin: auto;
+  padding: 0;
+  max-width: calc(100vw - 40px);
+  width: min(400px, 100%);
+  color: var(--text);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.confirm-card::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.confirm-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.confirm-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+.confirm-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.confirm-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 
 /* ───────── Tool approval modal ───────── */
@@ -2910,7 +2990,7 @@ button {
   gap: 6px;
 }
 .bench-field .hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--subtle);
   font-style: italic;
 }
@@ -3209,7 +3289,7 @@ button {
 }
 .engine-variant {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
 }
 .engine-asset-name {
   font-size: 11.5px;
@@ -3420,7 +3500,7 @@ button {
 }
 .ctx-hint {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--muted);
   flex-shrink: 0;
   max-width: 120px;
@@ -3432,4 +3512,116 @@ button {
   height: 1px;
   background: var(--border);
   margin: 4px 6px;
+}
+
+/* ───────── Command palette (Ctrl/⌘+K) ─────────
+   Centered overlay from the "Jump to…" top-bar button. Reuses the same
+   surface/border/shadow tokens as the model library and context menu so it
+   reads as part of the same overlay family. Kept below the .ctx-menu z-index
+   (100) so a right-click Cut/Copy/Paste menu on the input still layers above. */
+.cmdk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+}
+.cmdk-panel {
+  width: min(560px, 100%);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+}
+.cmdk-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.cmdk-input-row svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.cmdk-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+.cmdk-input::placeholder {
+  color: var(--muted);
+}
+.cmdk-input-row .kbd {
+  flex-shrink: 0;
+}
+.cmdk-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+.cmdk-section {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--subtle);
+  font-weight: 600;
+  padding: 8px 8px 4px;
+}
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 13px;
+}
+.cmdk-item.active {
+  background: var(--surface);
+  color: var(--text);
+}
+.cmdk-ico {
+  width: 16px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.cmdk-item.active .cmdk-ico {
+  color: var(--accent);
+}
+.cmdk-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-hint {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--subtle);
+}
+.cmdk-empty {
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
 }

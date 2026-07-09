@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { I } from "../icons";
+import { api } from "../lib/api";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 
@@ -27,6 +28,7 @@ export function BinaryLocator() {
       })),
     );
   const [showRecent, setShowRecent] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
 
   const path = build?.path ?? settings.build_dir ?? "";
   const binaries = build?.binaries ?? [];
@@ -36,7 +38,11 @@ export function BinaryLocator() {
   const empty = !settings.build_dir;
 
   const copyPath = () => {
-    if (build?.resolved_path) navigator.clipboard?.writeText(build.resolved_path);
+    if (!build?.resolved_path) return;
+    navigator.clipboard?.writeText(build.resolved_path).then(() => {
+      setCopiedPath(true);
+      setTimeout(() => setCopiedPath(false), 1500);
+    });
   };
 
   return (
@@ -69,7 +75,11 @@ export function BinaryLocator() {
       <div className="binary-body">
         <div className="bin-path">
           <I.Folder size={14} />
-          <span className="mono path-text" title={path || "No directory selected"}>
+          <span
+            className="mono path-text"
+            title={path || "No directory selected"}
+            style={{ cursor: "default" }}
+          >
             {path || "(no directory selected — click Browse…)"}
           </span>
           <div className="bin-path-actions">
@@ -195,10 +205,23 @@ export function BinaryLocator() {
           ).map((b) => (
             <div
               key={b.name}
-              className={"bin-row" + (b.primary ? " primary" : "") + (b.ok ? "" : " missing")}
+              // Before a build dir is chosen there's nothing to be missing yet —
+              // render the rows neutral/dimmed ("not scanned yet") instead of a
+              // wall of red X's.
+              className={
+                "bin-row" +
+                (!empty && b.primary ? " primary" : "") +
+                (!empty && !b.ok ? " missing" : "")
+              }
+              style={empty ? { opacity: 0.55 } : undefined}
             >
-              <div className="bin-row-icon">
-                {b.ok ? (
+              <div
+                className="bin-row-icon"
+                title={empty ? "Not scanned yet — pick a build directory" : undefined}
+              >
+                {empty ? (
+                  <I.Folder size={12} />
+                ) : b.ok ? (
                   b.primary ? (
                     <I.Bolt size={13} />
                   ) : (
@@ -211,18 +234,28 @@ export function BinaryLocator() {
               <div className="bin-row-main">
                 <div className="bin-row-name mono">
                   {b.name}
-                  {b.primary && b.ok && (
+                  {!empty && b.primary && b.ok && (
                     <span className="badge accent" style={{ marginLeft: 6, fontSize: 9.5 }}>
                       active
                     </span>
                   )}
                 </div>
-                <div className="bin-row-desc">{b.desc}</div>
+                <div className="bin-row-desc">{empty ? "not scanned yet" : b.desc}</div>
               </div>
               <div className="bin-row-size mono">{b.size}</div>
-              <button className="iconbtn" title={b.ok ? "Open" : "Build it"}>
-                {b.ok ? <I.Play size={12} /> : <I.Refresh size={12} />}
-              </button>
+              {!empty && b.ok && b.path ? (
+                <button
+                  className="iconbtn"
+                  title="Show in File Explorer"
+                  aria-label={`Show ${b.name} in File Explorer`}
+                  onClick={() => api.revealInExplorer(b.path).catch(() => {})}
+                >
+                  <I.ExternalLink size={12} />
+                </button>
+              ) : (
+                // Keep the 4th grid column so size badges stay aligned across rows.
+                <span aria-hidden="true" style={{ width: 28, height: 28, display: "inline-block" }} />
+              )}
             </div>
           ))}
         </div>
@@ -244,8 +277,14 @@ export function BinaryLocator() {
             )}
           </span>
           <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-            <button className="btn ghost" onClick={copyPath} disabled={!build?.resolved_path}>
-              <I.Copy size={11} /> Copy path
+            <button
+              className="btn ghost"
+              onClick={copyPath}
+              disabled={!build?.resolved_path}
+              title={copiedPath ? "Copied!" : "Copy resolved path"}
+            >
+              {copiedPath ? <I.Check size={11} /> : <I.Copy size={11} />}{" "}
+              {copiedPath ? "Copied" : "Copy path"}
             </button>
           </span>
         </div>

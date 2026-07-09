@@ -178,6 +178,24 @@ export const createEngineSlice: StateCreator<AppStore, [], [], EngineSlice> = (s
     }
     log.info("engines", `installed ${ev.id}`);
     set({ engineDownload: null, engineError: null });
-    void get().refreshInstalledEngines();
+    const installed = ev.installed;
+    const name = installed?.tag ?? ev.id;
+    // "Active" means a working engine is already selected — either an installed
+    // engine flagged active, or a manually-configured build dir that detected.
+    // Don't hijack a working setup; only auto-activate when nothing works yet
+    // (e.g. a first-run user who just downloaded their first engine).
+    const hasActiveEngine =
+      get().installedEngines.some((e) => e.active) || Boolean(get().build?.detected);
+    if (installed && !hasActiveEngine) {
+      void get()
+        .activateEngine(installed.path)
+        .then(() => {
+          log.notify("info", "engines", `Engine ${name} installed and activated`);
+        })
+        .catch(() => {});
+    } else {
+      log.notify("info", "engines", `Engine ${name} installed — activate it from the Engine tab`);
+      void get().refreshInstalledEngines();
+    }
   },
 });

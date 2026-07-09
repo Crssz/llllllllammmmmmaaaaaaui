@@ -7,6 +7,7 @@ import { STREAMDOWN_COMPONENTS } from "./CodeBlockPre";
 import { MessageAudio } from "./MessageAudio";
 import { MessageImage } from "./MessageImage";
 import { fmtTime, streamingPhase } from "../../lib/chatUi";
+import { shortcut } from "../../lib/platform";
 
 // Callbacks the message row needs from the screen. All chat-level actions
 // (edit/delete/resend/stop) live in the store or the parent; the message row
@@ -382,7 +383,8 @@ export function ChatMessage({
                 marginRight: "auto",
               }}
             >
-              <span className="kbd">⌘↵</span> save · <span className="kbd">esc</span> cancel
+              <span className="kbd">{shortcut("↵")}</span> save · <span className="kbd">esc</span>{" "}
+              cancel
             </span>
             <button className="btn ghost" onClick={cancelEdit}>
               Cancel
@@ -515,9 +517,34 @@ export function ChatMessage({
               style={{ padding: "3px 8px" }}
               onClick={() => onResend(i)}
               disabled={chatPending || !serverReady}
-              title="Resend (regenerates from this point)"
+              title={
+                chatPending
+                  ? "Wait for the current response to finish"
+                  : !serverReady
+                    ? "Server isn't ready yet"
+                    : "Resend (regenerates from this point)"
+              }
             >
               <I.Refresh size={11} /> Resend
+            </button>
+          )}
+          {m.role === "assistant" && (
+            <button
+              className="btn ghost"
+              style={{ padding: "3px 8px" }}
+              onClick={() => onResend(precedingUserIdx(i))}
+              disabled={chatPending || !serverReady || precedingUserIdx(i) < 0}
+              title={
+                chatPending
+                  ? "Wait for the current response to finish"
+                  : !serverReady
+                    ? "Server isn't ready yet"
+                    : precedingUserIdx(i) < 0
+                      ? "No earlier user message to regenerate from"
+                      : "Regenerate this response"
+              }
+            >
+              <I.Refresh size={11} /> Regenerate
             </button>
           )}
           <button
@@ -525,16 +552,16 @@ export function ChatMessage({
             style={{ padding: "3px 8px" }}
             onClick={startEdit}
             disabled={chatPending}
-            title="Edit message"
+            title={chatPending ? "Wait for the current response to finish" : "Edit message"}
           >
-            <I.Sliders size={11} /> Edit
+            <I.Pencil size={11} /> Edit
           </button>
           <button
             className="btn ghost"
             style={{ padding: "3px 8px", color: "var(--red)" }}
             onClick={doDelete}
             disabled={chatPending}
-            title="Delete message"
+            title={chatPending ? "Wait for the current response to finish" : "Delete message"}
           >
             <I.X size={11} /> Delete
           </button>

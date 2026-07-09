@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { api, type CatalogFile, type CatalogModel } from "../lib/api";
 import { bitsClass } from "./Models";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { quantDescription } from "../lib/quant";
 
 type SortBy = "downloads" | "likes" | "trending" | "modified";
 
@@ -182,6 +183,11 @@ export function CatalogScreen() {
                 className={catalogSort === s ? "on" : ""}
                 onClick={() => setCatalogSort(s).catch(() => {})}
                 disabled={catalogSearching}
+                title={
+                  catalogSearching
+                    ? "Wait for the current search to finish"
+                    : `Sort by ${SORT_LABEL[s]}`
+                }
               >
                 {SORT_LABEL[s]}
               </button>
@@ -261,7 +267,7 @@ export function CatalogScreen() {
             onContextMenu={(e) =>
               openMenu(e, [
                 {
-                  label: "Cancel download…",
+                  label: "Cancel download",
                   icon: "X",
                   danger: true,
                   onClick: () => cancelCatalogDownload().catch(() => {}),
@@ -316,9 +322,31 @@ export function CatalogScreen() {
 
         {catalogError && (
           <div className="panel">
-            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--red)" }}>
-              <I.X size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-              {catalogError}
+            <div
+              className="panel-body"
+              style={{
+                fontSize: 12.5,
+                color: "var(--red)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <I.X size={12} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{catalogError}</span>
+              <button
+                className="btn ghost"
+                style={{ color: "var(--text)" }}
+                onClick={() => searchCatalog().catch(() => {})}
+                disabled={catalogSearching}
+                title="Retry the search"
+              >
+                <I.Refresh
+                  size={12}
+                  style={{ animation: catalogSearching ? "spin 0.9s linear infinite" : "none" }}
+                />{" "}
+                Retry
+              </button>
             </div>
           </div>
         )}
@@ -344,6 +372,7 @@ export function CatalogScreen() {
                 onToggle={() => onToggle(m.id)}
                 onDownload={(f) => startCatalogDownload(m.id, f).catch(() => {})}
                 onLoad={(path) => onLoad(path).catch(() => {})}
+                onSetModel={(path) => loadModelPath(path)}
                 onCancel={() => cancelCatalogDownload().catch(() => {})}
               />
             ))}
@@ -372,6 +401,7 @@ function CatalogCard({
   onToggle,
   onDownload,
   onLoad,
+  onSetModel,
   onCancel,
 }: Readonly<{
   model: CatalogModel;
@@ -383,6 +413,7 @@ function CatalogCard({
   onToggle: () => void;
   onDownload: (f: CatalogFile) => void;
   onLoad: (path: string) => void;
+  onSetModel: (path: string) => void;
   onCancel: () => void;
 }>) {
   const openMenu = useContextMenu();
@@ -415,13 +446,18 @@ function CatalogCard({
   ): MenuItem[] => {
     const items: MenuItem[] = [];
     if (isActive) {
-      items.push({ label: "Cancel download…", icon: "X", danger: true, onClick: onCancel });
+      items.push({ label: "Cancel download", icon: "X", danger: true, onClick: onCancel });
     } else if (localPath) {
       items.push(
         {
           label: "Load & restart server",
           icon: "Play",
           onClick: () => onLoad(localPath),
+        },
+        {
+          label: "Set as model (no restart)",
+          icon: "Check",
+          onClick: () => onSetModel(localPath),
         },
         {
           label: "Reveal in Explorer",
@@ -528,7 +564,12 @@ function CatalogCard({
                   key={f.filename}
                   onContextMenu={(e) => openMenu(e, fileMenuItems(f, localPath, isActive))}
                 >
-                  <span className={"quant-tag mono " + bitsClass(f.bits)}>{f.tag}</span>
+                  <span
+                    className={"quant-tag mono " + bitsClass(f.bits)}
+                    title={quantDescription(f.tag)}
+                  >
+                    {f.tag}
+                  </span>
                   <span className="catalog-file-name mono" title={f.filename}>
                     {f.filename}
                   </span>

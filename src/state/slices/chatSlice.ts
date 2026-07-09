@@ -44,6 +44,8 @@ export type ChatSlice = {
 
   setChats: (chats: ChatSession[]) => void;
   setCurrentChatId: (id: string | null) => void;
+  /** Set or clear the transient chat-error banner message. */
+  setChatError: (message: string | null) => void;
   newChat: () => void;
   selectChat: (id: string) => void;
   deleteChat: (id: string) => void;
@@ -723,6 +725,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
 
     setChats: (chats) => set({ chats }),
     setCurrentChatId: (id) => set({ currentChatId: id }),
+    setChatError: (message) => set({ chatError: message }),
 
     newChat: () => {
       const session = buildBlankSession();

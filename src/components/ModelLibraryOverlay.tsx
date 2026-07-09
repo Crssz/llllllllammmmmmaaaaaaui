@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { api, type GgufInfo } from "../lib/api";
 import { ExpandedRow, bitsClass, flatten, type FlatRow } from "../screens/Models";
 import { useContextMenu, type MenuItem } from "./ContextMenu";
+import { quantDescription } from "../lib/quant";
 
 type SortBy = "recent" | "size" | "name";
 
@@ -155,10 +156,10 @@ export function ModelLibraryOverlay({
       onClick: () => doLoad(r.quant.path, true),
     },
     {
-      label: "Load (keep library open)",
-      icon: "Play",
+      label: "Set as model (no restart)",
+      icon: "Check",
       disabled: isLoaded,
-      onClick: () => doLoad(r.quant.path, false),
+      onClick: () => loadModelPath(r.quant.path),
     },
     {
       label: expandedKey === r.quant.path ? "Collapse details" : "Configure / details",
@@ -372,7 +373,9 @@ export function ModelLibraryOverlay({
                 ? "Pick a models directory below."
                 : modelsScanning
                   ? "Scanning…"
-                  : "No models match your filter."}
+                  : (models?.count ?? 0) === 0
+                    ? "No .gguf files found under <owner>/<model>/."
+                    : "No models match your filter."}
             </div>
           ) : (
             <div className="model-table" style={{ border: 0, borderRadius: 0 }}>
@@ -396,7 +399,10 @@ export function ModelLibraryOverlay({
                       onContextMenu={(e) => openMenu(e, rowMenuItems(r, isLoaded))}
                     >
                       <div className="model-row-name">
-                        <span className={"quant-tag mono " + bitsClass(r.quant.bits)}>
+                        <span
+                          className={"quant-tag mono " + bitsClass(r.quant.bits)}
+                          title={quantDescription(r.quant.tag)}
+                        >
                           {r.quant.tag}
                         </span>
                         <span className="mname" title={r.quant.filename}>
@@ -424,14 +430,24 @@ export function ModelLibraryOverlay({
                             VL
                           </span>
                         )}
-                        {isLoaded && (
-                          <span
-                            className="badge green"
-                            style={{ fontSize: 9.5, padding: "1px 5px" }}
-                          >
-                            <span className="dot" /> loaded
-                          </span>
-                        )}
+                        {isLoaded &&
+                          (server.running ? (
+                            <span
+                              className="badge green"
+                              style={{ fontSize: 9.5, padding: "1px 5px" }}
+                              title="The server is running this model"
+                            >
+                              <span className="dot" /> loaded
+                            </span>
+                          ) : (
+                            <span
+                              className="badge ghost"
+                              style={{ fontSize: 9.5, padding: "1px 5px" }}
+                              title="Set as --model — start the server to load it"
+                            >
+                              selected
+                            </span>
+                          ))}
                       </div>
                       <div className="model-row-owner" title={r.owner}>
                         {r.owner}
@@ -455,16 +471,9 @@ export function ModelLibraryOverlay({
                       <button
                         className="btn"
                         style={{ padding: "3px 9px" }}
-                        onClick={(e) => {
-                          if (e.altKey) doLoad(r.quant.path, true);
-                          else toggleRow(key, r.quant.path);
-                        }}
+                        onClick={() => doLoad(r.quant.path, true)}
                         disabled={isLoaded}
-                        title={
-                          isLoaded
-                            ? "Already loaded"
-                            : "Click to configure · Alt-click to load & restart server"
-                        }
+                        title={isLoaded ? "Already loaded" : "Load this model & restart the server"}
                       >
                         {isLoaded ? (
                           <>
@@ -479,6 +488,7 @@ export function ModelLibraryOverlay({
                       <button
                         className={"chev-toggle" + (isExpanded ? " open" : "")}
                         onClick={() => toggleRow(key, r.quant.path)}
+                        title={isExpanded ? "Collapse" : "Expand to configure"}
                       >
                         <I.ChevR size={12} />
                       </button>
@@ -516,14 +526,23 @@ export function ModelLibraryOverlay({
         >
           <I.Info size={11} />
           <span>
-            Load switches the model and restarts the server. Alt-click to skip the config panel.
+            Load switches the model and restarts the server. Use a row&apos;s chevron to inspect &
+            quick-config first.
           </span>
           <span style={{ flex: 1 }} />
           <button
             className="btn"
             onClick={() => {
-              pickModel().catch(() => {});
-              onClose();
+              // Match row-Load: after a file is chosen, restart the server so it
+              // actually loads (setting --model alone doesn't), then close. On
+              // cancel, keep the overlay open. Start failures surface via toast.
+              pickModel()
+                .then((picked) => {
+                  if (!picked) return;
+                  onClose();
+                  reloadServer().catch(() => {});
+                })
+                .catch(() => {});
             }}
           >
             <I.Folder size={11} /> Browse for GGUF…

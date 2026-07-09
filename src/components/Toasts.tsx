@@ -48,8 +48,19 @@ export function Toasts() {
             textAlign: "left",
             font: "inherit",
             appearance: "none",
-            background: t.level === "error" ? "var(--red, #2a1414)" : "var(--surface, #2a2418)",
-            border: `1px solid ${t.level === "error" ? "var(--red-edge, #e57792)" : "var(--yellow, #e7b15b)"}`,
+            background:
+              t.level === "error"
+                ? "var(--red-bg, #2a1414)"
+                : t.level === "info"
+                  ? "var(--green-bg, #142a1c)"
+                  : "var(--surface, #2a2418)",
+            border: `1px solid ${
+              t.level === "error"
+                ? "var(--red, #e57792)"
+                : t.level === "info"
+                  ? "var(--green, #6fcf97)"
+                  : "var(--yellow, #e7b15b)"
+            }`,
             color: "var(--text, #e6e6e6)",
             padding: "10px 12px",
             borderRadius: 6,

@@ -224,6 +224,13 @@ describe("chat slice — CRUD", () => {
     expect(useAppStore.getState().chats).toHaveLength(1);
     expect(useAppStore.getState().currentChatId).toBe("a");
   });
+
+  it("setChatError sets and clears the error banner message", () => {
+    useAppStore.getState().setChatError("boom");
+    expect(useAppStore.getState().chatError).toBe("boom");
+    useAppStore.getState().setChatError(null);
+    expect(useAppStore.getState().chatError).toBeNull();
+  });
 });
 
 describe("chat slice — sendChat preconditions", () => {

@@ -54,15 +54,17 @@ describe("flags slice", () => {
     expect(api.saveSettings).toHaveBeenCalled();
   });
 
-  it("pickModel no-ops when the dialog is cancelled", async () => {
+  it("pickModel no-ops and returns null when the dialog is cancelled", async () => {
     vi.spyOn(api, "pickFile").mockResolvedValueOnce(null);
-    await useAppStore.getState().pickModel();
+    const picked = await useAppStore.getState().pickModel();
+    expect(picked).toBeNull();
     expect(useAppStore.getState().flags.model).toBeUndefined();
   });
 
-  it("pickModel sets the model flag on success", async () => {
+  it("pickModel sets the model flag and returns the path on success", async () => {
     vi.spyOn(api, "pickFile").mockResolvedValueOnce("/x/m.gguf");
-    await useAppStore.getState().pickModel();
+    const picked = await useAppStore.getState().pickModel();
+    expect(picked).toBe("/x/m.gguf");
     expect(useAppStore.getState().flags.model).toBe("/x/m.gguf");
   });
 

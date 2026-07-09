@@ -4,6 +4,7 @@ import { useAppStore, useCurrentChat } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { defaultSessionConfig, type ChatSessionConfig } from "../lib/api";
 import { Section, SessionConfigFields } from "./SessionConfigFields";
+import { useConfirm } from "./ConfirmDialog";
 
 export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onToggle: () => void }>) {
   const currentChat = useCurrentChat();
@@ -31,6 +32,7 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
 
   const [newPresetName, setNewPresetName] = useState("");
   const [savingPreset, setSavingPreset] = useState(false);
+  const { confirmElement, confirm } = useConfirm();
 
   const cfg: ChatSessionConfig = useMemo(
     () => currentChat?.config ?? defaultSessionConfig(),
@@ -81,7 +83,7 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
     }
   };
 
-  const onApplyPreset = (id: string) => {
+  const onApplyPreset = async (id: string) => {
     if (!id) return;
     if (
       cfg.system_prompt ||
@@ -89,7 +91,12 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
       cfg.mcp_server_ids.length > 0 ||
       Object.keys(cfg.tool_permissions.per_tool).length > 0
     ) {
-      if (!confirm("Replace this session's current config with the preset?")) return;
+      const ok = await confirm({
+        title: "Replace this session's config?",
+        body: "The selected preset will overwrite the current session settings.",
+        confirmLabel: "Replace",
+      });
+      if (!ok) return;
     }
     applyPresetToSession(currentChat.id, id);
   };
@@ -148,7 +155,13 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
             style={{ marginTop: 6, color: "var(--red)" }}
             onClick={async () => {
               if (!cfg.preset_id) return;
-              if (!confirm("Delete this preset?")) return;
+              const preset = settings.chat_presets.find((p) => p.id === cfg.preset_id);
+              const ok = await confirm({
+                title: `Delete preset "${preset?.name ?? "preset"}"?`,
+                confirmLabel: "Delete",
+                danger: true,
+              });
+              if (!ok) return;
               await deletePreset(cfg.preset_id);
               update({ preset_id: null });
             }}
@@ -165,6 +178,7 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
         mcpStatuses={mcpStatuses}
         mcpTools={mcpTools}
       />
+      {confirmElement}
     </aside>
   );
 }

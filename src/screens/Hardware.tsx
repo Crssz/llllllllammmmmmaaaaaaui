@@ -42,9 +42,7 @@ function Sparkline({
 }
 
 export function HardwareScreen() {
-  const { hw, hwSeries, server } = useAppStore(
-    useShallow((s) => ({ hw: s.hw, hwSeries: s.hwSeries, server: s.server })),
-  );
+  const { hw, hwSeries } = useAppStore(useShallow((s) => ({ hw: s.hw, hwSeries: s.hwSeries })));
 
   const gpu0 = hw?.gpus?.[0];
   const gpuVramPct =
@@ -79,7 +77,7 @@ export function HardwareScreen() {
           >
             backend: {backend}
           </span>
-          <span className="badge ghost">
+          <span className="badge ghost" title="Auto-refreshes every second">
             <I.Refresh size={11} /> 1s
           </span>
         </div>
@@ -87,7 +85,7 @@ export function HardwareScreen() {
 
       <div className="page-body">
         <div className="hw-grid">
-          <div className="stat-card">
+          <div className={"stat-card" + (gpuVramPct >= 90 ? " warn" : "")}>
             <div className="label">
               <I.Gpu /> VRAM · {gpu0 ? "GPU 0" : "—"}
             </div>
@@ -157,7 +155,7 @@ export function HardwareScreen() {
             </div>
           </div>
 
-          <div className="stat-card">
+          <div className={"stat-card" + ((hw?.cpu_util ?? 0) >= 90 ? " warn" : "")}>
             <div className="label">
               <I.Cpu /> CPU utilization
             </div>
@@ -177,7 +175,7 @@ export function HardwareScreen() {
             </div>
           </div>
 
-          <div className="stat-card">
+          <div className={"stat-card" + (ramPct >= 90 ? " warn" : "")}>
             <div className="label">
               <I.Mem /> RAM
             </div>
@@ -406,12 +404,10 @@ export function HardwareScreen() {
         >
           <div className="panel-head">
             <I.Bolt size={14} /> Inference timings
-            <span className="meta">stub — needs llama-server /metrics</span>
+            <span className="meta">coming soon</span>
           </div>
           <div className="panel-body" style={{ fontSize: 12, color: "var(--muted)" }}>
-            {server.running
-              ? "llama-server is running. Inference stats (prompt eval / gen tok/s / spec accept) will populate once /metrics integration is wired."
-              : "Start llama-server on the Configure tab to populate inference timings."}
+            Inference timing metrics will appear here in a future update.
           </div>
         </div>
       </div>

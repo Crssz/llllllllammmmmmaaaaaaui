@@ -10,6 +10,7 @@ import { useShallow } from "zustand/react/shallow";
 import { ChatSidebar } from "../components/ChatSidebar";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useTextPrompt } from "../components/TextPromptDialog";
+import { useConfirm } from "../components/ConfirmDialog";
 import { ChatMessage, ToolMessage, SystemMessage } from "../components/chat/ChatMessage";
 import { Composer } from "../components/chat/Composer";
 import { ChatDialogs } from "../components/chat/ChatDialogs";
@@ -35,6 +36,7 @@ export function ChatScreen() {
     editMessage,
     deleteMessage,
     resendFromMessage,
+    setChatError,
     reasoningEnabled,
     setReasoningEnabled,
     pendingToolApproval,
@@ -61,6 +63,7 @@ export function ChatScreen() {
       editMessage: s.editMessage,
       deleteMessage: s.deleteMessage,
       resendFromMessage: s.resendFromMessage,
+      setChatError: s.setChatError,
       reasoningEnabled: s.reasoningEnabled,
       setReasoningEnabled: s.setReasoningEnabled,
       pendingToolApproval: s.pendingToolApproval,
@@ -106,6 +109,8 @@ export function ChatScreen() {
     return () => globalThis.clearInterval(id);
   }, [chatPending]);
 
+  const { confirmElement, confirm } = useConfirm();
+
   const saveEdit = (idx: number, next: string) => {
     if (!currentChat) return;
     editMessage(currentChat.id, idx, next);
@@ -114,8 +119,35 @@ export function ChatScreen() {
     if (!currentChat) return;
     deleteMessage(currentChat.id, idx);
   };
-  const onResend = (idx: number) => {
+  // Resend + regenerate both funnel through here. resendFromMessage truncates
+  // everything after `idx`, so if any later message would be discarded, get
+  // explicit confirmation first (see resendFromMessage in chatSlice.ts).
+  const onResend = async (idx: number) => {
     if (!currentChat || chatPending) return;
+    const laterCount = chatMessages.length - (idx + 1);
+    if (laterCount >= 1) {
+      const ok = await confirm({
+        title: "Regenerate from here?",
+        body: `This will remove the ${laterCount} later message${
+          laterCount === 1 ? "" : "s"
+        } in this chat.`,
+        confirmLabel: "Continue",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    resendFromMessage(currentChat.id, idx).catch(() => {});
+  };
+  // Retry the failed turn from its originating user message. Reuses the resend
+  // machinery (which re-runs from, and truncates after, that message). No
+  // confirm here — the user explicitly asked to retry, so discarding the failed
+  // reply is the intent.
+  const retryLastTurn = () => {
+    if (!currentChat || chatPending) return;
+    // precedingUserIdx searches backward from the given index; passing length
+    // finds the last user message in the thread.
+    const idx = precedingUserIdx(chatMessages, chatMessages.length);
+    if (idx < 0) return;
     resendFromMessage(currentChat.id, idx).catch(() => {});
   };
 
@@ -174,8 +206,13 @@ export function ChatScreen() {
         label: "Delete chat…",
         icon: "Trash",
         danger: true,
-        onClick: () => {
-          if (confirm("Delete this conversation?")) deleteChat(c.id);
+        onClick: async () => {
+          const ok = await confirm({
+            title: `Delete "${c.title}"?`,
+            confirmLabel: "Delete",
+            danger: true,
+          });
+          if (ok) deleteChat(c.id);
         },
       },
     ];
@@ -235,6 +272,15 @@ export function ChatScreen() {
   const modelName = flags.model ? basename(flags.model as string) : "no model";
   const canSend = server.ready && !!flags.model;
 
+  // Fold the status-dot meaning into the model badge's tooltip so the colored
+  // dot has a legend: ready (green) / loading (yellow) / stopped (muted).
+  const modelStatusLabel = !server.running
+    ? "server stopped"
+    : server.ready
+      ? "ready"
+      : "loading model…";
+  const modelBadgeTitle = `${modelName} — ${modelStatusLabel}`;
+
   // Reasoning toggle state. The toggle only does anything when --jinja is on
   // AND the loaded model's chat template actually exposes `enable_thinking`
   // (derived from the GGUF). `null` modelInfo (not yet inspected) is treated
@@ -269,7 +315,7 @@ export function ChatScreen() {
           </div>
           <div className="head-meta">
             <span className="badge ghost mono">~{tokenCount} tokens</span>
-            <span className="badge accent" title={modelName}>
+            <span className="badge accent" title={modelBadgeTitle}>
               <span
                 className="dot"
                 style={{
@@ -283,12 +329,15 @@ export function ChatScreen() {
               <span className="model-name">{modelName}</span>
             </span>
             {flags.spec_type === "draft-mtp" && (
-              <span className="badge ghost">
+              <span
+                className="badge ghost"
+                title="Speculative decoding: multi-token-prediction draft model"
+              >
                 <I.Spark size={11} /> MTP
               </span>
             )}
             {flags.spec_type === "draft-dflash" && (
-              <span className="badge ghost">
+              <span className="badge ghost" title="Speculative decoding: DFlash draft model">
                 <I.Spark size={11} /> DFlash
               </span>
             )}
@@ -328,13 +377,16 @@ export function ChatScreen() {
               <button
                 className="btn ghost"
                 title="Delete chat"
-                onClick={() => {
-                  if (confirm("Delete this conversation?")) {
-                    deleteChat(currentChat.id);
-                  }
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: `Delete "${currentChat.title}"?`,
+                    confirmLabel: "Delete",
+                    danger: true,
+                  });
+                  if (ok) deleteChat(currentChat.id);
                 }}
               >
-                <I.X size={12} />
+                <I.Trash size={12} />
               </button>
             )}
           </div>
@@ -417,7 +469,7 @@ export function ChatScreen() {
             );
           })}
 
-          {!atBottom && chatPending && (
+          {!atBottom && (
             <button
               className="btn"
               style={{
@@ -436,7 +488,10 @@ export function ChatScreen() {
           {chatError && (
             <div
               style={{
-                padding: "10px 14px",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 12px",
                 background: "var(--red-soft)",
                 border: "1px solid oklch(0.55 0.16 25 / 0.45)",
                 borderRadius: "var(--radius)",
@@ -444,8 +499,30 @@ export function ChatScreen() {
                 fontSize: 12.5,
               }}
             >
-              <I.Info size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
-              {chatError}
+              <I.Info size={13} style={{ flexShrink: 0 }} />
+              {/* Concise on-screen label — the detailed error stays in the
+                  assistant bubble (chatSlice writes "⚠️ <error>") so it isn't
+                  read twice; the full string is still available on hover. */}
+              <span style={{ flex: 1, cursor: "help" }} title={chatError}>
+                The last response ran into an error.
+              </span>
+              <button
+                className="btn ghost"
+                style={{ padding: "3px 8px", color: "var(--red)" }}
+                onClick={retryLastTurn}
+                disabled={chatPending || precedingUserIdx(chatMessages, chatMessages.length) < 0}
+                title="Retry the last turn"
+              >
+                <I.Refresh size={11} /> Retry
+              </button>
+              <button
+                className="btn ghost"
+                style={{ padding: "3px 6px", color: "var(--red)" }}
+                onClick={() => setChatError(null)}
+                title="Dismiss"
+              >
+                <I.X size={12} />
+              </button>
             </div>
           )}
         </div>
@@ -470,6 +547,7 @@ export function ChatScreen() {
       </div>
       <ChatSidebar open={sideOpen} onToggle={() => setSideOpen((o) => !o)} />
       {promptElement}
+      {confirmElement}
       <ChatDialogs
         pendingToolApproval={pendingToolApproval}
         approveTool={approveTool}

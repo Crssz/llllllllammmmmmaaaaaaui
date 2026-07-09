@@ -1,9 +1,13 @@
 import type { StateCreator } from "zustand";
 import { api, type SavedProfile, type Settings } from "../../lib/api";
+import { log } from "../../lib/logger";
 import type { FlagValues } from "../types";
 import type { AppStore } from "../store";
 
 export type ProfilesSlice = {
+  /** Id of the profile whose flags were last applied via `loadProfile`, used
+   *  purely to mark the active card in the UI. Not persisted. */
+  loadedProfileId: string | null;
   saveProfile: (name: string) => Promise<void>;
   loadProfile: (id: string) => void;
   deleteProfile: (id: string) => Promise<void>;
@@ -15,7 +19,9 @@ function profileId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> = (_set, get) => ({
+export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> = (set, get) => ({
+  loadedProfileId: null,
+
   saveProfile: async (name) => {
     const { flags, settings } = get();
     const profile: SavedProfile = {
@@ -40,6 +46,10 @@ export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> 
     const f: FlagValues = { ...flags, ...(p.flags as FlagValues) };
     if (p.model_path) f.model = p.model_path;
     resetFlags(f);
+    set({ loadedProfileId: p.id });
+    // House toast so the load registers — the Configure flags change silently
+    // otherwise.
+    log.notify("info", "profiles", `Loaded profile "${p.name}"`);
   },
 
   deleteProfile: async (id) => {

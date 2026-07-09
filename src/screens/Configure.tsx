@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
-import { FLAG_GROUPS, MODEL, defaultFlags, type FlagDef } from "../data";
+import { FLAG_GROUPS, defaultFlags, type FlagDef } from "../data";
 import { BinaryLocator } from "./BinaryLocator";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { api } from "../lib/api";
 import { buildArgs, type FlagValue } from "../lib/buildArgs";
+import { useConfirm } from "../components/ConfirmDialog";
 
 function FlagRow({
   f,
@@ -76,12 +77,29 @@ function FlagRow({
             const n = Number(e.target.value);
             if (Number.isFinite(n)) onChange(n);
           }}
+          onBlur={() => {
+            // Commit-time clamp: keep typing free (so "40" on the way to "4096"
+            // isn't snapped to min mid-entry), but never leave the flag holding a
+            // value outside the FlagDef's [min, max] once the field loses focus.
+            if (isAlias) return;
+            const clamped = Math.max(min, Math.min(max, v));
+            if (clamped !== v) onChange(clamped);
+          }}
           disabled={isAlias}
         />
       </>
     );
   } else if (f.type === "toggle") {
-    ctl = <button className={"toggle" + (value ? " on" : "")} onClick={() => onChange(!value)} />;
+    ctl = (
+      <button
+        type="button"
+        className={"toggle" + (value ? " on" : "")}
+        role="switch"
+        aria-checked={!!value}
+        aria-label={f.label}
+        onClick={() => onChange(!value)}
+      />
+    );
   } else if (f.type === "select") {
     ctl = (
       <select
@@ -97,14 +115,22 @@ function FlagRow({
       </select>
     );
   } else if (f.type === "text" || f.type === "path") {
+    // The Port field must be an integer in 1–65535. Don't block typing — just
+    // flag an out-of-range value inline so the user can correct it.
+    const portInvalid = f.key === "port" && !isValidPort(String(value));
     ctl = (
       <>
         <input
           className="input mono"
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
-          style={{ flex: 1, minWidth: 0 }}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            ...(portInvalid ? { borderColor: "var(--red)" } : null),
+          }}
           placeholder={f.type === "path" ? "(none)" : ""}
+          aria-invalid={portInvalid || undefined}
         />
         {onBrowse && (
           <button
@@ -115,6 +141,18 @@ function FlagRow({
           >
             <I.Folder size={11} />
           </button>
+        )}
+        {portInvalid && (
+          <span
+            style={{
+              color: "var(--red)",
+              fontSize: 10.5,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            1–65535
+          </span>
         )}
       </>
     );
@@ -190,6 +228,10 @@ export function ConfigureScreen({
   }, [initialTab, onTabConsumed]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Remember the exact startError the user dismissed so the banner stays hidden
+  // for that message but re-appears when the store surfaces a *different* error.
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const { confirmElement, confirm } = useConfirm();
 
   const set = (k: string, v: FlagValue) => setFlag(k, v);
 
@@ -199,16 +241,32 @@ export function ConfigureScreen({
   const binaryDisplay = "llama-server";
 
   const est = useMemo(() => {
-    const w = MODEL.size_gb;
     const ctx = vals.ctx as number;
     const ctk = vals.ctk as string;
     const ctv = vals.ctv as string;
     const kvBytesPerTok = ctk === "f16" ? 2 : ctk === "f32" ? 4 : 1;
     const vBytesPerTok = ctv === "f16" ? 2 : ctv === "f32" ? 4 : 1;
     const kv = (ctx * 64 * (kvBytesPerTok + vBytesPerTok)) / (1024 * 1024 * 1024);
-    const total = w + kv + 0.6;
-    return { total: total.toFixed(2), kv: kv.toFixed(2), weights: w.toFixed(2) };
-  }, [vals]);
+    const overhead = 0.6;
+    // Real weights size comes from the inspected GGUF (modelInfo.size_gb).
+    // Unknown when no model is selected or the file size couldn't be read.
+    const weights = modelInfo && modelInfo.size_gb > 0 ? modelInfo.size_gb : null;
+    const total = weights != null ? weights + kv + overhead : null;
+    // Bar widths are proportional to the actual GB. Scale against the total
+    // when known; otherwise against the KV+overhead sum so those two bars stay
+    // meaningful even before a model is picked.
+    const denom = total ?? kv + overhead;
+    const pct = (v: number) => (denom > 0 ? Math.min(100, (v / denom) * 100) : 0);
+    return {
+      weights,
+      kv,
+      overhead,
+      total,
+      weightsPct: weights != null ? pct(weights) : 0,
+      kvPct: pct(kv),
+      overheadPct: pct(overhead),
+    };
+  }, [vals, modelInfo]);
 
   // Browse for a GGUF and store it under the given flag key. The store's
   // pickModel() is only correct for the main "model" flag.
@@ -276,11 +334,15 @@ export function ConfigureScreen({
     );
   }, [modelPath, settings.model_configs, settings.mmproj_pinned]);
 
-  const resetModelConfig = () => {
+  const resetModelConfig = async () => {
     if (!modelPath) return;
-    if (confirm(`Reset settings for "${basename(modelPath)}" back to defaults?`)) {
-      forgetModelConfig();
-    }
+    const ok = await confirm({
+      title: `Reset settings for "${basename(modelPath)}" back to defaults?`,
+      body: "This model's saved configuration will be discarded.",
+      confirmLabel: "Reset",
+      danger: true,
+    });
+    if (ok) forgetModelConfig();
   };
 
   // Browse for a projector GGUF and pin it for this model (an explicit choice).
@@ -371,13 +433,15 @@ export function ConfigureScreen({
           <button
             className="btn primary"
             onClick={reload}
-            disabled={busy || !settings.build_dir}
+            disabled={busy || !settings.build_dir || !modelPath}
             title={
               !settings.build_dir
                 ? "Pick a llama.cpp build directory first"
-                : server.running
-                  ? "Restart with current flags"
-                  : "Start llama-server"
+                : !modelPath
+                  ? "Pick a model first"
+                  : server.running
+                    ? "Restart with current flags"
+                    : "Start llama-server"
             }
           >
             <I.Refresh
@@ -389,7 +453,7 @@ export function ConfigureScreen({
         </div>
       </div>
 
-      {startError && (
+      {startError && startError !== dismissedError && (
         <div
           style={{
             margin: "10px 28px 0",
@@ -404,8 +468,17 @@ export function ConfigureScreen({
             gap: 8,
           }}
         >
-          <I.Info size={13} />
-          {startError}
+          <I.Info size={13} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0 }}>{startError}</span>
+          <button
+            className="iconbtn"
+            title="Dismiss"
+            aria-label="Dismiss error"
+            onClick={() => setDismissedError(startError)}
+            style={{ flexShrink: 0, width: 20, height: 20, color: "var(--red)" }}
+          >
+            <I.X size={12} />
+          </button>
         </div>
       )}
 
@@ -697,29 +770,32 @@ export function ConfigureScreen({
               >
                 <div className="thr-row">
                   <span className="lbl">Weights</span>
-                  <div className="bar">
-                    <i style={{ width: "62%" }} />
-                  </div>
-                  <span className="val">{est.weights} GB</span>
+                  {est.weights != null ? (
+                    <div className="bar">
+                      <i style={{ width: `${est.weightsPct}%` }} />
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>
+                      select a model
+                    </span>
+                  )}
+                  <span className="val">
+                    {est.weights != null ? `${est.weights.toFixed(2)} GB` : "—"}
+                  </span>
                 </div>
                 <div className="thr-row">
                   <span className="lbl">KV cache</span>
                   <div className="bar">
-                    <i
-                      style={{
-                        width: `${Math.min(80, Number(est.kv) * 10)}%`,
-                        background: "var(--cyan)",
-                      }}
-                    />
+                    <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
                   </div>
-                  <span className="val">{est.kv} GB</span>
+                  <span className="val">{est.kv.toFixed(2)} GB</span>
                 </div>
                 <div className="thr-row">
                   <span className="lbl">Overhead</span>
                   <div className="bar">
-                    <i style={{ width: "8%", background: "var(--yellow)" }} />
+                    <i style={{ width: `${est.overheadPct}%`, background: "var(--yellow)" }} />
                   </div>
-                  <span className="val">0.60 GB</span>
+                  <span className="val">{est.overhead.toFixed(2)} GB</span>
                 </div>
                 <div
                   style={{
@@ -733,10 +809,10 @@ export function ConfigureScreen({
                     Total
                   </span>
                   <div className="bar">
-                    <i style={{ width: "78%" }} />
+                    <i style={{ width: `${est.total != null ? 100 : 0}%` }} />
                   </div>
                   <span className="val mono" style={{ color: "var(--text)" }}>
-                    {est.total} GB
+                    {est.total != null ? `${est.total.toFixed(2)} GB` : "—"}
                   </span>
                 </div>
               </div>
@@ -744,6 +820,7 @@ export function ConfigureScreen({
           </aside>
         </div>
       </div>
+      {confirmElement}
     </>
   );
 }
@@ -782,4 +859,10 @@ function renderArgLines(args: string[]): React.ReactNode {
 function basename(p: string): string {
   const sep = p.includes("\\") ? "\\" : "/";
   return p.split(sep).pop() || p;
+}
+
+// A valid TCP port is an integer in 1–65535.
+function isValidPort(s: string): boolean {
+  const n = Number(s);
+  return Number.isInteger(n) && n >= 1 && n <= 65535;
 }

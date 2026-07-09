@@ -60,8 +60,12 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
   startServer: async (args) => {
     const buildDir = get().settings.build_dir;
     if (!buildDir) {
-      log.warn("server", "start blocked: no build_dir set");
-      set({ startError: "Pick a llama.cpp build directory first." });
+      // Surface via a toast too — Load buttons on Models/Catalog/the overlay
+      // don't render startError (only Configure's banner does), so without this
+      // a first-run user with no build dir clicks Load and sees nothing.
+      const msg = "Pick a llama.cpp build directory first.";
+      log.notify("warn", "server", msg);
+      set({ startError: msg });
       return;
     }
     set({ startError: null });
@@ -77,7 +81,9 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      log.error("server", `start failed`, { error: msg });
+      // notify() logs at error level AND raises a user-visible toast, so a Load
+      // from a surface that doesn't show startError still reports the failure.
+      log.notify("error", "server", `Failed to start llama-server: ${msg}`);
       set({ startError: msg });
     }
   },

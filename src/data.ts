@@ -179,7 +179,7 @@ export const FLAG_GROUPS: FlagGroup[] = [
         desc: "GGUF weights to load",
         flag: "--model",
         type: "path",
-        value: "models/Qwen3.6-27B-Q8_0-mtp.gguf",
+        value: "",
       },
       {
         key: "alias",
@@ -187,7 +187,7 @@ export const FLAG_GROUPS: FlagGroup[] = [
         desc: "Name reported by API",
         flag: "--alias",
         type: "text",
-        value: "qwen3.6-27b",
+        value: "",
       },
       {
         key: "lora",
@@ -336,8 +336,8 @@ export const FLAG_GROUPS: FlagGroup[] = [
       {
         key: "mmap",
         label: "Memory map",
-        desc: "mmap the model file",
-        flag: "--no-mmap (off)",
+        desc: "Memory-map the model file (default on)",
+        flag: "--no-mmap",
         type: "toggle",
         value: true,
       },
@@ -381,7 +381,7 @@ export const FLAG_GROUPS: FlagGroup[] = [
     id: "spec",
     label: "Speculative decoding",
     icon: "Bolt",
-    defaultOpen: true,
+    defaultOpen: false,
     flags: [
       {
         key: "spec_type",
@@ -389,7 +389,7 @@ export const FLAG_GROUPS: FlagGroup[] = [
         desc: "none · draft-simple (separate draft GGUF) · draft-mtp (MTP heads in model GGUF or explicit drafter) · draft-eagle3 · draft-dflash (block-diffusion drafter GGUF)",
         flag: "--spec-type",
         type: "select",
-        value: "draft-mtp",
+        value: "none",
         options: ["none", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash"],
       },
       {
@@ -431,7 +431,7 @@ export const FLAG_GROUPS: FlagGroup[] = [
         desc: "Smaller GGUF used as the speculator",
         flag: "-md, --model-draft",
         type: "path",
-        value: "models/llama-3.2-1b-Q4_K_M.gguf",
+        value: "",
         only: "draft-simple",
       },
       {

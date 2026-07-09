@@ -4,6 +4,8 @@ import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { api, type GgufInfo, type ModelEntry, type OwnerEntry, type QuantFile } from "../lib/api";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
+import { useConfirm } from "../components/ConfirmDialog";
+import { quantDescription } from "../lib/quant";
 import { log } from "../lib/logger";
 
 type SortBy = "recent" | "size" | "name";
@@ -78,6 +80,7 @@ export function ModelsScreen() {
     })),
   );
 
+  const { confirmElement, confirm } = useConfirm();
   const [showRecent, setShowRecent] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortBy>("recent");
@@ -142,7 +145,13 @@ export function ModelsScreen() {
   const openMenu = useContextMenu();
 
   const onDeleteModel = async (r: FlatRow) => {
-    if (!confirm(`Delete "${r.quant.filename}" from disk? This cannot be undone.`)) return;
+    const ok = await confirm({
+      title: `Delete "${r.quant.filename}"?`,
+      body: "This permanently removes the file from disk and cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       const n = await api.deleteModelFile(r.quant.path);
       log.info("models", `deleted ${n} file${n === 1 ? "" : "s"} for ${r.quant.filename}`);
@@ -223,6 +232,7 @@ export function ModelsScreen() {
 
   return (
     <>
+      {confirmElement}
       <div className="page-head">
         <div>
           <div className="crumb">Models / library</div>
@@ -235,6 +245,13 @@ export function ModelsScreen() {
             className="btn"
             onClick={() => rescanModels().catch(() => {})}
             disabled={!path || modelsScanning}
+            title={
+              !path
+                ? "Pick a models folder first"
+                : modelsScanning
+                  ? "Scanning…"
+                  : "Re-scan the models folder"
+            }
           >
             <I.Refresh
               size={12}
@@ -277,6 +294,11 @@ export function ModelsScreen() {
                     className="btn"
                     onClick={() => setShowRecent((s) => !s)}
                     disabled={settings.models_recent.length === 0}
+                    title={
+                      settings.models_recent.length === 0
+                        ? "No recent folders yet"
+                        : "Recently used models folders"
+                    }
                   >
                     <I.History size={12} /> Recent
                   </button>
@@ -286,6 +308,7 @@ export function ModelsScreen() {
                         <button
                           key={p}
                           className="recent-item mono"
+                          title={p}
                           onClick={() => {
                             setShowRecent(false);
                             setModelsDir(p).catch(() => {});
@@ -318,6 +341,13 @@ export function ModelsScreen() {
                   className="btn ghost"
                   onClick={() => rescanModels().catch(() => {})}
                   disabled={!path || modelsScanning}
+                  title={
+                    !path
+                      ? "Pick a models folder first"
+                      : modelsScanning
+                        ? "Scanning…"
+                        : "Re-scan the models folder"
+                  }
                 >
                   <I.Refresh
                     size={12}
@@ -340,8 +370,8 @@ export function ModelsScreen() {
                 <span className="mono" style={{ color: "var(--text-2)" }}>
                   {path || "<dir>"}/&lt;owner&gt;/&lt;model&gt;/*.gguf
                 </span>{" "}
-                — click a row to inspect & quick-config before loading. Alt-click Load to skip the
-                inline panel.
+                — click <strong>Load</strong> to switch the model & restart the server, or use a
+                row&apos;s chevron to inspect & quick-config first.
               </span>
             </div>
           </div>
@@ -408,7 +438,10 @@ export function ModelsScreen() {
                     onContextMenu={(e) => openMenu(e, modelMenuItems(r, isLoaded))}
                   >
                     <div className="model-row-name">
-                      <span className={"quant-tag mono " + bitsClass(r.quant.bits)}>
+                      <span
+                        className={"quant-tag mono " + bitsClass(r.quant.bits)}
+                        title={quantDescription(r.quant.tag)}
+                      >
                         {r.quant.tag}
                       </span>
                       <span className="mname" title={r.quant.filename}>
@@ -439,15 +472,24 @@ export function ModelsScreen() {
                           VL
                         </span>
                       )}
-                      {isLoaded && (
-                        <span
-                          className="badge green"
-                          style={{ fontSize: 9.5, padding: "1px 5px" }}
-                          title="Currently set as --model"
-                        >
-                          <span className="dot" /> loaded
-                        </span>
-                      )}
+                      {isLoaded &&
+                        (server.running ? (
+                          <span
+                            className="badge green"
+                            style={{ fontSize: 9.5, padding: "1px 5px" }}
+                            title="The server is running this model"
+                          >
+                            <span className="dot" /> loaded
+                          </span>
+                        ) : (
+                          <span
+                            className="badge ghost"
+                            style={{ fontSize: 9.5, padding: "1px 5px" }}
+                            title="Set as --model — start the server to load it"
+                          >
+                            selected
+                          </span>
+                        ))}
                     </div>
                     <div className="model-row-owner" title={r.owner}>
                       {r.owner}
@@ -471,19 +513,8 @@ export function ModelsScreen() {
                     <button
                       className="btn"
                       style={{ padding: "3px 9px" }}
-                      onClick={(e) => {
-                        // Alt-click → quick load + restart, bypassing expansion
-                        if (e.altKey) {
-                          onLoad(r.quant.path).catch(() => {});
-                        } else {
-                          onToggle(key, r.quant.path);
-                        }
-                      }}
-                      title={
-                        isLoaded
-                          ? "Already loaded"
-                          : "Click to configure · Alt-click to load & restart server"
-                      }
+                      onClick={() => onLoad(r.quant.path).catch(() => {})}
+                      title={isLoaded ? "Already loaded" : "Load this model & restart the server"}
                       disabled={isLoaded}
                     >
                       {isLoaded ? (
@@ -616,7 +647,9 @@ export function ExpandedRow({
         <h4>Quick load params</h4>
         <div className="row-ctrl">
           <div className="row-ctrl-line">
-            <span className="lbl">ctx</span>
+            <span className="lbl" title="Context window in tokens">
+              ctx
+            </span>
             <input
               type="range"
               min={2048}
@@ -635,7 +668,12 @@ export function ExpandedRow({
           </div>
 
           <div className="row-ctrl-line">
-            <span className="lbl">ngl</span>
+            <span
+              className="lbl"
+              title="Model layers offloaded to GPU — 'all' offloads every layer"
+            >
+              ngl
+            </span>
             <label
               style={{
                 display: "inline-flex",
@@ -675,7 +713,9 @@ export function ExpandedRow({
           </div>
 
           <div className="row-ctrl-line">
-            <span className="lbl">flash-attn</span>
+            <span className="lbl" title="Flash attention — faster on supported GPUs">
+              flash-attn
+            </span>
             <button className={"toggle" + (fa ? " on" : "")} onClick={() => setFlag("fa", !fa)} />
             <span style={{ fontSize: 11, color: "var(--muted)" }}>{fa ? "on" : "off"}</span>
           </div>

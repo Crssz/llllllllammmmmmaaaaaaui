@@ -1,10 +1,18 @@
 import { useMemo, useState } from "react";
 import { I } from "../icons";
+import { FLAG_GROUPS } from "../data";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useTextPrompt } from "../components/TextPromptDialog";
+import { useConfirm } from "../components/ConfirmDialog";
 import type { SavedProfile } from "../lib/api";
+
+// Flag-key → human description, reused from the Configure flag catalog so the
+// profile mini-stat tooltips stay in sync with the canonical flag docs.
+const FLAG_DESC: Record<string, string> = Object.fromEntries(
+  FLAG_GROUPS.flatMap((g) => g.flags.map((f) => [f.key, f.desc])),
+);
 
 function fmtN(n: number | undefined | null): string {
   if (n === undefined || n === null) return "—";
@@ -43,6 +51,7 @@ export function ProfilesScreen() {
   const {
     settings,
     flags,
+    loadedProfileId,
     saveProfile,
     loadProfile,
     deleteProfile,
@@ -52,6 +61,7 @@ export function ProfilesScreen() {
     useShallow((s) => ({
       settings: s.settings,
       flags: s.flags,
+      loadedProfileId: s.loadedProfileId,
       saveProfile: s.saveProfile,
       loadProfile: s.loadProfile,
       deleteProfile: s.deleteProfile,
@@ -65,6 +75,7 @@ export function ProfilesScreen() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const openMenu = useContextMenu();
   const { promptElement, openPrompt } = useTextPrompt();
+  const { confirmElement, confirm } = useConfirm();
 
   const profileMenuItems = (p: SavedProfile): MenuItem[] => [
     { label: "Load profile", icon: "Play", onClick: () => loadProfile(p.id) },
@@ -91,8 +102,9 @@ export function ProfilesScreen() {
       label: "Delete…",
       icon: "Trash",
       danger: true,
-      onClick: () => {
-        if (confirm(`Delete profile "${p.name}"?`)) deleteProfile(p.id).catch(() => {});
+      onClick: async () => {
+        if (await confirm({ title: `Delete profile "${p.name}"?`, danger: true, confirmLabel: "Delete" }))
+          deleteProfile(p.id).catch(() => {});
       },
     },
   ];
@@ -176,7 +188,7 @@ export function ProfilesScreen() {
           <div className="prof-search">
             <I.Search />
             <input
-              placeholder="Search by name, tag, model…"
+              placeholder="Search by name, model…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -221,7 +233,7 @@ export function ProfilesScreen() {
             return (
               <div
                 key={p.id}
-                className="prof-card"
+                className={"prof-card" + (p.id === loadedProfileId ? " active" : "")}
                 onContextMenu={(e) => openMenu(e, profileMenuItems(p))}
               >
                 <div className="prof-card-head">
@@ -234,8 +246,14 @@ export function ProfilesScreen() {
                   <button
                     className="iconbtn more"
                     title="Delete profile"
-                    onClick={() => {
-                      if (confirm(`Delete profile "${p.name}"?`)) {
+                    onClick={async () => {
+                      if (
+                        await confirm({
+                          title: `Delete profile "${p.name}"?`,
+                          danger: true,
+                          confirmLabel: "Delete",
+                        })
+                      ) {
                         deleteProfile(p.id).catch(() => {});
                       }
                     }}
@@ -258,25 +276,25 @@ export function ProfilesScreen() {
                     gap: "2px 8px",
                   }}
                 >
-                  <span>
+                  <span title={FLAG_DESC.ctx}>
                     ctx{" "}
                     <span style={{ color: "var(--text-2)" }}>
                       {fmtN(f.ctx as number | undefined)}
                     </span>
                   </span>
-                  <span>
+                  <span title={FLAG_DESC.ngl}>
                     ngl <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.ngl)}</span>
                   </span>
-                  <span>
+                  <span title={FLAG_DESC.fa}>
                     fa <span style={{ color: "var(--text-2)" }}>{f.fa ? "on" : "off"}</span>
                   </span>
-                  <span>
+                  <span title={FLAG_DESC.ctk}>
                     ctk <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.ctk)}</span>
                   </span>
-                  <span>
+                  <span title={FLAG_DESC.ctv}>
                     ctv <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.ctv)}</span>
                   </span>
-                  <span>
+                  <span title={FLAG_DESC.batch}>
                     batch <span style={{ color: "var(--text-2)" }}>{fmtFlag(f.batch)}</span>
                   </span>
                 </div>
@@ -298,6 +316,7 @@ export function ProfilesScreen() {
         </div>
       </div>
       {promptElement}
+      {confirmElement}
     </>
   );
 }

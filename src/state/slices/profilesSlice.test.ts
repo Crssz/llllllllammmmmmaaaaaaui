@@ -49,12 +49,15 @@ describe("profiles slice", () => {
     useAppStore.getState().loadProfile("p1");
     expect(useAppStore.getState().flags.ctx).toBe(1024);
     expect(useAppStore.getState().flags.model).toBe("/m/x.gguf");
+    // Marks the loaded profile as active (non-persisted UI marker).
+    expect(useAppStore.getState().loadedProfileId).toBe("p1");
   });
 
   it("loadProfile no-ops on unknown id", () => {
     useAppStore.getState().resetFlags({ ctx: 2048 });
     useAppStore.getState().loadProfile("nope");
     expect(useAppStore.getState().flags.ctx).toBe(2048);
+    expect(useAppStore.getState().loadedProfileId).toBeNull();
   });
 
   it("deleteProfile removes by id and persists", async () => {

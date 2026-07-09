@@ -13,7 +13,9 @@ export type FlagsSlice = {
   setReasoningEnabled: (v: boolean) => void;
   setFlag: (key: string, value: string | number | boolean) => void;
   resetFlags: (values: FlagValues) => void;
-  pickModel: () => Promise<void>;
+  /** Open a file dialog to choose a GGUF and set it as `--model`. Resolves with
+   *  the chosen path (so a caller can restart the server), or null if cancelled. */
+  pickModel: () => Promise<string | null>;
   loadModelPath: (path: string) => void;
   /** Drop the current model's saved config and reset its flags to defaults.
    *  The escape hatch for the otherwise-automatic per-model persistence. */
@@ -97,6 +99,7 @@ export const createFlagsSlice: StateCreator<AppStore, [], [], FlagsSlice> = (set
   pickModel: async () => {
     const picked = await api.pickFile();
     if (picked) get().setFlag("model", picked);
+    return picked;
   },
 
   loadModelPath: (path) => {

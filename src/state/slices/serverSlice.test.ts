@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { api } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
+import { log } from "../../lib/logger";
 import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
 
 describe("server slice", () => {
@@ -32,6 +33,24 @@ describe("server slice", () => {
     await useAppStore.getState().startServer(["--foo"]);
     expect(useAppStore.getState().startError).toBe("port in use");
     expect(useAppStore.getState().server.running).toBe(false);
+  });
+
+  it("startServer fires a user-visible toast on spawn failure", async () => {
+    useAppStore.getState().setSettings(makeSettings({ build_dir: "/b" }));
+    vi.spyOn(api, "startServer").mockRejectedValueOnce(new Error("port in use"));
+    const notify = vi.spyOn(log, "notify");
+    await useAppStore.getState().startServer(["--foo"]);
+    expect(notify).toHaveBeenCalledWith("error", "server", expect.stringContaining("port in use"));
+  });
+
+  it("startServer toasts the guidance when no build_dir is set", async () => {
+    const notify = vi.spyOn(log, "notify");
+    await useAppStore.getState().startServer(["--foo"]);
+    expect(notify).toHaveBeenCalledWith(
+      "warn",
+      "server",
+      expect.stringMatching(/build directory/i),
+    );
   });
 
   it("stopServer resets state even when the backend throws", async () => {
