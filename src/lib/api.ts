@@ -365,6 +365,8 @@ export type GgufInfo = {
   architecture: string | null;
   general_name: string | null;
   context_length: number | null;
+  /** Transformer block/layer count (`{arch}.block_count`); null when absent. */
+  block_count: number | null;
   mtp_support: boolean;
   size_gb: number;
   mmproj_siblings: string[];

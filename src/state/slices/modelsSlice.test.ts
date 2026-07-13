@@ -70,6 +70,7 @@ describe("models slice", () => {
         architecture: "qwen",
         general_name: null,
         context_length: null,
+        block_count: null,
         mtp_support: true,
         size_gb: 1,
         mmproj_siblings: ["mm.gguf"],

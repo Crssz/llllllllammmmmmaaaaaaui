@@ -575,12 +575,26 @@ export function ExpandedRow({
   const ctx = (flags.ctx as number) ?? 32768;
   const ngl = (flags.ngl as number) ?? 30;
   const fa = !!flags.fa;
-  const ctxMax =
-    info && info !== "loading" && info !== "error" && info.context_length
-      ? Math.max(131072, Number(info.context_length))
-      : 131072;
+  const meta = info && info !== "loading" && info !== "error" ? info : undefined;
+  // ctx slider is bounded by the model's native context when known — no more
+  // flooring to 131072, so an 8k/32k model can't be configured past its window.
+  const nativeCtx = meta?.context_length ? Number(meta.context_length) : undefined;
+  const ctxMax = nativeCtx ?? 131072;
+  // Keep the usual 2048 floor, but never let min exceed max for tiny-ctx models.
+  const ctxMin = Math.min(2048, ctxMax);
+  const ctxDisplay = Math.max(ctxMin, Math.min(ctxMax, ctx));
+  // Flag (don't silently mutate) a stale ctx carried over from a bigger model.
+  const ctxOverMax = ctx > ctxMax;
+  const commitCtx = () => {
+    const clamped = Math.max(ctxMin, Math.min(ctxMax, ctx));
+    if (clamped !== ctx) setFlag("ctx", clamped);
+  };
+  // ngl slider tracks the real layer count when known; "all" still maps to the
+  // 999 sentinel, and unchecking "all" lands on the explicit layer count.
+  const nativeLayers = meta?.block_count ? Number(meta.block_count) : undefined;
+  const nglMax = nativeLayers ?? 100;
   const isAllLayers = ngl === 999;
-  const nglDisplay = isAllLayers ? 100 : Math.max(0, Math.min(100, ngl));
+  const nglDisplay = isAllLayers ? nglMax : Math.max(0, Math.min(nglMax, ngl));
 
   return (
     <div className="model-row-expand">
@@ -634,6 +648,12 @@ export function ExpandedRow({
                   <span className="mono">{info.context_length.toLocaleString()}</span>
                 </div>
               )}
+              {info.block_count && (
+                <div className="row-ctrl-line">
+                  <span className="lbl">layers</span>
+                  <span className="mono">{info.block_count.toLocaleString()}</span>
+                </div>
+              )}
               <div className="row-ctrl-line">
                 <span className="lbl">tensors</span>
                 <span className="mono">{info.tensor_count.toLocaleString()}</span>
@@ -652,20 +672,36 @@ export function ExpandedRow({
             </span>
             <input
               type="range"
-              min={2048}
+              min={ctxMin}
               max={ctxMax}
               step={1024}
-              value={ctx}
+              value={ctxDisplay}
               onChange={(e) => setFlag("ctx", Number(e.target.value))}
               style={{ flex: 1 }}
             />
             <input
               className="input num mono"
-              style={{ width: 80 }}
+              style={{ width: 80, ...(ctxOverMax ? { borderColor: "var(--red)" } : null) }}
               value={ctx}
-              onChange={(e) => setFlag("ctx", Number(e.target.value) || 0)}
+              onChange={(e) => {
+                // Keep typing free (so "40" en route to "4096" isn't snapped);
+                // clamp on blur instead.
+                const n = Number(e.target.value);
+                if (Number.isFinite(n)) setFlag("ctx", n);
+              }}
+              onBlur={commitCtx}
+              aria-invalid={ctxOverMax || undefined}
+              title={ctxOverMax ? `Above native context (${ctxMax.toLocaleString()})` : undefined}
             />
           </div>
+          {ctxOverMax && nativeCtx && (
+            <div className="row-ctrl-line">
+              <span style={{ fontSize: 10.5, color: "var(--red)" }}>
+                Above this model&apos;s native context ({ctxMax.toLocaleString()}) — clamped on
+                commit.
+              </span>
+            </div>
+          )}
 
           <div className="row-ctrl-line">
             <span
@@ -688,7 +724,7 @@ export function ExpandedRow({
               <input
                 type="checkbox"
                 checked={isAllLayers}
-                onChange={(e) => setFlag("ngl", e.target.checked ? 999 : 100)}
+                onChange={(e) => setFlag("ngl", e.target.checked ? 999 : nglMax)}
                 style={{ margin: 0 }}
               />{" "}
               all
@@ -696,7 +732,7 @@ export function ExpandedRow({
             <input
               type="range"
               min={0}
-              max={100}
+              max={nglMax}
               step={1}
               value={nglDisplay}
               onChange={(e) => setFlag("ngl", Number(e.target.value))}

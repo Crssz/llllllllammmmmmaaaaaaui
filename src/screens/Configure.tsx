@@ -14,18 +14,24 @@ function FlagRow({
   onChange,
   onBrowse,
   extra,
+  maxOverride,
 }: Readonly<{
   f: FlagDef;
   value: FlagValue;
   onChange: (v: FlagValue) => void;
   onBrowse?: () => void;
   extra?: React.ReactNode;
+  // Per-row cap that replaces the FlagDef's static max (e.g. clamp ctx to the
+  // selected model's native context). Undefined leaves f.max in charge.
+  maxOverride?: number;
 }>) {
   let ctl: React.ReactNode = null;
   if (f.type === "slider") {
     const v = value as number;
-    const min = f.min ?? 0;
-    const max = f.max ?? 1;
+    const max = maxOverride ?? f.max ?? 1;
+    // Never let the floor exceed the (possibly overridden) ceiling for models
+    // whose native cap is below the FlagDef's min.
+    const min = Math.min(f.min ?? 0, max);
     const alias = f.maxAlias;
     const isAlias = v === alias?.value;
     // Clamp display value to [min, max] so the slider track stays sensible
@@ -162,7 +168,10 @@ function FlagRow({
     <div className="cfg-row">
       <div className="lbl">
         <span className="name">{f.label}</span>
-        <span className="desc">{f.desc}</span>
+        <span className="desc">
+          {f.desc}
+          {maxOverride != null && ` · native max ${maxOverride.toLocaleString()}`}
+        </span>
       </div>
       <div className="ctl">
         {ctl}
@@ -617,6 +626,12 @@ export function ConfigureScreen({
                                 auto
                               </span>
                             ) : undefined;
+                          // Cap the ctx slider at the model's native context
+                          // window when the GGUF advertises one.
+                          const maxOverride =
+                            f.key === "ctx" && modelInfo?.context_length
+                              ? Number(modelInfo.context_length)
+                              : undefined;
                           return (
                             <FlagRow
                               key={f.key}
@@ -629,6 +644,7 @@ export function ConfigureScreen({
                               }
                               onBrowse={onBrowse}
                               extra={extra}
+                              maxOverride={maxOverride}
                             />
                           );
                         })}

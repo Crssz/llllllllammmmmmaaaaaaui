@@ -24,6 +24,10 @@ pub struct GgufInfo {
     pub architecture: Option<String>,
     pub general_name: Option<String>,
     pub context_length: Option<u64>,
+    /// Transformer block/layer count (`{arch}.block_count`). Lets the UI scale
+    /// the GPU-offload (ngl) slider to the model's real layer count instead of
+    /// a fixed 0-100 range.
+    pub block_count: Option<u64>,
     pub mtp_support: bool,
     pub size_gb: f64,
     /// Sibling mmproj-*.gguf files in the same directory as this model.
@@ -162,6 +166,7 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
     let mut architecture: Option<String> = None;
     let mut general_name: Option<String> = None;
     let mut context_length: Option<u64> = None;
+    let mut block_count: Option<u64> = None;
     let mut chat_template: Option<String> = None;
 
     for i in 0..metadata_count {
@@ -185,6 +190,13 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
             k if k.ends_with(".context_length") => {
                 context_length = gguf_read_u64_value(&mut r, ty)
                     .map_err(|e| format!("read context_length: {e}"))?;
+            }
+            // `{arch}.block_count` = transformer layer count. `ends_with` mirrors
+            // the context_length match; the leading `.` guard means keys like
+            // `deepseek2.leading_dense_block_count` don't clobber it.
+            k if k.ends_with(".block_count") => {
+                block_count =
+                    gguf_read_u64_value(&mut r, ty).map_err(|e| format!("read block_count: {e}"))?;
             }
             _ => {
                 gguf_skip_value(&mut r, ty).map_err(|e| format!("skip kv {key}: {e}"))?;
@@ -238,6 +250,7 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
         architecture,
         general_name,
         context_length,
+        block_count,
         mtp_support,
         size_gb,
         mmproj_siblings,
@@ -245,10 +258,11 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
         thinking_style,
     };
     log::info!(
-        "inspect_gguf: arch={:?} mtp={} ctx={:?} size={:.2} GB mmproj={} thinking={}({:?})",
+        "inspect_gguf: arch={:?} mtp={} ctx={:?} layers={:?} size={:.2} GB mmproj={} thinking={}({:?})",
         info.architecture,
         info.mtp_support,
         info.context_length,
+        info.block_count,
         info.size_gb,
         info.mmproj_siblings.len(),
         info.supports_thinking,

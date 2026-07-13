@@ -1128,6 +1128,7 @@ describe("chat slice — request body + edge SSE", () => {
         architecture: "llama",
         general_name: null,
         context_length: null,
+        block_count: null,
         mtp_support: false,
         size_gb: 1,
         mmproj_siblings: [],

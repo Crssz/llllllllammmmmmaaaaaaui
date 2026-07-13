@@ -11,6 +11,7 @@ const ggufInfo = (siblings: string[]): GgufInfo => ({
   architecture: "llama",
   general_name: null,
   context_length: null,
+  block_count: null,
   mtp_support: false,
   size_gb: 0,
   mmproj_siblings: siblings,
