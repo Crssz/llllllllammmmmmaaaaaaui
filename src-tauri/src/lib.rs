@@ -4,6 +4,7 @@ mod catalog;
 mod chats;
 mod engines;
 mod gguf;
+mod hipfire_convert;
 mod hw;
 mod mcp;
 mod models_scan;
@@ -31,6 +32,7 @@ use crate::engines::{
     list_installed_engines, EngineState,
 };
 use crate::gguf::inspect_gguf;
+use crate::hipfire_convert::{cancel_hipfire_convert, hipfire_convert, HipfireConvertState};
 use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
 use crate::server::{server_status, start_server, stop_server, ServerState};
@@ -160,6 +162,7 @@ pub fn run() {
         .manage(BenchState::default())
         .manage(EngineState::default())
         .manage(CatalogState::default())
+        .manage(HipfireConvertState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -205,6 +208,8 @@ pub fn run() {
             list_catalog_files,
             download_catalog_model,
             cancel_catalog_download,
+            hipfire_convert,
+            cancel_hipfire_convert,
             crate::workspace::workspace_list,
             crate::workspace::workspace_read,
             crate::workspace::workspace_write,
@@ -222,6 +227,12 @@ pub fn run() {
                     }
                 }
                 if let Some(state) = window.try_state::<BenchState>() {
+                    let mut child = lock_or_poisoned(&state.child);
+                    if let Some(mut c) = child.take() {
+                        let _ = c.kill();
+                    }
+                }
+                if let Some(state) = window.try_state::<HipfireConvertState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
                         let _ = c.kill();
