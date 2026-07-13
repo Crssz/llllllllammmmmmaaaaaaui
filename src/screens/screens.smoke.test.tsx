@@ -114,6 +114,19 @@ describe("screen smoke render", () => {
     expect(container.firstChild).not.toBeNull();
   });
 
+  it("renders ConfigureScreen under the hipfire engine toggle", async () => {
+    const { useAppStore } = await import("../state/testUtils");
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "hipfire",
+      hipfire_path: "C:/hipfire/hipfire.exe",
+      hipfire_flags: { tag: "qwen3.6:27b" },
+    });
+    const { container } = await renderScreen(<ConfigureScreen />);
+    expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).toContain("hipfire");
+  });
+
   it("renders EngineManagerScreen", async () => {
     const { container } = await renderScreen(<EngineManagerScreen />);
     expect(container.firstChild).not.toBeNull();

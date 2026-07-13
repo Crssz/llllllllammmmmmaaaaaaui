@@ -238,7 +238,17 @@ export function ProfilesScreen() {
               >
                 <div className="prof-card-head">
                   <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    <div className="prof-name">{p.name}</div>
+                    <div
+                      className="prof-name"
+                      style={{ display: "flex", alignItems: "center", gap: 6 }}
+                    >
+                      {p.name}
+                      {p.engine_kind === "hipfire" && (
+                        <span className="badge accent" style={{ fontSize: 10 }}>
+                          hipfire
+                        </span>
+                      )}
+                    </div>
                     <div className="prof-meta mono" title={p.model_path ?? ""}>
                       {modelDisplay}
                     </div>

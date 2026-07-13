@@ -1,12 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { I } from "../icons";
-import { FLAG_GROUPS, defaultFlags, type FlagDef } from "../data";
+import { FLAG_GROUPS, HIPFIRE_FLAG_GROUPS, defaultFlags, type FlagDef } from "../data";
 import { BinaryLocator } from "./BinaryLocator";
-import { useAppStore } from "../state";
+import { useAppStore, type FlagValues } from "../state";
 import { useShallow } from "zustand/react/shallow";
-import { api } from "../lib/api";
+import { api, type HipfireConvertDoneEvent, type HipfireConvertProgressEvent } from "../lib/api";
 import { buildArgs, type FlagValue } from "../lib/buildArgs";
+import { buildHipfireArgs } from "../lib/buildHipfireArgs";
 import { useConfirm } from "../components/ConfirmDialog";
+import { log } from "../lib/logger";
+
+// Standalone field shown only under the hipfire engine and rendered with the
+// same FlagRow as the flag groups: the hipfire.exe locator, wired to
+// settings.hipfire_path.
+const HIPFIRE_BINARY_FIELD: FlagDef = {
+  key: "hipfire_path",
+  label: "hipfire executable",
+  desc: "Full path to hipfire.exe — the source-built Vulkan/HIP server binary",
+  flag: "hipfire.exe",
+  type: "path",
+  value: "",
+};
 
 function FlagRow({
   f,
@@ -182,6 +197,195 @@ function FlagRow({
   );
 }
 
+// hipfire can't serve a raw .gguf — it needs a one-time offline conversion
+// (`hipfire quantize --install --register <tag>`) into its own store. This
+// panel drives that conversion and, on success, fills the "Model tag" field
+// above so `serve <tag>` is ready to launch immediately.
+function HipfireConvertPanel({
+  hipfirePath,
+  onConverted,
+}: Readonly<{ hipfirePath: string; onConverted: (tag: string) => void }>) {
+  const [ggufPath, setGgufPath] = useState("");
+  const [format, setFormat] = useState<"hf4" | "mq4">("hf4");
+  const [tag, setTag] = useState("");
+  const [running, setRunning] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const [result, setResult] = useState<{ ok: boolean; error: string | null } | null>(null);
+  const [generation, setGeneration] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (generation == null) return;
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    listen<HipfireConvertProgressEvent>("hipfire-convert-progress", (e) => {
+      if (cancelled || e.payload.generation !== generation) return;
+      setLines((prev) => [...prev.slice(-199), e.payload.line]);
+    })
+      .then((u) => (cancelled ? u() : unlisteners.push(u)))
+      .catch(() => {});
+    listen<HipfireConvertDoneEvent>("hipfire-convert-done", (e) => {
+      if (cancelled || e.payload.generation !== generation) return;
+      setRunning(false);
+      setResult({ ok: e.payload.ok, error: e.payload.error });
+      if (e.payload.ok) onConverted(e.payload.tag);
+    })
+      .then((u) => (cancelled ? u() : unlisteners.push(u)))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      for (const u of unlisteners) u();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generation]);
+
+  const pickGguf = async () => {
+    const picked = await api.pickFile();
+    if (picked) setGgufPath(picked);
+  };
+
+  const convert = async () => {
+    setLines([]);
+    setResult(null);
+    setRunning(true);
+    try {
+      const gen = await api.hipfireConvert(hipfirePath, ggufPath, format, tag.trim());
+      setGeneration(gen);
+    } catch (e) {
+      setRunning(false);
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult({ ok: false, error: msg });
+      log.warn("hipfire", "convert failed to start", { error: msg });
+    }
+  };
+
+  const cancel = async () => {
+    await api.cancelHipfireConvert().catch(() => {});
+  };
+
+  const disabled = !hipfirePath || !ggufPath || !tag.trim() || running;
+
+  return (
+    <div className="cfg-section">
+      <div className="cfg-section-head" style={{ cursor: "default" }}>
+        <I.Bolt size={14} />
+        <span>Convert a GGUF for hipfire</span>
+      </div>
+      <div className="cfg-rows">
+        <div className="cfg-row">
+          <div className="lbl">
+            <span className="name">Source GGUF</span>
+            <span className="desc">
+              Recommend Q6_K/Q8_0 sources — GGUF → hipfire is a lossy double-quantization
+            </span>
+          </div>
+          <div className="ctl">
+            <input
+              className="input mono"
+              value={ggufPath}
+              onChange={(e) => setGgufPath(e.target.value)}
+              placeholder="(none)"
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <button className="btn ghost" onClick={() => pickGguf().catch(() => {})} title="Browse…">
+              <I.Folder size={11} />
+            </button>
+          </div>
+          <div className="flag mono">quantize</div>
+        </div>
+        <div className="cfg-row">
+          <div className="lbl">
+            <span className="name">Format</span>
+            <span className="desc">hipfire&apos;s on-disk store format</span>
+          </div>
+          <div className="ctl">
+            <select
+              className="select mono"
+              value={format}
+              onChange={(e) => setFormat(e.target.value as "hf4" | "mq4")}
+            >
+              <option value="hf4">hf4</option>
+              <option value="mq4">mq4</option>
+            </select>
+          </div>
+          <div className="flag mono">--format</div>
+        </div>
+        <div className="cfg-row">
+          <div className="lbl">
+            <span className="name">Register as tag</span>
+            <span className="desc">Name to serve this converted model under</span>
+          </div>
+          <div className="ctl">
+            <input
+              className="input mono"
+              value={tag}
+              onChange={(e) => setTag(e.target.value)}
+              placeholder="e.g. qwen3.6:27b-local"
+              style={{ flex: 1, minWidth: 0 }}
+            />
+          </div>
+          <div className="flag mono">--register</div>
+        </div>
+        <div style={{ padding: "10px 16px", display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            className="btn primary"
+            disabled={disabled}
+            onClick={() => convert().catch(() => {})}
+            title={!hipfirePath ? "Set the hipfire executable path first" : undefined}
+          >
+            <I.Refresh size={12} style={{ animation: running ? "spin 0.9s linear infinite" : "none" }} />{" "}
+            {running ? "Converting…" : "Convert"}
+          </button>
+          {running && (
+            <button className="btn" onClick={() => cancel().catch(() => {})}>
+              Cancel
+            </button>
+          )}
+          {result && !running && (
+            <span
+              style={{
+                fontSize: 11.5,
+                color: result.ok ? "var(--green)" : "var(--red)",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              {result.ok ? (
+                <>
+                  <I.Check size={12} /> Converted — tag applied below
+                </>
+              ) : (
+                <>
+                  <I.Info size={12} /> {result.error ?? "Conversion failed"}
+                </>
+              )}
+            </span>
+          )}
+        </div>
+        {lines.length > 0 && (
+          <div
+            className="mono"
+            style={{
+              margin: "0 16px 12px",
+              padding: "8px 10px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              fontSize: 11,
+              color: "var(--muted)",
+              maxHeight: 120,
+              overflowY: "auto",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {lines.slice(-8).join("\n")}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ConfigureScreen({
   initialTab,
   onTabConsumed,
@@ -203,6 +407,9 @@ export function ConfigureScreen({
     settings,
     modelInfo,
     modelInfoError,
+    setEngineKind,
+    setHipfirePath,
+    setHipfireFlag,
   } = useAppStore(
     useShallow((s) => ({
       flags: s.flags,
@@ -218,11 +425,14 @@ export function ConfigureScreen({
       settings: s.settings,
       modelInfo: s.modelInfo,
       modelInfoError: s.modelInfoError,
+      setEngineKind: s.setEngineKind,
+      setHipfirePath: s.setHipfirePath,
+      setHipfireFlag: s.setHipfireFlag,
     })),
   );
 
   const [open, setOpen] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(FLAG_GROUPS.map((g) => [g.id, g.defaultOpen])),
+    Object.fromEntries([...FLAG_GROUPS, ...HIPFIRE_FLAG_GROUPS].map((g) => [g.id, g.defaultOpen])),
   );
   const [tab, setTab] = useState<string>("all");
 
@@ -244,10 +454,45 @@ export function ConfigureScreen({
 
   const set = (k: string, v: FlagValue) => setFlag(k, v);
 
-  const args = useMemo(() => buildArgs(vals), [vals]);
+  const modelPath = (vals.model as string) || "";
+
+  const isHipfire = settings.engine_kind === "hipfire";
+  const hipfireTag = String((settings.hipfire_flags as FlagValues)?.tag ?? "");
+
+  // The command preview, the Start/Reload button, and serverSlice's staleness
+  // check must all build argv the same way: under hipfire that's
+  // buildHipfireArgs over the hipfire flag bag; otherwise buildArgs over the
+  // llama flags. Keeping both memos live is cheap and lets the toggle switch
+  // instantly.
+  const llamaArgs = useMemo(() => buildArgs(vals), [vals]);
+  const hipfireArgs = useMemo(
+    () => buildHipfireArgs(settings.hipfire_flags as FlagValues),
+    [settings.hipfire_flags],
+  );
+  const args = isHipfire ? hipfireArgs : llamaArgs;
 
   // For the live command preview, render with the resolved binary path.
-  const binaryDisplay = "llama-server";
+  const binaryDisplay = isHipfire ? "hipfire" : "llama-server";
+
+  // Start/Reload gating differs per engine: hipfire needs its exe path and a
+  // tag to serve; llama needs a build directory and a model.
+  const startDisabled =
+    busy || (isHipfire ? !settings.hipfire_path || !hipfireTag : !settings.build_dir || !modelPath);
+  const startHint = isHipfire
+    ? !settings.hipfire_path
+      ? "Set the hipfire executable path first"
+      : !hipfireTag
+        ? "Set a model tag to serve first"
+        : server.running
+          ? "Restart hipfire with current flags"
+          : "Start hipfire"
+    : !settings.build_dir
+      ? "Pick a llama.cpp build directory first"
+      : !modelPath
+        ? "Pick a model first"
+        : server.running
+          ? "Restart with current flags"
+          : "Start llama-server";
 
   const est = useMemo(() => {
     const ctx = vals.ctx as number;
@@ -295,6 +540,12 @@ export function ConfigureScreen({
     if (picked) set("chat_template_file", picked);
   };
 
+  // Browse for the hipfire executable (reuses the shared Tauri open-dialog).
+  const pickHipfireExe = async () => {
+    const picked = await api.pickExecutable("Select hipfire executable");
+    if (picked) setHipfirePath(picked);
+  };
+
   const reload = async () => {
     setBusy(true);
     try {
@@ -315,14 +566,13 @@ export function ConfigureScreen({
   };
 
   const copyCommand = () => {
-    const text = `llama-server ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
+    const text = `${binaryDisplay} ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
     navigator.clipboard?.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
   };
 
-  const modelPath = (vals.model as string) || "";
   // True when the user has explicitly set/cleared mmproj for this model, so the
   // projector auto-detect leaves it alone.
   const mmprojPinned = !!modelPath && (settings.mmproj_pinned ?? []).includes(modelPath);
@@ -364,65 +614,83 @@ export function ConfigureScreen({
     <>
       <div className="page-head">
         <div>
-          <div className="crumb">Configure / llama-server</div>
+          <div className="crumb">Configure / {binaryDisplay}</div>
           <h1>Runtime configuration</h1>
         </div>
         <div className="head-meta">
-          <span
-            className="badge ghost mono"
-            title={modelPath}
-            style={{
-              maxWidth: 320,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              display: "inline-block",
-            }}
-          >
-            {modelPath ? basename(modelPath) : "no model selected"}
-          </span>
-          {modelInfo && (
+          {isHipfire ? (
             <span
               className="badge ghost mono"
-              title={`Architecture: ${modelInfo.architecture ?? "?"}\nGGUF v${modelInfo.gguf_version}, ${modelInfo.tensor_count} tensors${modelInfo.context_length ? `\nNative ctx: ${modelInfo.context_length.toLocaleString()}` : ""}`}
+              title={hipfireTag}
+              style={{
+                maxWidth: 320,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                display: "inline-block",
+              }}
             >
-              {modelInfo.architecture ?? "?"}
+              {hipfireTag || "no tag set"}
             </span>
-          )}
-          {modelInfo && (
-            <span
-              className={"badge " + (modelInfo.mtp_support ? "accent" : "ghost")}
-              title={
-                modelInfo.mtp_support
-                  ? "Filename advertises MTP heads — speculative decoding via MTP is available."
-                  : "Filename has no -MTP marker — speculative decoding via MTP isn't available for this model."
-              }
-            >
-              <I.Spark size={10} /> MTP {modelInfo.mtp_support ? "✓" : "—"}
-            </span>
-          )}
-          {modelInfoError && (
-            <span className="badge red" title={modelInfoError} style={{ cursor: "help" }}>
-              GGUF read failed
-            </span>
-          )}
-          {hasSavedConfig && (
-            <span
-              className="badge ghost"
-              title="This model's settings are saved automatically and restored whenever you select it. Click reset to return to defaults."
-              style={{ cursor: "help" }}
-            >
-              <I.Bookmark size={10} /> config saved
-            </span>
-          )}
-          {hasSavedConfig && (
-            <button
-              className="iconbtn"
-              onClick={resetModelConfig}
-              title="Reset this model's settings to defaults"
-            >
-              <I.History size={13} />
-            </button>
+          ) : (
+            <>
+              <span
+                className="badge ghost mono"
+                title={modelPath}
+                style={{
+                  maxWidth: 320,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  display: "inline-block",
+                }}
+              >
+                {modelPath ? basename(modelPath) : "no model selected"}
+              </span>
+              {modelInfo && (
+                <span
+                  className="badge ghost mono"
+                  title={`Architecture: ${modelInfo.architecture ?? "?"}\nGGUF v${modelInfo.gguf_version}, ${modelInfo.tensor_count} tensors${modelInfo.context_length ? `\nNative ctx: ${modelInfo.context_length.toLocaleString()}` : ""}`}
+                >
+                  {modelInfo.architecture ?? "?"}
+                </span>
+              )}
+              {modelInfo && (
+                <span
+                  className={"badge " + (modelInfo.mtp_support ? "accent" : "ghost")}
+                  title={
+                    modelInfo.mtp_support
+                      ? "Filename advertises MTP heads — speculative decoding via MTP is available."
+                      : "Filename has no -MTP marker — speculative decoding via MTP isn't available for this model."
+                  }
+                >
+                  <I.Spark size={10} /> MTP {modelInfo.mtp_support ? "✓" : "—"}
+                </span>
+              )}
+              {modelInfoError && (
+                <span className="badge red" title={modelInfoError} style={{ cursor: "help" }}>
+                  GGUF read failed
+                </span>
+              )}
+              {hasSavedConfig && (
+                <span
+                  className="badge ghost"
+                  title="This model's settings are saved automatically and restored whenever you select it. Click reset to return to defaults."
+                  style={{ cursor: "help" }}
+                >
+                  <I.Bookmark size={10} /> config saved
+                </span>
+              )}
+              {hasSavedConfig && (
+                <button
+                  className="iconbtn"
+                  onClick={resetModelConfig}
+                  title="Reset this model's settings to defaults"
+                >
+                  <I.History size={13} />
+                </button>
+              )}
+            </>
           )}
           {server.running ? (
             <span className="badge green">
@@ -435,24 +703,11 @@ export function ConfigureScreen({
             </span>
           )}
           {server.running ? (
-            <button className="btn" onClick={eject} disabled={busy} title="Stop llama-server">
+            <button className="btn" onClick={eject} disabled={busy} title={`Stop ${binaryDisplay}`}>
               <I.Stop size={12} /> Stop
             </button>
           ) : null}
-          <button
-            className="btn primary"
-            onClick={reload}
-            disabled={busy || !settings.build_dir || !modelPath}
-            title={
-              !settings.build_dir
-                ? "Pick a llama.cpp build directory first"
-                : !modelPath
-                  ? "Pick a model first"
-                  : server.running
-                    ? "Restart with current flags"
-                    : "Start llama-server"
-            }
-          >
+          <button className="btn primary" onClick={reload} disabled={startDisabled} title={startHint}>
             <I.Refresh
               size={12}
               style={{ animation: busy ? "spin 0.9s linear infinite" : "none" }}
@@ -460,6 +715,34 @@ export function ConfigureScreen({
             {server.running ? "Reload" : "Start"}
           </button>
         </div>
+      </div>
+
+      <div
+        style={{
+          margin: "10px 28px 0",
+          padding: "8px 14px",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          fontSize: 11.5,
+          color: "var(--muted)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span
+          className="segmented"
+          title="Inference engine — switching does not restart the server"
+        >
+          <button className={isHipfire ? "" : "on"} onClick={() => setEngineKind("llama")}>
+            llama.cpp
+          </button>
+          <button className={isHipfire ? "on" : ""} onClick={() => setEngineKind("hipfire")}>
+            hipfire
+          </button>
+        </span>
+        <span>Switching the engine does not restart the running server.</span>
       </div>
 
       {startError && startError !== dismissedError && (
@@ -491,54 +774,117 @@ export function ConfigureScreen({
         </div>
       )}
 
-      <div
-        style={{
-          padding: "0 28px",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg)",
-        }}
-      >
-        <div className="section-tabs">
-          {[
-            "all",
-            "binary",
-            "model",
-            "context",
-            "hw",
-            "memory",
-            "spec",
-            "templates",
-            "rope",
-            "server",
-          ].map((t) => (
-            <button
-              key={t}
-              className={"section-tab" + (tab === t ? " active" : "")}
-              onClick={() => setTab(t)}
-            >
-              {t === "all"
-                ? "All"
-                : t === "hw"
-                  ? "Hardware"
-                  : t === "spec"
-                    ? "Speculative"
-                    : t === "binary"
-                      ? "Binary"
-                      : t === "templates"
-                        ? "Templates"
-                        : t[0].toUpperCase() + t.slice(1)}
-            </button>
-          ))}
+      {!isHipfire && (
+        <div
+          style={{
+            padding: "0 28px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg)",
+          }}
+        >
+          <div className="section-tabs">
+            {[
+              "all",
+              "binary",
+              "model",
+              "context",
+              "hw",
+              "memory",
+              "spec",
+              "templates",
+              "rope",
+              "server",
+            ].map((t) => (
+              <button
+                key={t}
+                className={"section-tab" + (tab === t ? " active" : "")}
+                onClick={() => setTab(t)}
+              >
+                {t === "all"
+                  ? "All"
+                  : t === "hw"
+                    ? "Hardware"
+                    : t === "spec"
+                      ? "Speculative"
+                      : t === "binary"
+                        ? "Binary"
+                        : t === "templates"
+                          ? "Templates"
+                          : t[0].toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="page-body">
         <div className="cfg-grid">
           <div>
-            {(tab === "all" || tab === "binary") && <BinaryLocator />}
-            {tab === "binary"
-              ? null
-              : FLAG_GROUPS.filter((g) => tab === "all" || g.id === tab).map((g) => {
+            {isHipfire && (
+              <>
+                <div className="cfg-section">
+                  <div className="cfg-section-head" style={{ cursor: "default" }}>
+                    <I.Terminal size={14} />
+                    <span>hipfire engine</span>
+                    {settings.hipfire_path ? (
+                      <span className="badge green" style={{ marginLeft: 6 }}>
+                        <span className="dot" /> set
+                      </span>
+                    ) : (
+                      <span className="badge ghost" style={{ marginLeft: 6 }}>
+                        not set
+                      </span>
+                    )}
+                  </div>
+                  <div className="cfg-rows">
+                    <FlagRow
+                      f={HIPFIRE_BINARY_FIELD}
+                      value={settings.hipfire_path}
+                      onChange={(v) => setHipfirePath(String(v))}
+                      onBrowse={() => pickHipfireExe().catch(() => {})}
+                    />
+                  </div>
+                </div>
+                <HipfireConvertPanel
+                  hipfirePath={settings.hipfire_path}
+                  onConverted={(tag) => setHipfireFlag("tag", tag)}
+                />
+                {HIPFIRE_FLAG_GROUPS.map((g) => {
+                  const IconCmp = I[g.icon];
+                  return (
+                    <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
+                      <button
+                        type="button"
+                        className="cfg-section-head"
+                        onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
+                      >
+                        <IconCmp size={14} />
+                        <span>{g.label}</span>
+                        <span className="sec-count">
+                          {g.flags.length} flag{g.flags.length === 1 ? "" : "s"}
+                        </span>
+                        <I.Chevron size={14} />
+                      </button>
+                      <div className="cfg-rows">
+                        {g.flags.map((f) => (
+                          <FlagRow
+                            key={f.key}
+                            f={f}
+                            value={(settings.hipfire_flags[f.key] as FlagValue) ?? f.value}
+                            onChange={(v) => setHipfireFlag(f.key, v)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+            {!isHipfire && (tab === "all" || tab === "binary") && <BinaryLocator />}
+            {!isHipfire &&
+              (tab === "binary"
+                ? null
+                : FLAG_GROUPS.filter((g) => tab === "all" || g.id === tab).map((g) => {
                   const flags =
                     g.id === "spec"
                       ? g.flags.filter((f) => !f.only || f.only === vals.spec_type)
@@ -744,7 +1090,7 @@ export function ConfigureScreen({
                       </div>
                     </div>
                   );
-                })}
+                }))}
           </div>
 
           <aside>
@@ -775,64 +1121,66 @@ export function ConfigureScreen({
               </div>
             </div>
 
-            <div className="panel" style={{ marginTop: 12 }}>
-              <div className="panel-head">
-                <I.Mem size={14} /> Estimated memory
-                <span className="meta">est.</span>
-              </div>
-              <div
-                className="panel-body"
-                style={{ display: "flex", flexDirection: "column", gap: 10 }}
-              >
-                <div className="thr-row">
-                  <span className="lbl">Weights</span>
-                  {est.weights != null ? (
-                    <div className="bar">
-                      <i style={{ width: `${est.weightsPct}%` }} />
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>
-                      select a model
-                    </span>
-                  )}
-                  <span className="val">
-                    {est.weights != null ? `${est.weights.toFixed(2)} GB` : "—"}
-                  </span>
-                </div>
-                <div className="thr-row">
-                  <span className="lbl">KV cache</span>
-                  <div className="bar">
-                    <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
-                  </div>
-                  <span className="val">{est.kv.toFixed(2)} GB</span>
-                </div>
-                <div className="thr-row">
-                  <span className="lbl">Overhead</span>
-                  <div className="bar">
-                    <i style={{ width: `${est.overheadPct}%`, background: "var(--yellow)" }} />
-                  </div>
-                  <span className="val">{est.overhead.toFixed(2)} GB</span>
+            {!isHipfire && (
+              <div className="panel" style={{ marginTop: 12 }}>
+                <div className="panel-head">
+                  <I.Mem size={14} /> Estimated memory
+                  <span className="meta">est.</span>
                 </div>
                 <div
-                  style={{
-                    height: 1,
-                    background: "var(--border)",
-                    margin: "2px 0",
-                  }}
-                />
-                <div className="thr-row" style={{ fontWeight: 600 }}>
-                  <span className="lbl" style={{ color: "var(--text)" }}>
-                    Total
-                  </span>
-                  <div className="bar">
-                    <i style={{ width: `${est.total != null ? 100 : 0}%` }} />
+                  className="panel-body"
+                  style={{ display: "flex", flexDirection: "column", gap: 10 }}
+                >
+                  <div className="thr-row">
+                    <span className="lbl">Weights</span>
+                    {est.weights != null ? (
+                      <div className="bar">
+                        <i style={{ width: `${est.weightsPct}%` }} />
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>
+                        select a model
+                      </span>
+                    )}
+                    <span className="val">
+                      {est.weights != null ? `${est.weights.toFixed(2)} GB` : "—"}
+                    </span>
                   </div>
-                  <span className="val mono" style={{ color: "var(--text)" }}>
-                    {est.total != null ? `${est.total.toFixed(2)} GB` : "—"}
-                  </span>
+                  <div className="thr-row">
+                    <span className="lbl">KV cache</span>
+                    <div className="bar">
+                      <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
+                    </div>
+                    <span className="val">{est.kv.toFixed(2)} GB</span>
+                  </div>
+                  <div className="thr-row">
+                    <span className="lbl">Overhead</span>
+                    <div className="bar">
+                      <i style={{ width: `${est.overheadPct}%`, background: "var(--yellow)" }} />
+                    </div>
+                    <span className="val">{est.overhead.toFixed(2)} GB</span>
+                  </div>
+                  <div
+                    style={{
+                      height: 1,
+                      background: "var(--border)",
+                      margin: "2px 0",
+                    }}
+                  />
+                  <div className="thr-row" style={{ fontWeight: 600 }}>
+                    <span className="lbl" style={{ color: "var(--text)" }}>
+                      Total
+                    </span>
+                    <div className="bar">
+                      <i style={{ width: `${est.total != null ? 100 : 0}%` }} />
+                    </div>
+                    <span className="val mono" style={{ color: "var(--text)" }}>
+                      {est.total != null ? `${est.total.toFixed(2)} GB` : "—"}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </aside>
         </div>
       </div>

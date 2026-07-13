@@ -298,6 +298,10 @@ export function EngineManagerScreen() {
         <div>
           <div className="crumb">Engine / llama.cpp</div>
           <h1>Engine manager</h1>
+          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>
+            Manages llama.cpp release downloads and installed builds — the hipfire engine binary is
+            set separately on the <strong>Configure</strong> screen.
+          </div>
         </div>
         <div className="head-meta">
           {build?.detected && build.version ? (

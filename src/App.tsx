@@ -21,8 +21,10 @@ import { useTextPrompt } from "./components/TextPromptDialog";
 import { useConfirm } from "./components/ConfirmDialog";
 import { CommandPalette, type CommandPaletteNavItem } from "./components/CommandPalette";
 import { shortcut } from "./lib/platform";
-import type { ChatSession, Workspace } from "./lib/api";
+import type { ChatSession, EngineKind, Workspace } from "./lib/api";
 import { log } from "./lib/logger";
+import { buildHipfireArgs } from "./lib/buildHipfireArgs";
+import type { FlagValues } from "./state/types";
 
 type Tab =
   | "chat"
@@ -59,6 +61,12 @@ function basename(p: string): string {
   return p.split(sep).pop() || p;
 }
 
+// The binary/engine name shown across the UI (sidebar, status bar, top bar) —
+// "hipfire" when that's the active engine, "llama-server" otherwise.
+function engineBinaryName(kind: EngineKind): string {
+  return kind === "hipfire" ? "hipfire" : "llama-server";
+}
+
 type ServerLike = { running: boolean; ready: boolean; info?: { port?: number } | null };
 
 // Compact "stopped / loading… / :PORT" label for the model picker.
@@ -82,13 +90,15 @@ function TopBar({
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
 }>) {
-  const { server, flags, stopServer } = useAppStore(
+  const { server, flags, stopServer, settings } = useAppStore(
     useShallow((s) => ({
       server: s.server,
       flags: s.flags,
       stopServer: s.stopServer,
+      settings: s.settings,
     })),
   );
+  const engineName = engineBinaryName(settings.engine_kind);
   const modelPath = (flags.model as string) || "";
   const modelName = modelPath ? basename(modelPath) : "no model";
   // Three states: stopped (muted), running-but-loading (yellow), ready (green).
@@ -156,7 +166,7 @@ function TopBar({
         </button>
         <button
           className="iconbtn"
-          title={server.running ? "Stop llama-server" : "Server stopped"}
+          title={server.running ? `Stop ${engineName}` : "Server stopped"}
           disabled={!server.running}
           onClick={() => stopServer().catch(() => {})}
           style={{ opacity: server.running ? 1 : 0.4 }}
@@ -557,7 +567,9 @@ function Sidebar({
                 : "none",
             }}
           />
-          {server.running ? `llama-server · pid ${server.info?.pid}` : "llama-server · stopped"}
+          {server.running
+            ? `${engineBinaryName(settings.engine_kind)} · pid ${server.info?.pid}`
+            : `${engineBinaryName(settings.engine_kind)} · stopped`}
         </div>
         {server.running ? (
           <>
@@ -577,9 +589,13 @@ function Sidebar({
           </>
         ) : (
           <div className="rt-line" style={{ color: "var(--muted)", fontSize: 11 }}>
-            {settings.build_dir
-              ? "Press Start on Configure to launch"
-              : "Pick a build dir on Configure → Binary"}
+            {settings.engine_kind === "hipfire"
+              ? settings.hipfire_path
+                ? "Press Start on Configure to launch"
+                : "Set the hipfire path on Configure"
+              : settings.build_dir
+                ? "Press Start on Configure to launch"
+                : "Pick a build dir on Configure → Binary"}
           </div>
         )}
       </div>
@@ -626,12 +642,21 @@ function useTime() {
 
 function StatusBar() {
   const t = useTime();
-  const { server, build, flags } = useAppStore(
-    useShallow((s) => ({ server: s.server, build: s.build, flags: s.flags })),
+  const { server, build, flags, settings } = useAppStore(
+    useShallow((s) => ({ server: s.server, build: s.build, flags: s.flags, settings: s.settings })),
   );
-  const binary = build?.resolved_path
-    ? `${build.resolved_path}${build.resolved_path.includes("\\") ? "\\" : "/"}llama-server`
-    : "llama-server";
+  const isHipfire = settings.engine_kind === "hipfire";
+  const engineName = engineBinaryName(settings.engine_kind);
+  const binary = isHipfire
+    ? settings.hipfire_path
+    : build?.resolved_path
+      ? `${build.resolved_path}${build.resolved_path.includes("\\") ? "\\" : "/"}${engineName}`
+      : engineName;
+  // Preview of what would launch with the current config — not the running
+  // process's actual args (same semantics for both engines).
+  const cmdSnippet = isHipfire
+    ? `hipfire ${buildHipfireArgs(settings.hipfire_flags as FlagValues).join(" ")}`
+    : `${binary} --model ${basename((flags.model as string) || "")} -c ${flags.ctx} -ngl ${String(flags.ngl)}`;
   return (
     <div className="statusbar">
       <span
@@ -642,14 +667,17 @@ function StatusBar() {
       >
         {server.running
           ? server.ready
-            ? `llama-server :${server.info?.port}`
-            : `llama-server :${server.info?.port} (loading)`
-          : "llama-server (stopped)"}
+            ? `${engineName} :${server.info?.port}`
+            : `${engineName} :${server.info?.port} (loading)`
+          : `${engineName} (stopped)`}
       </span>
       <span className="sep" />
       <span className="cmd-snippet">
-        $ {binary} --model {basename((flags.model as string) || "")} -c {flags.ctx} -ngl{" "}
-        {String(flags.ngl)}
+        {isHipfire && !binary ? (
+          <span style={{ color: "var(--muted)" }}>hipfire path not set</span>
+        ) : (
+          `$ ${cmdSnippet}`
+        )}
       </span>
       <span className="right">{t}</span>
     </div>

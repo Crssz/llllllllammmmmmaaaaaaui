@@ -211,6 +211,7 @@ export function BenchScreen() {
     bench,
     benchRuns,
     benchViewingId,
+    engineKind,
     benchStart,
     benchCancel,
     benchSelectRun,
@@ -223,6 +224,7 @@ export function BenchScreen() {
       bench: s.bench,
       benchRuns: s.benchRuns,
       benchViewingId: s.benchViewingId,
+      engineKind: s.settings.engine_kind,
       benchStart: s.benchStart,
       benchCancel: s.benchCancel,
       benchSelectRun: s.benchSelectRun,
@@ -230,6 +232,8 @@ export function BenchScreen() {
       benchRenameRun: s.benchRenameRun,
     })),
   );
+
+  const isHipfire = engineKind === "hipfire";
 
   const openMenu = useContextMenu();
   const { promptElement, openPrompt } = useTextPrompt();
@@ -410,6 +414,16 @@ export function BenchScreen() {
       </div>
 
       <div className="page-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {isHipfire && (
+          <div className="panel">
+            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              <I.Info size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+              Benchmarking uses <span className="mono">llama-bench</span> and runs against llama.cpp
+              builds only — hipfire has no equivalent bench tool. Switch the engine on{" "}
+              <strong>Configure</strong> to run llama.cpp models here.
+            </div>
+          </div>
+        )}
         {!buildDir && (
           <div className="panel">
             <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
