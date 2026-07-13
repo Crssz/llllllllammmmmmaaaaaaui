@@ -86,6 +86,17 @@ fn probe_health(port: u16) -> bool {
     head.starts_with(b"HTTP/1.1 200") || head.starts_with(b"HTTP/1.0 200")
 }
 
+// True when `s` looks like the HOST half of a hipfire "host:port" token —
+// the shapes buildHipfireArgs.ts emits / the app documents: a dotted IPv4
+// ("127.0.0.1", "0.0.0.0"), the literal "localhost", or an IPv6 form
+// (contains "::"). A bare model tag segment (e.g. "chat", "model") matches
+// none of these, so `parse_port`'s positional fallback below can't mistake a
+// tag whose last colon-segment happens to be numeric (e.g. "chat:70",
+// "model:11434") for the real host:port token.
+fn looks_like_host(s: &str) -> bool {
+    s.eq_ignore_ascii_case("localhost") || s.contains('.') || s.contains("::")
+}
+
 pub fn parse_port(args: &[String]) -> u16 {
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
@@ -102,10 +113,18 @@ pub fn parse_port(args: &[String]) -> u16 {
     // Fall back to scanning for that shape only after the flag search above
     // comes up empty, so llama-server's argv (which never contains such a
     // token) is unaffected and this stays byte-identical for the llama path.
+    // hipfire's argv is `["serve", <tag>, "127.0.0.1:8080", ...]` — the TAG
+    // (index 1) is scanned before the real host:port (index 2), so only a
+    // token whose colon-prefix actually looks like a host is accepted;
+    // otherwise a tag like "chat:70" or "model:11434" would be mistaken for
+    // the port (see parse_port_reads_hipfire_positional_host_port and the
+    // tag-with-numeric-suffix regression tests below).
     for a in args {
-        if let Some((_, port_str)) = a.rsplit_once(':') {
-            if let Ok(p) = port_str.parse::<u16>() {
-                return p;
+        if let Some((host, port_str)) = a.rsplit_once(':') {
+            if looks_like_host(host) {
+                if let Ok(p) = port_str.parse::<u16>() {
+                    return p;
+                }
             }
         }
     }
@@ -434,6 +453,21 @@ mod tests {
         // explicit --port flag (llama-server's form) wins.
         let args = vec!["--port".into(), "9090".into(), "127.0.0.1:8080".into()];
         assert_eq!(parse_port(&args), 9090);
+    }
+
+    #[test]
+    fn parse_port_does_not_mistake_a_numeric_tag_suffix_for_the_port() {
+        // Regression: a model tag whose last colon-segment is numeric (e.g.
+        // "chat:70") must not be scanned as a "host:port" token — only the
+        // real positional host:port (which has a host-shaped prefix) counts.
+        let args = vec!["serve".into(), "chat:70".into(), "127.0.0.1:8080".into()];
+        assert_eq!(parse_port(&args), 8080);
+
+        let args = vec!["serve".into(), "model:11434".into(), "0.0.0.0:11435".into()];
+        assert_eq!(parse_port(&args), 11435);
+
+        let args = vec!["serve".into(), "x:2024".into(), "localhost:9000".into()];
+        assert_eq!(parse_port(&args), 9000);
     }
 
     #[test]
