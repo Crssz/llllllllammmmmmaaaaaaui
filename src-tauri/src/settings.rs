@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::mcp::McpServerConfig;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub build_dir: Option<String>,
@@ -52,6 +52,52 @@ pub struct Settings {
     /// faster authenticated download path, and unlocks gated repos.
     #[serde(default)]
     pub hf_token: Option<String>,
+    /// Which inference engine backs the server: "llama" (llama.cpp's
+    /// llama-server, the default) or "hipfire" (the source-built hipfire
+    /// binary). Settings files predating this key default to "llama" so
+    /// behaviour is unchanged for existing installs.
+    #[serde(default = "default_engine_kind")]
+    pub engine_kind: String,
+    /// Absolute path to the hipfire executable. Empty until the user sets it;
+    /// consulted only when `engine_kind == "hipfire"`. Kept separate from
+    /// `build_dir`, which stays llama-only (it also seeds the HIP DLL hint).
+    #[serde(default)]
+    pub hipfire_path: String,
+    /// hipfire runtime flag bag, parallel to `flags` but consumed by the
+    /// frontend's `buildHipfireArgs`. A **separate** bag from `flags` — never
+    /// merged in. Keys: tag, host, port, kv_mode, idle_timeout, spec,
+    /// model_draft, draft_max, tp.
+    #[serde(default)]
+    pub hipfire_flags: serde_json::Value,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            build_dir: Default::default(),
+            recent_dirs: Default::default(),
+            model_path: Default::default(),
+            flags: Default::default(),
+            model_configs: Default::default(),
+            mmproj_pinned: Default::default(),
+            models_dir: Default::default(),
+            models_recent: Default::default(),
+            profiles: Default::default(),
+            reasoning_enabled: Default::default(),
+            mcp_servers: Default::default(),
+            chat_presets: Default::default(),
+            workspaces: Default::default(),
+            hf_token: Default::default(),
+            // `#[serde(default = "...")]` only kicks in during deserialization —
+            // a bare `derive(Default)` would leave this "" on first run (no
+            // settings.json yet), silently picking neither engine. Match the
+            // serde default explicitly so `Settings::default()` and a
+            // from-empty-JSON parse agree.
+            engine_kind: default_engine_kind(),
+            hipfire_path: Default::default(),
+            hipfire_flags: Default::default(),
+        }
+    }
 }
 
 /// Reusable bundle of per-session chat configuration. Saved at the top level
@@ -129,6 +175,10 @@ fn default_policy() -> String {
     "ask".to_string()
 }
 
+fn default_engine_kind() -> String {
+    "llama".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedProfile {
     pub id: String,
@@ -137,6 +187,14 @@ pub struct SavedProfile {
     pub flags: serde_json::Value,
     #[serde(default)]
     pub model_path: Option<String>,
+    /// Engine active when this profile was saved. Profiles saved before the
+    /// engine axis existed default to "llama" so they still restore correctly.
+    #[serde(default = "default_engine_kind")]
+    pub engine_kind: String,
+    /// hipfire runtime flag bag snapshotted alongside `flags`. Empty/null for
+    /// profiles saved under llama (or predating this key).
+    #[serde(default)]
+    pub hipfire_flags: serde_json::Value,
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -214,6 +272,9 @@ mod tests {
             chat_presets: vec![],
             workspaces: vec![],
             hf_token: Some("hf_test".into()),
+            engine_kind: "hipfire".into(),
+            hipfire_path: "C:/hipfire/hipfire.exe".into(),
+            hipfire_flags: serde_json::json!({ "tag": "qwen3.6:27b", "port": 8090 }),
         };
         let encoded = serde_json::to_string(&s).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();
@@ -224,6 +285,10 @@ mod tests {
         assert_eq!(decoded.model_configs["/tmp/model.gguf"]["ctx"], 8192);
         assert_eq!(decoded.mmproj_pinned, vec!["/tmp/model.gguf".to_string()]);
         assert_eq!(decoded.hf_token.as_deref(), Some("hf_test"));
+        assert_eq!(decoded.engine_kind, "hipfire");
+        assert_eq!(decoded.hipfire_path, "C:/hipfire/hipfire.exe");
+        assert_eq!(decoded.hipfire_flags["tag"], "qwen3.6:27b");
+        assert_eq!(decoded.hipfire_flags["port"], 8090);
     }
 
     #[test]
@@ -236,6 +301,42 @@ mod tests {
         assert!(decoded.model_configs.is_empty());
         assert!(decoded.mmproj_pinned.is_empty());
         assert!(decoded.workspaces.is_empty());
+        assert_eq!(decoded.engine_kind, "llama");
+        assert!(decoded.hipfire_path.is_empty());
+        assert!(decoded.hipfire_flags.is_null());
+    }
+
+    #[test]
+    fn settings_default_engine_kind_is_llama() {
+        // First-run `Settings::default()` (no settings.json yet) must agree
+        // with the serde missing-field default, or first launch silently
+        // picks neither engine. This is the exact trap zinc hit: a bare
+        // `derive(Default)` would leave engine_kind == "" here.
+        let s = Settings::default();
+        assert_eq!(s.engine_kind, "llama");
+        assert!(s.hipfire_path.is_empty());
+        assert!(s.hipfire_flags.is_null());
+    }
+
+    #[test]
+    fn settings_legacy_json_without_engine_keys_loads_as_llama() {
+        // A settings.json written before the engine axis existed carries the
+        // old keys but none of engine_kind / hipfire_path / hipfire_flags. It
+        // must still load, defaulting to the llama engine with an empty
+        // hipfire config, so existing installs behave byte-identically.
+        let legacy = r#"{
+            "build_dir": "/tmp/builds",
+            "recent_dirs": ["/a"],
+            "model_path": "/tmp/m.gguf",
+            "flags": { "ngl": 99 },
+            "reasoning_enabled": true
+        }"#;
+        let decoded: Settings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(decoded.engine_kind, "llama");
+        assert!(decoded.hipfire_path.is_empty());
+        assert!(decoded.hipfire_flags.is_null());
+        assert_eq!(decoded.build_dir.as_deref(), Some("/tmp/builds"));
+        assert_eq!(decoded.flags["ngl"], 99);
     }
 
     #[test]
@@ -317,11 +418,15 @@ mod tests {
             created_at: 1,
             flags: serde_json::json!({}),
             model_path: None,
+            engine_kind: "hipfire".into(),
+            hipfire_flags: serde_json::json!({ "tag": "qwen3.6:27b" }),
         };
         let encoded = serde_json::to_string(&p).unwrap();
         let decoded: SavedProfile = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.id, "id");
         assert!(decoded.model_path.is_none());
+        assert_eq!(decoded.engine_kind, "hipfire");
+        assert_eq!(decoded.hipfire_flags["tag"], "qwen3.6:27b");
     }
 
     #[test]
@@ -332,5 +437,19 @@ mod tests {
             r#"{"id":"id","name":"n","created_at":1,"flags":{},"model_path":null,"agency":"auto"}"#;
         let decoded: SavedProfile = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded.id, "id");
+    }
+
+    #[test]
+    fn saved_profile_without_engine_keys_defaults_to_llama() {
+        // A profile saved before the engine axis existed carries none of
+        // engine_kind / hipfire_flags. It must still load, defaulting to the
+        // llama engine with an empty hipfire config.
+        let legacy =
+            r#"{"id":"id","name":"n","created_at":1,"flags":{"ngl":99},"model_path":"/m.gguf"}"#;
+        let decoded: SavedProfile = serde_json::from_str(legacy).unwrap();
+        assert_eq!(decoded.engine_kind, "llama");
+        assert!(decoded.hipfire_flags.is_null());
+        assert_eq!(decoded.flags["ngl"], 99);
+        assert_eq!(decoded.model_path.as_deref(), Some("/m.gguf"));
     }
 }

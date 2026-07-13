@@ -42,6 +42,94 @@ pub struct GgufInfo {
     /// `"think_tags"` (`<think>…</think>`), `"other"` (toggle present but
     /// unrecognised markup), or `None` (no thinking mechanism detected).
     pub thinking_style: Option<String>,
+    /// Distinct ggml tensor quant types present in the file (e.g. `["Q4_K",
+    /// "F32"]`), in first-seen order. Lets the UI (and `hipfire_convert`) flag
+    /// quant formats an engine can't load/convert BEFORE launch/conversion.
+    /// Unknown ids become `"TYPE_<id>"`. Empty when the tensor table couldn't
+    /// be read — treat as "unknown", not "no tensors".
+    pub tensor_types: Vec<String>,
+}
+
+/// Map a ggml tensor type id to its canonical name. Unknown ids become
+/// `TYPE_<id>` so the UI can still surface (and flag) them. Pure + testable.
+/// Ids mirror ggml's `enum ggml_type`.
+fn ggml_type_name(id: u32) -> String {
+    match id {
+        0 => "F32",
+        1 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        6 => "Q5_0",
+        7 => "Q5_1",
+        8 => "Q8_0",
+        9 => "Q8_1",
+        10 => "Q2_K",
+        11 => "Q3_K",
+        12 => "Q4_K",
+        13 => "Q5_K",
+        14 => "Q6_K",
+        15 => "Q8_K",
+        16 => "IQ2_XXS",
+        17 => "IQ2_XS",
+        18 => "IQ3_XXS",
+        19 => "IQ1_S",
+        20 => "IQ4_NL",
+        21 => "IQ3_S",
+        22 => "IQ2_S",
+        23 => "IQ4_XS",
+        29 => "IQ1_M",
+        30 => "BF16",
+        39 => "MXFP4",
+        other => return format!("TYPE_{other}"),
+    }
+    .to_string()
+}
+
+/// Read the tensor-descriptor section — which begins immediately after the
+/// metadata KV block — and return the DISTINCT ggml type names in first-seen
+/// order. Best-effort by design: a short/corrupt read returns whatever was
+/// collected so far rather than erroring, so `inspect_gguf` never regresses for
+/// odd files. Each descriptor is: name (gguf string), `n_dims: u32`,
+/// `dims: u64 × n_dims`, `ggml_type: u32`, `offset: u64`.
+fn read_tensor_types<R: Read>(r: &mut R, tensor_count: u64) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..tensor_count {
+        // name (gguf string) — u64 length prefix + bytes.
+        if gguf_read_string(r).is_err() {
+            break;
+        }
+        let n_dims = match gguf_read_u32(r) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        // ggml tops out at 4 dims; a wild count means we've lost sync — stop.
+        if n_dims > 8 {
+            break;
+        }
+        let mut sync_lost = false;
+        for _ in 0..n_dims {
+            if gguf_read_u64(r).is_err() {
+                sync_lost = true;
+                break;
+            }
+        }
+        if sync_lost {
+            break;
+        }
+        let ty = match gguf_read_u32(r) {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        // offset (u64) — consume so the next descriptor lines up.
+        if gguf_read_u64(r).is_err() {
+            break;
+        }
+        let name = ggml_type_name(ty);
+        if !seen.contains(&name) {
+            seen.push(name);
+        }
+    }
+    seen
 }
 
 /// Classify a chat template's thinking mechanism. Pure + string-based so it's
@@ -195,14 +283,20 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
             // the context_length match; the leading `.` guard means keys like
             // `deepseek2.leading_dense_block_count` don't clobber it.
             k if k.ends_with(".block_count") => {
-                block_count =
-                    gguf_read_u64_value(&mut r, ty).map_err(|e| format!("read block_count: {e}"))?;
+                block_count = gguf_read_u64_value(&mut r, ty)
+                    .map_err(|e| format!("read block_count: {e}"))?;
             }
             _ => {
                 gguf_skip_value(&mut r, ty).map_err(|e| format!("skip kv {key}: {e}"))?;
             }
         }
     }
+
+    // The KV loop above fully consumes every value (each arm reads or skips the
+    // whole value, and it never breaks early), so the reader is now positioned
+    // exactly at the first tensor descriptor. Enumerate the distinct quant types
+    // best-effort — a parse hiccup yields a partial/empty vec, never an error.
+    let tensor_types = read_tensor_types(&mut r, tensor_count);
 
     let (supports_thinking, thinking_style) = match chat_template.as_deref() {
         Some(t) => classify_thinking(t),
@@ -256,9 +350,10 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
         mmproj_siblings,
         supports_thinking,
         thinking_style,
+        tensor_types,
     };
     log::info!(
-        "inspect_gguf: arch={:?} mtp={} ctx={:?} layers={:?} size={:.2} GB mmproj={} thinking={}({:?})",
+        "inspect_gguf: arch={:?} mtp={} ctx={:?} layers={:?} size={:.2} GB mmproj={} thinking={}({:?}) quants={:?}",
         info.architecture,
         info.mtp_support,
         info.context_length,
@@ -267,6 +362,7 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
         info.mmproj_siblings.len(),
         info.supports_thinking,
         info.thinking_style,
+        info.tensor_types,
     );
     Ok(info)
 }
@@ -388,5 +484,69 @@ mod tests {
         let (supports, style) = classify_thinking(t);
         assert!(supports);
         assert_eq!(style.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn ggml_type_name_maps_known_ids() {
+        assert_eq!(ggml_type_name(0), "F32");
+        assert_eq!(ggml_type_name(1), "F16");
+        assert_eq!(ggml_type_name(2), "Q4_0");
+        assert_eq!(ggml_type_name(8), "Q8_0");
+        assert_eq!(ggml_type_name(12), "Q4_K");
+        assert_eq!(ggml_type_name(13), "Q5_K");
+        assert_eq!(ggml_type_name(14), "Q6_K");
+        assert_eq!(ggml_type_name(23), "IQ4_XS");
+        assert_eq!(ggml_type_name(30), "BF16");
+        assert_eq!(ggml_type_name(39), "MXFP4");
+    }
+
+    #[test]
+    fn ggml_type_name_falls_back_for_unknown_ids() {
+        assert_eq!(ggml_type_name(101), "TYPE_101");
+        assert_eq!(ggml_type_name(255), "TYPE_255");
+    }
+
+    // Append one tensor descriptor (name, n_dims, dims, ggml_type, offset) to a
+    // byte buffer in GGUF layout, so tests can synthesise a descriptor section.
+    fn push_descriptor(buf: &mut Vec<u8>, name: &str, dims: &[u64], ty: u32, offset: u64) {
+        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(name.as_bytes());
+        buf.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for d in dims {
+            buf.extend_from_slice(&d.to_le_bytes());
+        }
+        buf.extend_from_slice(&ty.to_le_bytes());
+        buf.extend_from_slice(&offset.to_le_bytes());
+    }
+
+    #[test]
+    fn read_tensor_types_collects_distinct_in_first_seen_order() {
+        let mut buf = Vec::new();
+        push_descriptor(&mut buf, "a", &[10], 12, 0); // Q4_K
+        push_descriptor(&mut buf, "b", &[10, 20], 0, 100); // F32
+        push_descriptor(&mut buf, "c", &[5], 12, 200); // Q4_K again (dedup)
+        push_descriptor(&mut buf, "d", &[7], 101, 300); // unknown -> TYPE_101
+        let mut c = Cursor::new(buf);
+        let types = read_tensor_types(&mut c, 4);
+        assert_eq!(types, vec!["Q4_K", "F32", "TYPE_101"]);
+    }
+
+    #[test]
+    fn read_tensor_types_returns_partial_on_truncation() {
+        // One full descriptor, then a truncated second one (EOF mid-descriptor).
+        let mut buf = Vec::new();
+        push_descriptor(&mut buf, "a", &[10], 8, 0); // Q8_0
+        buf.extend_from_slice(&(1u64).to_le_bytes()); // start of a name len...
+        buf.extend_from_slice(b"b"); // ...name, then EOF before n_dims
+        let mut c = Cursor::new(buf);
+        // Claim 3 tensors but the stream ends after ~1.x — must not panic/error.
+        let types = read_tensor_types(&mut c, 3);
+        assert_eq!(types, vec!["Q8_0"]);
+    }
+
+    #[test]
+    fn read_tensor_types_empty_for_zero_count() {
+        let mut c = Cursor::new(Vec::new());
+        assert!(read_tensor_types(&mut c, 0).is_empty());
     }
 }

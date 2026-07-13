@@ -97,6 +97,18 @@ pub fn parse_port(args: &[String]) -> u16 {
             }
         }
     }
+    // hipfire takes its port positionally as the tail of a "host:port" token
+    // (e.g. "127.0.0.1:8080") rather than a --port flag — see buildHipfireArgs.
+    // Fall back to scanning for that shape only after the flag search above
+    // comes up empty, so llama-server's argv (which never contains such a
+    // token) is unaffected and this stays byte-identical for the llama path.
+    for a in args {
+        if let Some((_, port_str)) = a.rsplit_once(':') {
+            if let Ok(p) = port_str.parse::<u16>() {
+                return p;
+            }
+        }
+    }
     8080
 }
 
@@ -106,9 +118,12 @@ pub fn start_server(
     state: State<'_, ServerState>,
     build_dir: String,
     args: Vec<String>,
+    exe_path: Option<String>,
+    env: Option<Vec<(String, String)>>,
 ) -> Result<RunningInfo, String> {
     info!(
-        "start_server: build_dir={build_dir} args={}",
+        "start_server: build_dir={build_dir} exe={} args={}",
+        exe_path.as_deref().unwrap_or("<llama-server>"),
         args.join(" ")
     );
     let mut child_slot = lock_or_poisoned(&state.child);
@@ -124,19 +139,45 @@ pub fn start_server(
         let _ = c.kill();
     }
 
-    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
-    let bin_dir = resolve_bin_dir(&PathBuf::from(&build_dir));
-    let server = bin_dir.join(format!("llama-server{}", exe_suffix));
-    if !server.is_file() {
-        error!(
-            "start_server: llama-server not found at {}",
-            server.display()
-        );
-        return Err(format!(
-            "llama-server not found at {}",
-            server.to_string_lossy()
-        ));
-    }
+    // Resolve the executable to spawn and the directory to spawn it in. When
+    // the frontend passes an explicit exe path (e.g. the hipfire binary),
+    // spawn that file directly; otherwise fall back to the existing
+    // llama-server resolution under build_dir (byte-identical to before).
+    let (server, work_dir) = if let Some(exe) = exe_path.as_deref() {
+        let path = PathBuf::from(exe);
+        if !path.is_file() {
+            error!(
+                "start_server: engine binary not found at {}",
+                path.display()
+            );
+            return Err(format!(
+                "engine binary not found at {}",
+                path.to_string_lossy()
+            ));
+        }
+        // Run in the binary's own directory so sibling DLLs resolve, mirroring
+        // the llama-server bin_dir behaviour below.
+        let dir = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        (path, dir)
+    } else {
+        let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+        let bin_dir = resolve_bin_dir(&PathBuf::from(&build_dir));
+        let server = bin_dir.join(format!("llama-server{}", exe_suffix));
+        if !server.is_file() {
+            error!(
+                "start_server: llama-server not found at {}",
+                server.display()
+            );
+            return Err(format!(
+                "llama-server not found at {}",
+                server.to_string_lossy()
+            ));
+        }
+        (server, bin_dir)
+    };
 
     // Validate --model points at an existing file before spawning. Without
     // this, the user sees the server spawn briefly and exit with a generic
@@ -155,16 +196,22 @@ pub fn start_server(
     }
 
     let port = parse_port(&args);
-    let mut child = quiet_command(&server)
-        .args(&args)
-        .current_dir(&bin_dir)
+    let mut cmd = quiet_command(&server);
+    cmd.args(&args)
+        .current_dir(&work_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            error!("start_server: spawn failed: {e}");
-            format!("spawn: {e}")
-        })?;
+        .stderr(Stdio::piped());
+    // Apply caller-supplied environment variables on TOP of the inherited
+    // parent environment: Command inherits by default and `.envs()` only
+    // adds/overrides the given keys, so PATH etc. stay intact. `env == None`
+    // leaves the command byte-identical to the pre-env behaviour.
+    if let Some(pairs) = &env {
+        cmd.envs(pairs.iter().map(|(k, v)| (k, v)));
+    }
+    let mut child = cmd.spawn().map_err(|e| {
+        error!("start_server: spawn failed: {e}");
+        format!("spawn: {e}")
+    })?;
 
     // Take the pipes BEFORE moving `child` into the mutex. We MUST drain both;
     // if we leave them unread, llama-server will eventually block on a write
@@ -360,6 +407,33 @@ mod tests {
     fn parse_port_ignores_dangling_flag() {
         let args = vec!["--port".to_string()];
         assert_eq!(parse_port(&args), 8080);
+    }
+
+    #[test]
+    fn parse_port_reads_hipfire_positional_host_port() {
+        // hipfire's argv: ["serve", "<tag>", "127.0.0.1:8080", ...].
+        let args = vec![
+            "serve".into(),
+            "qwen3.6:27b".into(),
+            "127.0.0.1:8080".into(),
+        ];
+        assert_eq!(parse_port(&args), 8080);
+    }
+
+    #[test]
+    fn parse_port_ignores_windows_paths_with_a_drive_letter_colon() {
+        // "C:\models\m.gguf" contains a ':' but its suffix isn't numeric, so it
+        // must not be mistaken for a hipfire "host:port" token.
+        let args = vec!["--model".into(), "C:\\models\\m.gguf".into()];
+        assert_eq!(parse_port(&args), 8080);
+    }
+
+    #[test]
+    fn parse_port_prefers_the_flag_form_over_a_positional_host_port() {
+        // Belt-and-suspenders: if an argv somehow carries both shapes, the
+        // explicit --port flag (llama-server's form) wins.
+        let args = vec!["--port".into(), "9090".into(), "127.0.0.1:8080".into()];
+        assert_eq!(parse_port(&args), 9090);
     }
 
     #[test]
