@@ -1134,6 +1134,7 @@ describe("chat slice — request body + edge SSE", () => {
         mmproj_siblings: [],
         supports_thinking: false,
         thinking_style: null,
+        tensor_types: [],
       },
       null,
     );

@@ -6,6 +6,9 @@ import {
   deriveTitle,
   newChatId,
   splitThink,
+  shapeChatBody,
+  finalizeTokenStats,
+  type ChatBodyParts,
 } from "./chatHelpers";
 import type { StoredChatMessage } from "./api";
 import type { ChatMessage } from "../state/types";
@@ -161,5 +164,156 @@ describe("splitThink coverage extras", () => {
     const r = splitThink("p<think>r1</think>m<think>r2</think>s");
     expect(r.content).toBe("pms");
     expect(r.reasoning).toBe("r1r2");
+  });
+});
+
+describe("shapeChatBody", () => {
+  function baseParts(over: Partial<ChatBodyParts> = {}): ChatBodyParts {
+    return {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      attachTemplateKwargs: false,
+      chatTemplate: null,
+      reasoningEnabled: true,
+      hipfireTag: "qwen3.6:27b",
+      ...over,
+    };
+  }
+
+  it("llama: sends model 'local', stream_options, and no hipfire fields", () => {
+    const body = shapeChatBody("llama", baseParts());
+    expect(body.model).toBe("local");
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("llama: attaches chat_template_kwargs and chat_template when requested", () => {
+    const body = shapeChatBody(
+      "llama",
+      baseParts({ attachTemplateKwargs: true, chatTemplate: "tmpl-x", reasoningEnabled: false }),
+    );
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(body.chat_template).toBe("tmpl-x");
+  });
+
+  it("llama: omits chat_template when it's empty/whitespace", () => {
+    const body = shapeChatBody("llama", baseParts({ chatTemplate: "   " }));
+    expect(body.chat_template).toBeUndefined();
+  });
+
+  it("llama: includes tools only when non-empty", () => {
+    const withTools = shapeChatBody(
+      "llama",
+      baseParts({ tools: [{ type: "function", function: { name: "t", parameters: {} } }] }),
+    );
+    expect(withTools.tools).toHaveLength(1);
+    const withoutTools = shapeChatBody("llama", baseParts({ tools: [] }));
+    expect(withoutTools.tools).toBeUndefined();
+  });
+
+  it("hipfire: sends model as the configured tag, no stream_options, no tools, no chat_template*", () => {
+    const body = shapeChatBody(
+      "hipfire",
+      baseParts({
+        tools: [{ type: "function", function: { name: "t", parameters: {} } }],
+        attachTemplateKwargs: true,
+        chatTemplate: "tmpl-x",
+        hipfireTag: "qwen3.6:27b",
+      }),
+    );
+    expect(body.model).toBe("qwen3.6:27b");
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toBeUndefined();
+    expect(body.tools).toBeUndefined();
+    expect(body.chat_template).toBeUndefined();
+    expect(body.chat_template_kwargs).toBeUndefined();
+    expect(body.messages).toEqual(baseParts().messages);
+  });
+
+  it("hipfire: sends an empty-string model when no tag is configured", () => {
+    const body = shapeChatBody("hipfire", baseParts({ hipfireTag: "" }));
+    expect(body.model).toBe("");
+  });
+});
+
+describe("finalizeTokenStats", () => {
+  it("prefers the usage frame when present, regardless of allowEstimate", () => {
+    const r = finalizeTokenStats({
+      usageTokens: 42,
+      contentChunks: 999,
+      firstContentAt: 0,
+      lastContentAt: 100,
+      totalElapsedSec: 2,
+      allowEstimate: false,
+    });
+    expect(r.tokens).toBe(42);
+    expect(r.tps).toBe(21);
+  });
+
+  it("usage frame with zero tokens yields null tps (avoids 0/x weirdness or div-by-zero)", () => {
+    const r = finalizeTokenStats({
+      usageTokens: 0,
+      contentChunks: 0,
+      firstContentAt: null,
+      lastContentAt: null,
+      totalElapsedSec: 2,
+      allowEstimate: false,
+    });
+    expect(r.tokens).toBe(0);
+    expect(r.tps).toBeNull();
+  });
+
+  it("llama (allowEstimate=false) without usage reports null/null rather than fabricating a count", () => {
+    const r = finalizeTokenStats({
+      usageTokens: null,
+      contentChunks: 12,
+      firstContentAt: 0,
+      lastContentAt: 500,
+      totalElapsedSec: 1,
+      allowEstimate: false,
+    });
+    expect(r.tokens).toBeNull();
+    expect(r.tps).toBeNull();
+  });
+
+  it("hipfire (allowEstimate=true) without usage falls back to a chunk-count estimate", () => {
+    const r = finalizeTokenStats({
+      usageTokens: null,
+      contentChunks: 20,
+      firstContentAt: 1000,
+      lastContentAt: 2000,
+      totalElapsedSec: 1.5,
+      allowEstimate: true,
+    });
+    expect(r.tokens).toBe(20);
+    // 20 chunks over (2000-1000)ms = 1s → 20 tok/s.
+    expect(r.tps).toBe(20);
+  });
+
+  it("hipfire estimate: zero-output stream yields null/null, never NaN/Infinity", () => {
+    const r = finalizeTokenStats({
+      usageTokens: null,
+      contentChunks: 0,
+      firstContentAt: null,
+      lastContentAt: null,
+      totalElapsedSec: 1,
+      allowEstimate: true,
+    });
+    expect(r.tokens).toBeNull();
+    expect(r.tps).toBeNull();
+  });
+
+  it("hipfire estimate: identical first/last timestamps yields a token count but null tps", () => {
+    const r = finalizeTokenStats({
+      usageTokens: null,
+      contentChunks: 5,
+      firstContentAt: 1000,
+      lastContentAt: 1000,
+      totalElapsedSec: 1,
+      allowEstimate: true,
+    });
+    expect(r.tokens).toBe(5);
+    expect(r.tps).toBeNull();
   });
 });

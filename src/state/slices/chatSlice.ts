@@ -13,7 +13,14 @@ import {
   type ToolPermission,
 } from "../../lib/api";
 import { log } from "../../lib/logger";
-import { deriveTitle, newChatId, splitThink, mcpResultToText } from "../../lib/chatHelpers";
+import {
+  deriveTitle,
+  newChatId,
+  splitThink,
+  mcpResultToText,
+  shapeChatBody,
+  finalizeTokenStats,
+} from "../../lib/chatHelpers";
 import {
   WORKSPACE_SERVER_ID,
   WORKSPACE_SERVER_NAME,
@@ -30,6 +37,12 @@ import {
 } from "../../lib/interactionTools";
 import { persistChats } from "../persist";
 import type { AppStore } from "../store";
+
+// Shown in place of an image/audio attachment that couldn't be sent — either
+// every media read failed, or the active engine (hipfire) is text-only. Kept
+// identical in both spots so a media-only user turn never travels as empty
+// content (which hipfire can 400 on, poisoning every later send in that chat).
+const MEDIA_UNAVAILABLE = "[attached media unavailable]";
 
 export type ChatSlice = {
   chats: ChatSession[];
@@ -185,8 +198,9 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     }>,
     chatTemplate?: string | null,
   ): Promise<RoundResult> => {
-    const { server, flags, reasoningEnabled, modelInfo } = get();
+    const { server, flags, reasoningEnabled, modelInfo, settings } = get();
     if (!server.running || !server.info) throw new Error("server not running");
+    const engine = settings.engine_kind;
     const url = `http://127.0.0.1:${server.info.port}/v1/chat/completions`;
     const t0 = performance.now();
     const abort = new AbortController();
@@ -195,17 +209,32 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     let rawContent = "";
     let streamedReasoning = "";
     let usageTokens: number | null = null;
+    // Fallback tps inputs — used when the engine (hipfire) sends no usage
+    // frame: count the chunks that carried visible output and time first→last.
+    let contentChunks = 0;
+    let firstContentAt: number | null = null;
+    let lastContentAt: number | null = null;
     let streamError: string | null = null;
     const toolCallBuf: Map<number, ToolCall> = new Map();
 
     const useTemplateKwargs = flags.jinja === true;
+    // hipfire's supported models are text-only (per the integration plan's
+    // Phase 0 — TODO(hipfire-verify): confirm image_url/input_audio support
+    // once a live server is available) — its multimodal content parts aren't
+    // accepted, so image/audio attachments are dropped and the message travels
+    // as plain text (empty text → the MEDIA_UNAVAILABLE placeholder). The
+    // one-time "text-only" warning is raised in streamReply (once per send,
+    // for the new turn only) — NOT here, since runChatRound re-runs per tool
+    // round and would otherwise toast on every round.
+    const allowMedia = engine !== "hipfire";
+    const hasMedia = messages.some((m) => m.role === "user" && (m.audio?.path || m.image?.path));
     // Resolve image/audio attachments to base64 just before sending. Done in
     // one pass (await Promise.all) so the round still streams sequentially but
     // reads overlap if multiple messages carry media (rare — usually the last).
     const apiMessages: Array<Record<string, unknown>> = await Promise.all(
       messages.map(async (m) => {
         const out: Record<string, unknown> = { role: m.role };
-        if (m.role === "user" && (m.image?.path || m.audio?.path)) {
+        if (allowMedia && m.role === "user" && (m.image?.path || m.audio?.path)) {
           // Multi-part content: text first (if any), then image, then audio —
           // an empty text part can confuse some templates, so it's omitted
           // when the user attached media without typing anything. Each read is
@@ -246,11 +275,18 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           // If every media read failed and there was no text, send a marker so
           // the message isn't an empty content array.
           if (parts.length === 0) {
-            parts.push({ type: "text", text: `[attached media unavailable]` });
+            parts.push({ type: "text", text: MEDIA_UNAVAILABLE });
           }
           out.content = parts;
         } else {
-          out.content = m.content;
+          // Media was dropped for this turn (hipfire is text-only). A user
+          // message that carried ONLY an attachment would otherwise send
+          // content:"" — which hipfire can 400 on, and since it stays in
+          // history it poisons every later send in the chat. Reuse the llama
+          // placeholder so the turn still travels as non-empty text.
+          const droppedMedia =
+            !allowMedia && m.role === "user" && Boolean(m.image?.path || m.audio?.path);
+          out.content = droppedMedia && !m.content ? MEDIA_UNAVAILABLE : m.content;
         }
         if (m.tool_calls && m.tool_calls.length > 0) out.tool_calls = m.tool_calls;
         if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
@@ -258,14 +294,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         return out;
       }),
     );
-    const body: Record<string, unknown> = {
-      model: "local",
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: apiMessages,
-    };
-    if (tools.length > 0) body.tools = tools;
-    // Decide whether to attach chat_template_kwargs. Two guards:
+    // Decide whether to attach chat_template_kwargs (llama only). Two guards:
     //   1) OMIT on multimodal turns: with an audio/image part, passing
     //      `chat_template_kwargs` (e.g. enable_thinking:false) makes some
     //      llama.cpp builds crash right after media processing (observed on
@@ -275,14 +304,18 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     //      `enable_thinking` (supports_thinking === false) — the field would
     //      be a no-op at best and risky at worst. Unknown (null modelInfo) →
     //      keep sending, matching prior behaviour.
-    const hasMedia = messages.some((m) => m.role === "user" && (m.audio?.path || m.image?.path));
+    // shapeChatBody rewrites all of this for hipfire (model:<tag>, no
+    // stream_options, no chat_template*, no chat_template_kwargs — see its
+    // TODO(hipfire-verify) notes).
     const modelLacksThinking = modelInfo?.supports_thinking === false;
-    if (useTemplateKwargs && !hasMedia && !modelLacksThinking) {
-      body.chat_template_kwargs = { enable_thinking: reasoningEnabled };
-    }
-    if (chatTemplate?.trim()) {
-      body.chat_template = chatTemplate;
-    }
+    const body = shapeChatBody(engine, {
+      messages: apiMessages,
+      tools,
+      attachTemplateKwargs: useTemplateKwargs && !hasMedia && !modelLacksThinking,
+      chatTemplate: chatTemplate ?? null,
+      reasoningEnabled,
+      hipfireTag: String((settings.hipfire_flags as Record<string, unknown>)?.tag ?? ""),
+    });
 
     try {
       const res = await fetch(url, {
@@ -323,13 +356,27 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
             }
             const delta = chunk.choices?.[0]?.delta ?? {};
             let touched = false;
+            let visibleChunk = false;
             if (typeof delta.content === "string" && delta.content.length > 0) {
               rawContent += delta.content;
               touched = true;
+              visibleChunk = true;
             }
+            // TODO(hipfire-verify): confirmed shape assumption — hipfire's
+            // reasoning is documented as arriving via `delta.reasoning_content`,
+            // same field name as llama-server. This parsing is already
+            // engine-agnostic, so no branch is needed unless that's wrong.
             if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
               streamedReasoning += delta.reasoning_content;
               touched = true;
+              visibleChunk = true;
+            }
+            // Track visible-output chunks for the no-usage (hipfire) tps fallback.
+            if (visibleChunk) {
+              const at = performance.now();
+              if (firstContentAt === null) firstContentAt = at;
+              lastContentAt = at;
+              contentChunks++;
             }
             const tcDeltas = delta.tool_calls;
             if (Array.isArray(tcDeltas)) {
@@ -387,20 +434,32 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     }
 
     const elapsed = (performance.now() - t0) / 1000;
-    const tps = usageTokens && elapsed > 0 ? usageTokens / elapsed : null;
+    // llama reports exact usage; hipfire may send none (Phase 0, unverified),
+    // so ONLY hipfire falls back to a chunk-count estimate timed first→last.
+    // llama without usage (abort / mid-stream error) reports null rather than
+    // fabricating a count from chunks. finalizeTokenStats never yields
+    // NaN/Infinity.
+    const { tokens, tps } = finalizeTokenStats({
+      usageTokens,
+      contentChunks,
+      firstContentAt,
+      lastContentAt,
+      totalElapsedSec: elapsed,
+      allowEstimate: engine === "hipfire",
+    });
     const split = splitThink(rawContent);
     const reasoning =
       (streamedReasoning + (split.reasoning ? "\n" + split.reasoning : "")).trim() || null;
     const toolCalls = Array.from(toolCallBuf.values()).filter((tc) => tc.function.name);
     log.info(
       "chat",
-      `← ${usageTokens ?? "?"} tokens in ${elapsed.toFixed(2)}s, ${toolCalls.length} tool_calls`,
+      `← ${tokens ?? "?"} tokens in ${elapsed.toFixed(2)}s, ${toolCalls.length} tool_calls`,
     );
     return {
       content: split.content,
       reasoning,
       toolCalls,
-      tokens: usageTokens,
+      tokens,
       tps,
       error: streamError,
     };
@@ -430,6 +489,27 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       return;
     }
     set({ chatError: null });
+
+    // Warn ONCE per send, and only when the NEW user turn (the message being
+    // sent/resent right now — always the last of baseMessages in both callers)
+    // carries media this engine can't take. hipfire is text-only (Phase 0 —
+    // TODO(hipfire-verify) — its image/audio parts are dropped in
+    // runChatRound (the turn still travels as the MEDIA_UNAVAILABLE
+    // placeholder). Historical attachments from earlier turns are replaced
+    // silently — no toast — so we inspect only this turn, and do it here
+    // rather than in runChatRound (which re-runs per tool round).
+    const newTurn = baseMessages.at(-1);
+    if (
+      settings.engine_kind === "hipfire" &&
+      newTurn?.role === "user" &&
+      (newTurn.audio?.path || newTurn.image?.path)
+    ) {
+      log.notify(
+        "warn",
+        "chat",
+        "hipfire is text-only — image/audio attachments were not sent with this message.",
+      );
+    }
 
     const cfg = session.config ?? null;
     const workspaceRoot = cfg?.workspace_root?.trim() || null;
