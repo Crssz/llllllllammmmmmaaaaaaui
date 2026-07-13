@@ -37,6 +37,7 @@ import {
 } from "../../lib/interactionTools";
 import { persistChats } from "../persist";
 import type { AppStore } from "../store";
+import { activeEngine } from "./serverSlice";
 
 // Shown in place of an image/audio attachment that couldn't be sent — either
 // every media read failed, or the active engine (hipfire) is text-only. Kept
@@ -200,7 +201,12 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
   ): Promise<RoundResult> => {
     const { server, flags, reasoningEnabled, modelInfo, settings } = get();
     if (!server.running || !server.info) throw new Error("server not running");
-    const engine = settings.engine_kind;
+    // Shape the request off the engine actually behind the running server
+    // (activeEngine — serverSlice.ts), NOT the Configure toggle. A live
+    // server that we didn't launch (loadedEngine null) or a stale toggle left
+    // on "hipfire" must never mis-shape requests to a running llama-server
+    // (dropped media, stripped tools, wrong model id, fabricated token count).
+    const engine = activeEngine(get);
     const url = `http://127.0.0.1:${server.info.port}/v1/chat/completions`;
     const t0 = performance.now();
     const abort = new AbortController();
@@ -497,10 +503,13 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     // runChatRound (the turn still travels as the MEDIA_UNAVAILABLE
     // placeholder). Historical attachments from earlier turns are replaced
     // silently — no toast — so we inspect only this turn, and do it here
-    // rather than in runChatRound (which re-runs per tool round).
+    // rather than in runChatRound (which re-runs per tool round). Gated on
+    // activeEngine (the RUNNING server), not the toggle, so a live
+    // llama-server with the toggle left on "hipfire" doesn't raise a false
+    // "text-only" warning for media it actually sends fine.
     const newTurn = baseMessages.at(-1);
     if (
-      settings.engine_kind === "hipfire" &&
+      activeEngine(get) === "hipfire" &&
       newTurn?.role === "user" &&
       (newTurn.audio?.path || newTurn.image?.path)
     ) {

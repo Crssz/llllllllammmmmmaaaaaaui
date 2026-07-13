@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { api, defaultSessionConfig } from "../../lib/api";
+import { log } from "../../lib/logger";
 import { freshStore, makeChat, makeSettings, stubApi, useAppStore } from "../testUtils";
 import type { StoredChatMessage } from "../../lib/api";
 
@@ -1037,6 +1038,97 @@ describe("chat slice — streaming roundtrip", () => {
     const tool = useAppStore.getState().chats[0].messages.find((m) => m.role === "tool")!;
     expect(tool.content).toMatch(/Tool execution failed:.*choices/i);
     expect(useAppStore.getState().pendingUserChoice).toBeNull();
+  });
+});
+
+describe("chat slice — shapes requests off the running engine, not the toggle (BUG 2 regression)", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    readyServer();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("(a) adopted server (loadedEngine=null) + toggle=hipfire ⇒ request is llama-shaped: model local, media allowed, tools preserved, no fabricated token estimate", async () => {
+    // readyServer() leaves loadedEngine at its default (null) — we never
+    // launched this server, so it's "adopted" per the bug scenario.
+    expect(useAppStore.getState().loadedEngine).toBeNull();
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "hipfire" }));
+    vi.spyOn(api, "readImageBase64").mockResolvedValue({
+      data: "IMG==",
+      format: "png",
+      mime: "image/png",
+    });
+    const notify = vi.spyOn(log, "notify");
+    // No usage frame in this SSE stream — llama must report tokens:null
+    // rather than fabricating a count from chunk deltas (hipfire-only path).
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    await useAppStore
+      .getState()
+      .sendChat("what is this?", null, { path: "/tmp/a.png", format: "png" });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.model).toBe("local");
+    const parts = body.messages.at(-1).content;
+    expect(parts).toContainEqual({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,IMG==" },
+    });
+    // Tools (ask_user is always offered) must not be stripped.
+    expect(body.tools).toBeDefined();
+    expect(
+      (body.tools as Array<{ function: { name: string } }>).some(
+        (t) => t.function.name === "ask__ask_user",
+      ),
+    ).toBe(true);
+    // No false "hipfire is text-only" toast for a request that actually sent media.
+    expect(notify).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "chat",
+      expect.stringContaining("text-only"),
+    );
+    const last = useAppStore.getState().chats[0].messages.at(-1)!;
+    expect(last.tokens).toBeNull();
+  });
+
+  it("(b) running hipfire server (loadedEngine=hipfire) ⇒ hipfire-shaped even if the toggle now reads llama", async () => {
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    const notify = vi.spyOn(log, "notify");
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    // Image-only turn (no typed text) — the case that would otherwise send
+    // an empty content string and poison every later send in the chat.
+    await useAppStore.getState().sendChat("", null, { path: "/tmp/a.png", format: "png" });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.model).toBe("qwen3.6:27b");
+    expect(body.tools).toBeUndefined();
+    expect(body.messages.at(-1).content).toBe("[attached media unavailable]");
+    expect(api.readImageBase64).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      "warn",
+      "chat",
+      expect.stringContaining("text-only"),
+    );
   });
 });
 

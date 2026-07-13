@@ -47,6 +47,25 @@ function activeArgs(get: () => AppStore): string[] {
   return buildArgs(get().flags);
 }
 
+// The single source of truth for "which engine is a request being shaped
+// for right now" — used by chatSlice (runChatRound + the media-warning
+// toast) and transcribeSlice so they can't diverge again. Deliberately keys
+// off the RUNNING server, not the Configure toggle: engine_kind only decides
+// what the NEXT launch uses, so a server that's already up must be shaped
+// for what it actually is. When a server is up and ready but we didn't
+// launch it (adopted from a previous app run — loadedEngine is null), fall
+// back to "llama" rather than trusting the toggle: an unknown adopted server
+// is far more likely the default llama.cpp binary, and llama-shaping is the
+// compatible baseline (media allowed, tools preserved, no fabricated token
+// estimate) — trusting a stale "hipfire" toggle instead would silently
+// mis-shape every request to a live llama-server. Only when NO server is
+// running/ready does engine_kind (the next-launch target) decide.
+export function activeEngine(get: () => AppStore): EngineKind {
+  const { server, loadedEngine, settings } = get();
+  const serverReady = server.running && server.ready && !!server.info;
+  return serverReady ? (loadedEngine ?? "llama") : settings.engine_kind;
+}
+
 // Return the startError hint if the active engine can't legally launch right
 // now, or null when its prerequisites are met. Mirrors Configure's start-button
 // gating: hipfire needs its exe path AND a tag to serve; llama needs only a

@@ -167,4 +167,18 @@ describe("transcribeSlice", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(useAppStore.getState().trError).toMatch(/llama\.cpp engine/i);
   });
+
+  it("BUG 2 regression: adopted server (loadedEngine=null) + toggle=hipfire stays available, not blocked", async () => {
+    // readyServer() doesn't set loadedEngine — it stays null (adopted: we
+    // never launched this server). The toggle alone must not block it.
+    readyServer();
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "hipfire",
+    });
+    expect(useAppStore.getState().loadedEngine).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => fakeRes(["data: [DONE]\n"])));
+    await useAppStore.getState().startTranscribe({ audioPath: "/a.wav", prompt: "go" });
+    expect(useAppStore.getState().trError).toBeNull();
+  });
 });

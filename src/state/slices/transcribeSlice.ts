@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import { api } from "../../lib/api";
 import { log } from "../../lib/logger";
 import type { AppStore } from "../store";
+import { activeEngine } from "./serverSlice";
 
 export type TranscribeParams = {
   /** Path to the audio file (a saved recording or a picked wav/mp3). */
@@ -44,17 +45,17 @@ export const createTranscribeSlice: StateCreator<AppStore, [], [], TranscribeSli
       log.warn("transcribe", "start ignored: already running");
       return;
     }
-    const { server, settings, loadedEngine } = get();
+    const { server } = get();
     // Transcription streams an `input_audio` chat-completion, which hipfire's
     // text-only models can't accept (Phase 0 — TODO(hipfire-verify)) — refuse
-    // rather than fail mid-stream. Gate on the engine the RUNNING server was
-    // actually launched as (loadedEngine) when one is up and ready, so a
-    // Configure toggle that hasn't restarted the server doesn't block a
-    // working llama-server. With no server up yet, gate on the engine a fresh
-    // launch would use (settings.engine_kind).
-    const serverReady = server.running && server.ready && !!server.info;
-    const activeEngine = serverReady ? loadedEngine : settings.engine_kind;
-    if (activeEngine === "hipfire") {
+    // rather than fail mid-stream. Gate on the shared activeEngine selector
+    // (serverSlice.ts) — same one chatSlice uses — so this can't diverge: it
+    // resolves to the engine the RUNNING server actually is (loadedEngine,
+    // falling back to "llama" when adopted/unknown) once a server is up and
+    // ready, so a Configure toggle that hasn't restarted the server doesn't
+    // block a working llama-server. With no server up yet, it falls back to
+    // the engine a fresh launch would use (settings.engine_kind).
+    if (activeEngine(get) === "hipfire") {
       const msg = "Transcription requires the llama.cpp engine.";
       log.warn("transcribe", msg);
       set({ trError: msg });

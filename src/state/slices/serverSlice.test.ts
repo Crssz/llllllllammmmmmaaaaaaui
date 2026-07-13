@@ -3,6 +3,7 @@ import { api } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
 import { log } from "../../lib/logger";
 import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
+import { activeEngine } from "./serverSlice";
 
 describe("server slice", () => {
   beforeEach(() => {
@@ -269,5 +270,54 @@ describe("server slice — hipfire engine dispatch", () => {
     expect(api.startServer).toHaveBeenCalledTimes(1);
     const [, args] = vi.mocked(api.startServer).mock.calls[0];
     expect(args).toEqual(["serve", "qwen3.6:27b", "127.0.0.1:9090"]);
+  });
+});
+
+describe("server slice — activeEngine selector (BUG 2 regression)", () => {
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+  });
+
+  it("(a) server ready + loadedEngine=null (adopted) + toggle=hipfire resolves to llama, not the toggle", () => {
+    useAppStore.getState().setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "x" },
+    });
+    // loadedEngine stays null — we never launched this server (adopted).
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "hipfire" }));
+    expect(useAppStore.getState().loadedEngine).toBeNull();
+    expect(activeEngine(useAppStore.getState)).toBe("llama");
+  });
+
+  it("(b) server ready + loadedEngine=hipfire resolves to hipfire even if the toggle now reads llama", () => {
+    useAppStore.getState().setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "x" },
+    });
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "llama" }));
+    expect(activeEngine(useAppStore.getState)).toBe("hipfire");
+  });
+
+  it("(c) no server running defers to the toggle (the next-launch target)", () => {
+    expect(useAppStore.getState().server.running).toBe(false);
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "hipfire" }));
+    expect(activeEngine(useAppStore.getState)).toBe("hipfire");
+  });
+
+  it("server running but not yet ready still defers to the toggle", () => {
+    useAppStore.getState().setServer({
+      running: true,
+      ready: false,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "x" },
+    });
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "llama" }));
+    // Not ready yet — a launch we DID start as hipfire is still "not the
+    // active server" for shaping purposes until it reports ready.
+    expect(activeEngine(useAppStore.getState)).toBe("llama");
   });
 });
