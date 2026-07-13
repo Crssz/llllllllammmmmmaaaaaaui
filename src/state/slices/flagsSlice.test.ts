@@ -17,6 +17,7 @@ const ggufInfo = (siblings: string[]): GgufInfo => ({
   mmproj_siblings: siblings,
   supports_thinking: false,
   thinking_style: null,
+  tensor_types: [],
 });
 
 describe("flags slice", () => {

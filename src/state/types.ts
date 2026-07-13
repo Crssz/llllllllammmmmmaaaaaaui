@@ -1,5 +1,9 @@
 import type { AudioAttachment, ImageAttachment, ToolCall } from "../lib/api";
 
+/** The inference-engine axis. Canonically defined alongside `Settings` in
+ *  `../lib/api`; re-exported here so state consumers can import it locally. */
+export type { EngineKind } from "../lib/api";
+
 export type FlagValues = Record<string, string | number | boolean>;
 
 export type ChatMessage = {

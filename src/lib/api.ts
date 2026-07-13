@@ -240,6 +240,11 @@ export type SavedProfile = {
   created_at: number;
   flags: Record<string, unknown>;
   model_path: string | null;
+  /** Engine active when this profile was saved. */
+  engine_kind: EngineKind;
+  /** hipfire runtime flag bag snapshotted alongside `flags`. Empty for
+   *  profiles saved under llama (or predating this key). */
+  hipfire_flags: Record<string, unknown>;
 };
 
 export type McpTransport = "stdio" | "http" | "sse";
@@ -272,6 +277,10 @@ export type McpStatus = {
   server_name: string | null;
 };
 
+/** Which inference engine backs the server. "llama" is llama.cpp's
+ *  llama-server (the default); "hipfire" is the source-built hipfire binary. */
+export type EngineKind = "llama" | "hipfire";
+
 export type Settings = {
   build_dir: string | null;
   recent_dirs: string[];
@@ -296,6 +305,16 @@ export type Settings = {
   /** Optional HuggingFace access token, sent as a Bearer token on catalog
    *  requests to lift rate-limiting, speed up downloads, and reach gated repos. */
   hf_token: string | null;
+  /** Active inference engine. Absent in settings persisted before this axis
+   *  existed — normalised to "llama" on load (see effects.tsx). */
+  engine_kind: EngineKind;
+  /** Absolute path to the hipfire executable; consulted only when
+   *  engine_kind === "hipfire". Empty when unset. */
+  hipfire_path: string;
+  /** hipfire runtime flag bag (keys: tag, host, port, kv_mode, idle_timeout,
+   *  spec, model_draft, draft_max, tp), parallel to `flags` but consumed by
+   *  buildHipfireArgs. */
+  hipfire_flags: Record<string, unknown>;
 };
 
 export type RunningInfo = {
@@ -374,6 +393,11 @@ export type GgufInfo = {
   supports_thinking: boolean;
   /** How reasoning is rendered: "channel" | "think_tags" | "other" | null. */
   thinking_style: string | null;
+  /** Distinct ggml tensor quant types in the file, first-seen order (e.g.
+   *  ["Q4_K", "F32"]); unknown ids appear as "TYPE_<id>". Empty when the
+   *  tensor table couldn't be read (treat as unknown, not "no tensors"). Used
+   *  to pre-flight hipfire_convert's supported source-quant check. */
+  tensor_types: string[];
 };
 
 // ── Benchmark (mirror Rust bench.rs) ────────────────────────────────────────
@@ -433,6 +457,20 @@ export type BenchRequest = {
 
 /** Per-line stderr progress emitted while a benchmark runs. */
 export type BenchProgressEvent = { generation: number; line: string };
+
+// ── hipfire model conversion (mirror Rust hipfire_convert.rs) ──────────────
+
+/** `hipfire-convert-progress` event payload. */
+export type HipfireConvertProgressEvent = { generation: number; line: string };
+
+/** `hipfire-convert-done` event payload. */
+export type HipfireConvertDoneEvent = {
+  generation: number;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  tag: string;
+};
 
 /** Terminal event for a benchmark run (success, failure, or cancellation). */
 export type BenchDoneEvent = {
@@ -530,8 +568,24 @@ export const api = {
   revealInExplorer: (path: string) => invoke<void>("plugin:opener|reveal_item_in_dir", { path }),
   openUrl: (url: string) => invoke<void>("plugin:opener|open_url", { url }),
 
-  startServer: (buildDir: string, args: string[]) =>
-    invoke<RunningInfo>("start_server", { buildDir, args }),
+  // `exePath`, when given, spawns that binary directly (the hipfire engine
+  // path); otherwise the backend resolves llama-server under `buildDir`.
+  // `env`, when given, sets extra environment variables on the spawned
+  // process (added on top of the inherited parent env). Rust takes
+  // `Option<Vec<(String, String)>>`, so serialize the record as an array of
+  // [key, value] pairs (null when unset).
+  startServer: (
+    buildDir: string,
+    args: string[],
+    exePath?: string | null,
+    env?: Record<string, string> | null,
+  ) =>
+    invoke<RunningInfo>("start_server", {
+      buildDir,
+      args,
+      exePath: exePath ?? null,
+      env: env ? Object.entries(env) : null,
+    }),
   stopServer: () => invoke<void>("stop_server"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
 
@@ -646,6 +700,13 @@ export const api = {
   workspaceFind: (root: string, pattern: string, maxResults?: number | null) =>
     invoke<WsFind>("workspace_find", { root, pattern, maxResults: maxResults ?? null }),
 
+  // Convert a GGUF into hipfire's own store and register it under `tag`.
+  // Resolves with the run's generation id; progress arrives via
+  // `hipfire-convert-progress` events and the result via `hipfire-convert-done`.
+  hipfireConvert: (hipfirePath: string, ggufPath: string, format: string, tag: string) =>
+    invoke<number>("hipfire_convert", { hipfirePath, ggufPath, format, tag }),
+  cancelHipfireConvert: () => invoke<void>("cancel_hipfire_convert"),
+
   pickFolder: (title = "Select a directory") =>
     open({ directory: true, multiple: false, title }) as Promise<string | null>,
   pickFile: (title = "Select GGUF model file", extensions = ["gguf"]) =>
@@ -654,6 +715,15 @@ export const api = {
       multiple: false,
       title,
       filters: [{ name: "GGUF model", extensions }],
+    }) as Promise<string | null>,
+  // Pick an executable (the hipfire engine binary). Same Tauri open-dialog
+  // mechanism as pickFile, but filtered to *.exe with an honest filter label.
+  pickExecutable: (title = "Select executable") =>
+    open({
+      directory: false,
+      multiple: false,
+      title,
+      filters: [{ name: "Executable", extensions: ["exe"] }],
     }) as Promise<string | null>,
   pickAudio: (title = "Select an audio file") =>
     open({

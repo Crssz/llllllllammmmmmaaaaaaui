@@ -5,6 +5,7 @@ import {
   defaultSessionConfig,
   type Settings,
   type ChatSession,
+  type SavedProfile,
   type Workspace,
 } from "../lib/api";
 import { EMPTY_SETTINGS } from "./slices/settingsSlice";
@@ -19,6 +20,21 @@ export function freshStore() {
 // Build a Settings object overriding only the fields the caller cares about.
 export function makeSettings(patch: Partial<Settings> = {}): Settings {
   return { ...EMPTY_SETTINGS, ...patch };
+}
+
+// Build a SavedProfile overriding only the fields the caller cares about —
+// defaults to the llama engine with an empty hipfire flag bag.
+export function makeProfile(patch: Partial<SavedProfile> = {}): SavedProfile {
+  return {
+    id: "p",
+    name: "p",
+    created_at: 1,
+    flags: {},
+    model_path: null,
+    engine_kind: "llama",
+    hipfire_flags: {},
+    ...patch,
+  };
 }
 
 export function makeChat(over: Partial<ChatSession> = {}): ChatSession {
@@ -82,6 +98,7 @@ export function stubApi() {
     mmproj_siblings: [],
     supports_thinking: false,
     thinking_style: null,
+    tensor_types: [],
   });
   vi.spyOn(api, "hwSnapshot").mockResolvedValue({
     cpu_util: 0,
@@ -115,6 +132,7 @@ export function stubApi() {
   });
   vi.spyOn(api, "pickFolder").mockResolvedValue(null);
   vi.spyOn(api, "pickFile").mockResolvedValue(null);
+  vi.spyOn(api, "pickExecutable").mockResolvedValue(null);
   vi.spyOn(api, "pickAudio").mockResolvedValue(null);
   vi.spyOn(api, "pickImage").mockResolvedValue(null);
   vi.spyOn(api, "mcpConnect").mockResolvedValue({
@@ -153,6 +171,8 @@ export function stubApi() {
   vi.spyOn(api, "listCatalogFiles").mockResolvedValue([]);
   vi.spyOn(api, "downloadCatalogModel").mockResolvedValue(1);
   vi.spyOn(api, "cancelCatalogDownload").mockResolvedValue(undefined);
+  vi.spyOn(api, "hipfireConvert").mockResolvedValue(1);
+  vi.spyOn(api, "cancelHipfireConvert").mockResolvedValue(undefined);
 }
 
 // Drain microtasks so fire-and-forget persistence promises settle before the

@@ -76,6 +76,7 @@ describe("models slice", () => {
         mmproj_siblings: ["mm.gguf"],
         supports_thinking: false,
         thinking_style: null,
+        tensor_types: [],
       },
       null,
     );

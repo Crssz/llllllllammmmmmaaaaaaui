@@ -692,6 +692,132 @@ export function defaultFlags(): Record<string, string | number | boolean> {
   return out;
 }
 
+// ── hipfire engine flags ────────────────────────────────────────────────────
+// hipfire is a source-built Vulkan/HIP inference engine with an OpenAI-
+// compatible server, driven from a pre-registered model TAG rather than a raw
+// .gguf (see hipfireConvert / buildHipfireArgs). These groups reuse the same
+// FlagRow renderer as FLAG_GROUPS, but their values live in
+// `settings.hipfire_flags` (written via setHipfireFlag) and are consumed by
+// buildHipfireArgs. Group ids are prefixed "hipfire-" so they never collide
+// with the llama FLAG_GROUPS ids in the Configure collapse-state map.
+export const HIPFIRE_FLAG_GROUPS: FlagGroup[] = [
+  {
+    id: "hipfire-server",
+    label: "Server",
+    icon: "Globe",
+    defaultOpen: true,
+    flags: [
+      {
+        key: "tag",
+        label: "Model tag",
+        desc: "Tag registered by `hipfire quantize --install --register <tag>` — see the conversion panel above",
+        flag: "serve <tag>",
+        type: "text",
+        value: "",
+      },
+      {
+        key: "host",
+        label: "Host",
+        desc: "Bind address, sent positionally as host:port",
+        flag: "<host>:port",
+        type: "text",
+        value: "127.0.0.1",
+      },
+      {
+        key: "port",
+        label: "Port",
+        desc: "HTTP port for the OpenAI-compatible server, sent positionally as host:port",
+        flag: "host:<port>",
+        type: "text",
+        value: "8080",
+      },
+      {
+        key: "idle_timeout",
+        label: "Idle timeout (s)",
+        desc: "Unload the model after this many idle seconds. Leave empty to use hipfire's default.",
+        flag: "--idle-timeout",
+        type: "text",
+        value: "",
+      },
+    ],
+  },
+  {
+    id: "hipfire-hw",
+    label: "Hardware",
+    icon: "Cpu",
+    defaultOpen: true,
+    flags: [
+      {
+        // TODO(hipfire-verify): confirm the accepted --kv-mode values against
+        // a live `hipfire serve --help`.
+        key: "kv_mode",
+        label: "KV cache mode",
+        desc: "KV cache quantization mode. Empty/unset uses hipfire's default.",
+        flag: "--kv-mode",
+        type: "select",
+        value: "",
+        options: ["", "f16", "q8", "q4"],
+      },
+      {
+        key: "tp",
+        label: "Tensor parallel degree",
+        desc: "Number of GPUs to split the model across. Leave empty for single-GPU.",
+        flag: "--tp",
+        type: "text",
+        value: "",
+      },
+    ],
+  },
+  {
+    id: "hipfire-spec",
+    label: "Speculative decoding",
+    icon: "Bolt",
+    defaultOpen: false,
+    flags: [
+      {
+        // TODO(hipfire-verify): confirm --spec is a bare toggle (not a valued
+        // flag like llama's --spec-type) against a live hipfire.
+        key: "spec",
+        label: "Enable speculative decoding",
+        desc: "Turns on speculative decoding using the draft tag below",
+        flag: "--spec",
+        type: "toggle",
+        value: false,
+      },
+      {
+        key: "model_draft",
+        label: "Draft tag",
+        desc: "hipfire tag of the draft model (short flag -md, unlike llama's --model-draft)",
+        flag: "-md",
+        type: "text",
+        value: "",
+      },
+      {
+        key: "draft_max",
+        label: "Max draft tokens",
+        desc: "Cap on speculated tokens per step",
+        flag: "--draft-max",
+        type: "text",
+        value: "",
+      },
+    ],
+  },
+];
+
+// Flatten the HIPFIRE_FLAG_GROUPS defaults into a single flag-values record,
+// mirroring defaultFlags(). buildHipfireArgs applies its own host/port
+// fallbacks, so an empty hipfire_flags bag is also valid; this is the
+// fully-populated baseline.
+export function defaultHipfireFlags(): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const g of HIPFIRE_FLAG_GROUPS) {
+    for (const f of g.flags) {
+      out[f.key] = f.value;
+    }
+  }
+  return out;
+}
+
 export type BuildBinary = {
   name: string;
   size: string;
