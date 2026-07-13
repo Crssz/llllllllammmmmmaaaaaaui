@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import { api, type SavedProfile, type Settings } from "../../lib/api";
 import { log } from "../../lib/logger";
 import type { FlagValues } from "../types";
+import { persistSettings } from "../persist";
 import type { AppStore } from "../store";
 
 export type ProfilesSlice = {
@@ -30,6 +31,8 @@ export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> 
       created_at: Date.now(),
       flags: flags as Record<string, unknown>,
       model_path: (flags.model as string) || settings.model_path || null,
+      engine_kind: settings.engine_kind,
+      hipfire_flags: settings.hipfire_flags,
     };
     const updated: Settings = {
       ...settings,
@@ -47,6 +50,24 @@ export const createProfilesSlice: StateCreator<AppStore, [], [], ProfilesSlice> 
     if (p.model_path) f.model = p.model_path;
     resetFlags(f);
     set({ loadedProfileId: p.id });
+
+    // Legacy profiles (saved before the engine axis existed) omit
+    // engine_kind/hipfire_flags — treat them as llama and leave the user's
+    // current hipfire_flags untouched rather than clobbering them with
+    // nothing. Restore is keyed on the profile's engine, not bag emptiness: a
+    // hipfire profile's hipfire_flags snapshot IS the restore target even when
+    // empty (empty means "defaults", a legitimate restore). A llama (or
+    // legacy) profile's hipfire_flags is a stale/irrelevant snapshot and must
+    // never clobber the user's current hipfire tuning.
+    const engine_kind = p.engine_kind ?? "llama";
+    const updatedSettings: Settings = {
+      ...get().settings,
+      engine_kind,
+      ...(engine_kind === "hipfire" ? { hipfire_flags: p.hipfire_flags ?? {} } : {}),
+    };
+    get().setSettings(updatedSettings);
+    persistSettings(updatedSettings);
+
     // House toast so the load registers — the Configure flags change silently
     // otherwise.
     log.notify("info", "profiles", `Loaded profile "${p.name}"`);

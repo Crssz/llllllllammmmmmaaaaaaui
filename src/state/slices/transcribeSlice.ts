@@ -44,7 +44,22 @@ export const createTranscribeSlice: StateCreator<AppStore, [], [], TranscribeSli
       log.warn("transcribe", "start ignored: already running");
       return;
     }
-    const { server } = get();
+    const { server, settings, loadedEngine } = get();
+    // Transcription streams an `input_audio` chat-completion, which hipfire's
+    // text-only models can't accept (Phase 0 — TODO(hipfire-verify)) — refuse
+    // rather than fail mid-stream. Gate on the engine the RUNNING server was
+    // actually launched as (loadedEngine) when one is up and ready, so a
+    // Configure toggle that hasn't restarted the server doesn't block a
+    // working llama-server. With no server up yet, gate on the engine a fresh
+    // launch would use (settings.engine_kind).
+    const serverReady = server.running && server.ready && !!server.info;
+    const activeEngine = serverReady ? loadedEngine : settings.engine_kind;
+    if (activeEngine === "hipfire") {
+      const msg = "Transcription requires the llama.cpp engine.";
+      log.warn("transcribe", msg);
+      set({ trError: msg });
+      return;
+    }
     if (!server.running || !server.ready || !server.info) {
       set({ trError: "Start llama-server with an audio model + projector on Configure first." });
       return;

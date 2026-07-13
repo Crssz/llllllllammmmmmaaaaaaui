@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { api } from "../../lib/api";
-import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
+import { freshStore, makeProfile, makeSettings, stubApi, useAppStore } from "../testUtils";
 
 describe("profiles slice", () => {
   beforeEach(() => {
@@ -10,13 +10,9 @@ describe("profiles slice", () => {
 
   it("saveProfile pushes a new entry capped at 50", async () => {
     const seed = makeSettings({
-      profiles: Array.from({ length: 50 }, (_, i) => ({
-        id: String(i),
-        name: `p${i}`,
-        created_at: i,
-        flags: {},
-        model_path: null,
-      })),
+      profiles: Array.from({ length: 50 }, (_, i) =>
+        makeProfile({ id: String(i), name: `p${i}`, created_at: i }),
+      ),
     });
     useAppStore.getState().setSettings(seed);
     useAppStore.getState().resetFlags({ ctx: 4096 });
@@ -32,17 +28,30 @@ describe("profiles slice", () => {
     expect(useAppStore.getState().settings.profiles[0].name).toBe("Untitled profile");
   });
 
+  it("saveProfile snapshots the active engine + hipfire flag bag", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "C:/hipfire/hipfire.exe",
+        hipfire_flags: { tag: "qwen3.6:27b", port: 8090 },
+      }),
+    );
+    await useAppStore.getState().saveProfile("hf");
+    const p = useAppStore.getState().settings.profiles[0];
+    expect(p.engine_kind).toBe("hipfire");
+    expect(p.hipfire_flags).toEqual({ tag: "qwen3.6:27b", port: 8090 });
+  });
+
   it("loadProfile applies flags + model path", () => {
     useAppStore.getState().setSettings(
       makeSettings({
         profiles: [
-          {
+          makeProfile({
             id: "p1",
             name: "n",
-            created_at: 1,
             flags: { ctx: 1024 },
             model_path: "/m/x.gguf",
-          },
+          }),
         ],
       }),
     );
@@ -51,6 +60,37 @@ describe("profiles slice", () => {
     expect(useAppStore.getState().flags.model).toBe("/m/x.gguf");
     // Marks the loaded profile as active (non-persisted UI marker).
     expect(useAppStore.getState().loadedProfileId).toBe("p1");
+  });
+
+  it("loadProfile restores the profile's engine_kind", () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        engine_kind: "llama",
+        profiles: [
+          makeProfile({
+            id: "p1",
+            engine_kind: "hipfire",
+            hipfire_flags: { tag: "qwen3.6:27b" },
+          }),
+        ],
+      }),
+    );
+    useAppStore.getState().loadProfile("p1");
+    expect(useAppStore.getState().settings.engine_kind).toBe("hipfire");
+    expect(useAppStore.getState().settings.hipfire_flags).toEqual({ tag: "qwen3.6:27b" });
+  });
+
+  it("loadProfile does not clobber current hipfire_flags when the profile is llama/legacy", () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_flags: { tag: "keep-me" },
+        profiles: [makeProfile({ id: "p1", engine_kind: "llama" })],
+      }),
+    );
+    useAppStore.getState().loadProfile("p1");
+    expect(useAppStore.getState().settings.engine_kind).toBe("llama");
+    expect(useAppStore.getState().settings.hipfire_flags).toEqual({ tag: "keep-me" });
   });
 
   it("loadProfile no-ops on unknown id", () => {
@@ -63,10 +103,7 @@ describe("profiles slice", () => {
   it("deleteProfile removes by id and persists", async () => {
     useAppStore.getState().setSettings(
       makeSettings({
-        profiles: [
-          { id: "a", name: "a", created_at: 1, flags: {}, model_path: null },
-          { id: "b", name: "b", created_at: 2, flags: {}, model_path: null },
-        ],
+        profiles: [makeProfile({ id: "a", name: "a" }), makeProfile({ id: "b", name: "b" })],
       }),
     );
     await useAppStore.getState().deleteProfile("a");
@@ -78,7 +115,7 @@ describe("profiles slice", () => {
   it("renameProfile updates the name (with fallback) and persists", async () => {
     useAppStore.getState().setSettings(
       makeSettings({
-        profiles: [{ id: "a", name: "old", created_at: 1, flags: {}, model_path: null }],
+        profiles: [makeProfile({ id: "a", name: "old" })],
       }),
     );
     await useAppStore.getState().renameProfile("a", "new");
@@ -95,7 +132,7 @@ describe("profiles slice", () => {
   it("duplicateProfile prepends a copy with fresh id and copied flags", async () => {
     useAppStore.getState().setSettings(
       makeSettings({
-        profiles: [{ id: "a", name: "p", created_at: 1, flags: { ctx: 2048 }, model_path: "/m" }],
+        profiles: [makeProfile({ id: "a", name: "p", flags: { ctx: 2048 }, model_path: "/m" })],
       }),
     );
     await useAppStore.getState().duplicateProfile("a");

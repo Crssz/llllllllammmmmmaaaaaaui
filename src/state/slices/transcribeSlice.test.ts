@@ -128,4 +128,43 @@ describe("transcribeSlice", () => {
     expect(s.trOutput).toBe("");
     expect(s.trError).toBeNull();
   });
+
+  it("refuses to start when no server is up and the engine toggle is set to hipfire", async () => {
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "hipfire",
+    });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await useAppStore.getState().startTranscribe({ audioPath: "/a.wav", prompt: "go" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(useAppStore.getState().trError).toMatch(/llama\.cpp engine/i);
+  });
+
+  it("stays available on a live llama-server even after the toggle flips to hipfire", async () => {
+    // loadedEngine (what's RUNNING) is llama; the toggle alone must not block.
+    readyServer();
+    useAppStore.setState({ loadedEngine: "llama" });
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "hipfire",
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => fakeRes(["data: [DONE]\n"])));
+    await useAppStore.getState().startTranscribe({ audioPath: "/a.wav", prompt: "go" });
+    expect(useAppStore.getState().trError).toBeNull();
+  });
+
+  it("blocks a live hipfire server even if the toggle now reads llama", async () => {
+    readyServer();
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "llama",
+    });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await useAppStore.getState().startTranscribe({ audioPath: "/a.wav", prompt: "go" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(useAppStore.getState().trError).toMatch(/llama\.cpp engine/i);
+  });
 });

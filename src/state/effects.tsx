@@ -32,6 +32,14 @@ export function useAppEffects(initialFlags: FlagValues) {
       try {
         const s = await api.loadSettings();
         if (cancelled) return;
+        // Engine axis added after some settings.json files were written (and
+        // the first-run Settings::default() leaves engine_kind empty /
+        // hipfire_flags null): coerce to valid defaults so the store and arg
+        // builders never see gaps. Anything that isn't "hipfire" resolves to
+        // the llama default.
+        if (s.engine_kind !== "hipfire") s.engine_kind = "llama";
+        if (typeof s.hipfire_path !== "string") s.hipfire_path = "";
+        if (!s.hipfire_flags || typeof s.hipfire_flags !== "object") s.hipfire_flags = {};
         useAppStore.getState().setSettings(s);
         log.info(
           "init",

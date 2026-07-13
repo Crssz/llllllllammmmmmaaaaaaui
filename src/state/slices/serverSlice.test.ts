@@ -163,4 +163,111 @@ describe("server slice", () => {
     });
     expect(useAppStore.getState().server.info?.pid).toBe(9);
   });
+
+  it("startServer records loadedEngine as llama on a plain launch", async () => {
+    useAppStore.getState().setSettings(makeSettings({ build_dir: "/b" }));
+    await useAppStore.getState().startServer(["--foo"]);
+    expect(useAppStore.getState().loadedEngine).toBe("llama");
+  });
+});
+
+describe("server slice — hipfire engine dispatch", () => {
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+  });
+
+  it("startServer blocks with a hipfire-specific hint when the exe path is unset", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    await useAppStore.getState().startServer(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
+    expect(useAppStore.getState().startError).toMatch(/hipfire executable/i);
+    expect(api.startServer).not.toHaveBeenCalled();
+  });
+
+  it("startServer blocks when the exe path is set but no tag is configured", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_path: "C:/hipfire/hipfire.exe" }),
+    );
+    await useAppStore.getState().startServer(["serve", "", "127.0.0.1:8080"]);
+    expect(useAppStore.getState().startError).toMatch(/tag/i);
+    expect(api.startServer).not.toHaveBeenCalled();
+  });
+
+  it("startServer passes exePath through to api.startServer and records loadedEngine", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "C:/hipfire/hipfire.exe",
+        hipfire_flags: { tag: "qwen3.6:27b" },
+      }),
+    );
+    await useAppStore.getState().startServer(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    const [, , exePath] = vi.mocked(api.startServer).mock.calls[0];
+    expect(exePath).toBe("C:/hipfire/hipfire.exe");
+    expect(useAppStore.getState().server.running).toBe(true);
+    expect(useAppStore.getState().loadedEngine).toBe("hipfire");
+  });
+
+  it("reloadServer refuses to tear down a healthy llama server when hipfire can't launch", async () => {
+    const s = useAppStore.getState();
+    // A healthy llama-server is already running (e.g. adopted, or launched
+    // before the toggle flipped).
+    s.setSettings(makeSettings({ build_dir: "/b", engine_kind: "hipfire" })); // no hipfire_path set
+    s.setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "llama-server" },
+    });
+
+    await useAppStore.getState().reloadServer();
+
+    // Critical fix: the running server must NOT have been torn down.
+    expect(api.stopServer).not.toHaveBeenCalled();
+    expect(api.startServer).not.toHaveBeenCalled();
+    expect(useAppStore.getState().startError).toMatch(/hipfire executable/i);
+    expect(useAppStore.getState().server.running).toBe(true);
+  });
+
+  it("reloadIfStale refuses to tear down a healthy server when the toggled-to engine can't launch", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/m.gguf");
+    // Launch under llama first so loadedArgs/loadedEngine record a real launch.
+    await s.startServer(buildArgs(useAppStore.getState().flags));
+    expect(useAppStore.getState().server.running).toBe(true);
+
+    // Flip the toggle to hipfire WITHOUT configuring its prerequisites —
+    // activeArgs() now differs from loadedArgs (that's "stale"), but hipfire
+    // can't launch, so the existing llama server must be left running.
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "hipfire",
+    });
+
+    const ok = await useAppStore.getState().reloadIfStale();
+
+    expect(ok).toBe(false);
+    expect(api.stopServer).not.toHaveBeenCalled();
+    // Only the initial llama launch happened — no doomed hipfire relaunch.
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().server.running).toBe(true);
+    expect(useAppStore.getState().startError).toMatch(/hipfire executable/i);
+  });
+
+  it("activeArgs/reloadServer builds hipfire's serve argv when prerequisites are met", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "C:/hipfire/hipfire.exe",
+        hipfire_flags: { tag: "qwen3.6:27b", port: 9090 },
+      }),
+    );
+    await useAppStore.getState().reloadServer();
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    const [, args] = vi.mocked(api.startServer).mock.calls[0];
+    expect(args).toEqual(["serve", "qwen3.6:27b", "127.0.0.1:9090"]);
+  });
 });

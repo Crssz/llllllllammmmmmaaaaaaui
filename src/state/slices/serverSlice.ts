@@ -1,7 +1,9 @@
 import type { StateCreator } from "zustand";
 import { api, type RunningInfo, type ServerStatus } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
+import { buildHipfireArgs } from "../../lib/buildHipfireArgs";
 import { log } from "../../lib/logger";
+import type { EngineKind, FlagValues } from "../types";
 import type { AppStore } from "../store";
 
 export type ServerState = { running: boolean; ready: boolean; info: RunningInfo | null };
@@ -13,6 +15,12 @@ export type ServerSlice = {
    *  didn't launch it (e.g. it was adopted from a previous app run). Lets a
    *  chat detect a config change and reload the model with the latest flags. */
   loadedArgs: string[] | null;
+  /** Which engine the running server was actually launched as, or null when no
+   *  server is running (or one was adopted and we didn't launch it). Feature
+   *  gates key off what's RUNNING rather than what the Configure toggle now
+   *  says — e.g. transcription stays available on a live llama-server even
+   *  after the user flips the engine toggle without restarting. */
+  loadedEngine: EngineKind | null;
   setServer: (s: ServerState) => void;
   startServer: (args: string[]) => Promise<void>;
   stopServer: () => Promise<void>;
@@ -24,6 +32,39 @@ const STOPPED: ServerState = { running: false, ready: false, info: null };
 
 function argsEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+// Build the launch argv for whichever engine is active. hipfire consumes its
+// own flag bag (settings.hipfire_flags) — it serves a pre-registered tag, not
+// the shared model flag; llama-server uses the full flag set. Both the reload
+// path and the staleness check compare against this so they diff the right
+// builder.
+function activeArgs(get: () => AppStore): string[] {
+  const { settings } = get();
+  if (settings.engine_kind === "hipfire") {
+    return buildHipfireArgs(settings.hipfire_flags as FlagValues);
+  }
+  return buildArgs(get().flags);
+}
+
+// Return the startError hint if the active engine can't legally launch right
+// now, or null when its prerequisites are met. Mirrors Configure's start-button
+// gating: hipfire needs its exe path AND a tag to serve; llama needs only a
+// build directory (it has always launched without a model, so requiring one
+// here would regress the llama path). Reload paths consult this BEFORE
+// stopping a healthy server, so an engine toggle can't strand the user with a
+// dead server the new engine was never able to start. Also stops a hipfire
+// launch from reaching the backend with an empty tag.
+function launchPrereqError(get: () => AppStore): string | null {
+  const { settings } = get();
+  if (settings.engine_kind === "hipfire") {
+    if (!settings.hipfire_path) return "Set the hipfire executable path first.";
+    const tag = String((settings.hipfire_flags as FlagValues)?.tag ?? "");
+    if (!tag) return "Set a model tag to serve first (convert a GGUF, or type an existing tag).";
+    return null;
+  }
+  if (!settings.build_dir) return "Pick a llama.cpp build directory first.";
+  return null;
 }
 
 // Poll the backend until a freshly-(re)started server reports the model loaded,
@@ -54,28 +95,46 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
   server: STOPPED,
   startError: null,
   loadedArgs: null,
+  loadedEngine: null,
 
   setServer: (s) => set({ server: s }),
 
   startServer: async (args) => {
-    const buildDir = get().settings.build_dir;
-    if (!buildDir) {
+    const { settings } = get();
+    const isHipfire = settings.engine_kind === "hipfire";
+    // Guard on the active engine's launch prerequisites BEFORE touching a
+    // running server, so a doomed (re)start can never leave the user with
+    // nothing. This also stops a hipfire launch with an empty tag reaching
+    // the backend as `serve ""`.
+    const prereqError = launchPrereqError(get);
+    if (prereqError) {
       // Surface via a toast too — Load buttons on Models/Catalog/the overlay
-      // don't render startError (only Configure's banner does), so without this
-      // a first-run user with no build dir clicks Load and sees nothing.
-      const msg = "Pick a llama.cpp build directory first.";
-      log.notify("warn", "server", msg);
-      set({ startError: msg });
+      // don't render startError (only Configure's banner does), so without
+      // this a first-run user with no prereqs set clicks Load and sees nothing.
+      log.notify("warn", "server", prereqError);
+      set({ startError: prereqError });
       return;
     }
+    const buildDir = settings.build_dir ?? "";
+    const exePath = isHipfire ? settings.hipfire_path : null;
     set({ startError: null });
-    log.info("server", `starting llama-server`, { build_dir: buildDir, arg_count: args.length });
+    log.info("server", `starting ${isHipfire ? "hipfire" : "llama-server"}`, {
+      build_dir: buildDir,
+      exe: exePath ?? undefined,
+      arg_count: args.length,
+    });
     log.debug("server", `argv: ${args.join(" ")}`);
     try {
-      const info = await api.startServer(buildDir, args);
-      // Record the launch argv so a later config change can be detected and the
-      // model reloaded with the latest flags instead of these.
-      set({ server: { running: true, ready: false, info }, loadedArgs: args });
+      const info = await api.startServer(buildDir, args, exePath, null);
+      // Record the launch argv AND the engine we launched as, so a later
+      // config change can be detected (reload with the latest flags) and
+      // feature gates can key off what's actually running rather than the
+      // current toggle.
+      set({
+        server: { running: true, ready: false, info },
+        loadedArgs: args,
+        loadedEngine: settings.engine_kind,
+      });
       log.info("server", `started: pid=${info.pid} port=${info.port} (loading model…)`, {
         binary: info.binary,
       });
@@ -83,7 +142,7 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
       const msg = e instanceof Error ? e.message : String(e);
       // notify() logs at error level AND raises a user-visible toast, so a Load
       // from a surface that doesn't show startError still reports the failure.
-      log.notify("error", "server", `Failed to start llama-server: ${msg}`);
+      log.notify("error", "server", `Failed to start ${isHipfire ? "hipfire" : "llama-server"}: ${msg}`);
       set({ startError: msg });
     }
   },
@@ -96,7 +155,7 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     } catch (e: unknown) {
       log.error("server", "stop failed", { error: String(e) });
     } finally {
-      set({ server: STOPPED, loadedArgs: null });
+      set({ server: STOPPED, loadedArgs: null, loadedEngine: null });
     }
   },
 
@@ -105,8 +164,17 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
   // already stopped this just starts it. Builds the same argv the Configure
   // tab does, so callers (the model picker, Models tab) don't have to.
   reloadServer: async () => {
-    const { flags } = get();
-    const args = buildArgs(flags);
+    // Validate the active engine's prerequisites BEFORE stopping a healthy
+    // server: an engine toggle in Configure changes activeArgs without
+    // restarting, so a naive reload would tear down the running server and
+    // only then discover the new engine can't launch. Refuse up front instead.
+    const prereqError = launchPrereqError(get);
+    if (prereqError) {
+      log.warn("server", `reload blocked: ${prereqError}`);
+      set({ startError: prereqError });
+      return;
+    }
+    const args = activeArgs(get);
     if (get().server.running) {
       await get().stopServer();
     }
@@ -114,7 +182,7 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
   },
 
   // Reconcile the running server with the current Configure flags before a
-  // chat: if the model was loaded with a different config, restart llama-server
+  // chat: if the model was loaded with a different config, restart the server
   // with the latest flags and wait for it to come back, so the turn never runs
   // on the previously-loaded config. Returns true when the server is already
   // current or the reload succeeded; false only when a reload was needed but
@@ -122,10 +190,22 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
   // isn't running, or when we didn't launch it (loaded config unknown — we
   // can't prove it's stale, so we don't force a costly model reload).
   reloadIfStale: async () => {
-    const { server, flags, loadedArgs } = get();
+    const { server, loadedArgs } = get();
     if (!server.running || !loadedArgs) return true;
-    const args = buildArgs(flags);
+    const args = activeArgs(get);
     if (argsEqual(args, loadedArgs)) return true;
+    // Stale — but validate the active engine's prerequisites BEFORE tearing
+    // down the healthy server. After an engine toggle, activeArgs is the NEW
+    // engine's argv while loadedArgs is the OLD engine's, so this ALWAYS looks
+    // stale; if the new engine can't launch (no hipfire path / no tag) a naive
+    // reload would stop a working server and then fail the restart. Keep the
+    // old server up, surface the hint, and let the chat report a clear error.
+    const prereqError = launchPrereqError(get);
+    if (prereqError) {
+      log.warn("server", `stale reload skipped: ${prereqError}`);
+      set({ startError: prereqError });
+      return false;
+    }
     log.info("server", "config changed since model load — reloading with latest flags before chat");
     await get().reloadServer();
     return waitForServerReady(get, 180_000);

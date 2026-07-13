@@ -34,4 +34,26 @@ describe("settings slice", () => {
     expect(useAppStore.getState().settings.models_recent).toEqual([]);
     expect(api.saveSettings).toHaveBeenCalledTimes(1);
   });
+
+  it("setEngineKind switches the engine and persists", () => {
+    useAppStore.getState().setEngineKind("hipfire");
+    expect(useAppStore.getState().settings.engine_kind).toBe("hipfire");
+    expect(api.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ engine_kind: "hipfire" }),
+    );
+  });
+
+  it("setHipfirePath sets the exe path and persists", () => {
+    useAppStore.getState().setHipfirePath("C:/hipfire/hipfire.exe");
+    expect(useAppStore.getState().settings.hipfire_path).toBe("C:/hipfire/hipfire.exe");
+    expect(api.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ hipfire_path: "C:/hipfire/hipfire.exe" }),
+    );
+  });
+
+  it("setHipfireFlag merges a single key into hipfire_flags without clobbering others", () => {
+    useAppStore.getState().setSettings(makeSettings({ hipfire_flags: { tag: "keep" } }));
+    useAppStore.getState().setHipfireFlag("port", 9090);
+    expect(useAppStore.getState().settings.hipfire_flags).toEqual({ tag: "keep", port: 9090 });
+  });
 });
