@@ -17,6 +17,9 @@ src-tauri/gen/schemas
 .claude/
 .codegraph/
 
+# hipfire kernel cache (written into CWD when running hipfire from the repo)
+.hipfire_kernels/
+
 # SonarQube scanner working artifacts
 .scannerwork/
 .sonar/

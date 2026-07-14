@@ -65,8 +65,9 @@ pub struct Settings {
     pub hipfire_path: String,
     /// hipfire runtime flag bag, parallel to `flags` but consumed by the
     /// frontend's `buildHipfireArgs`. A **separate** bag from `flags` — never
-    /// merged in. Keys: tag, host, port, kv_mode, idle_timeout, spec,
-    /// model_draft, draft_max, tp.
+    /// merged in. Keys: tag, host, port, kv_mode, idle_timeout, tp.
+    /// (Speculation is NOT a serve flag — it's config-driven; see
+    /// buildHipfireArgs.ts.)
     #[serde(default)]
     pub hipfire_flags: serde_json::Value,
 }

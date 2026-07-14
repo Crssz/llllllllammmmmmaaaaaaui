@@ -16,6 +16,20 @@ curl.exe -N -s -X POST http://127.0.0.1:11435/v1/chat/completions -H "Content-Ty
 
 ---
 
+## ✅ Live verification results (2026-07-14, R9700 gfx1201, HIP 7.13, hipfire on qwen3.6:27b)
+
+Ran against a live `hipfire serve`. Outcome:
+
+- **Environment OK:** GPU gfx1201, 34.2 GB VRAM, precompiled kernels present (`gfx1201: 48 blobs`), WMMA yes, no hipcc needed at runtime. `qwen3.6:27b` + its DFlash draft loaded and served.
+- **BUG → fix 1:** spec flags (`--spec`/`-md`/`--draft-max`) are **`run`-only, rejected by `serve`**; the daemon uses config keys (`speculation`/`dflash_mode`=auto). `buildHipfireArgs` was emitting them on serve → removed. DFlash auto-engages via config (verified `timings.dflash=true`).
+- **BUG → fix 2:** streamed responses **DO** include a final `usage` frame (`completion_tokens`) + native `timings` (`decode_tok_s`). The `allowEstimate` chunk-count path for hipfire was unnecessary → switched to exact usage.
+- **Confirmed correct as coded:** model id must be the tag (`"local"` → HTTP 404); `reasoning_content` is the field name (stream + non-stream); tools stay gated off (hipfire returns a raw `<tool_call>` text token, no structured `tool_calls`); `/health` = 200 when ready; `--kv-mode` values `auto|q8|asym4|asym3|asym2|fwht4|fwht3|fwht2|turbo`; quantize flags (`--format/--install/--register`) as assumed.
+- **Still unverified (left as TODO):** image/audio media (no VL model local — kept gated off, text-only); exact `/health` behavior *during* model load (masked by serve's ready-wait; low risk — requests queue until loaded); `enable_thinking:false` in the request was **ignored** (thinking is config-driven `thinking on/off`, not request-controllable — we send no toggle, so consistent).
+
+The two fixes are being applied on `hipfire-integration`. Remaining boxes below are the still-open / re-runnable items.
+
+---
+
 ## 1. Startup: port + health
 
 - [ ] **Port is read correctly.** Assumption: `parse_port` picks up hipfire's positional
