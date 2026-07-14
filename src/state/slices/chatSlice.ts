@@ -224,14 +224,15 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     const toolCallBuf: Map<number, ToolCall> = new Map();
 
     const useTemplateKwargs = flags.jinja === true;
-    // hipfire's supported models are text-only (per the integration plan's
-    // Phase 0 — TODO(hipfire-verify): confirm image_url/input_audio support
-    // once a live server is available) — its multimodal content parts aren't
-    // accepted, so image/audio attachments are dropped and the message travels
-    // as plain text (empty text → the MEDIA_UNAVAILABLE placeholder). The
-    // one-time "text-only" warning is raised in streamReply (once per send,
-    // for the new turn only) — NOT here, since runChatRound re-runs per tool
-    // round and would otherwise toast on every round.
+    // TODO(hipfire-verify): image_url/input_audio media support is still an
+    // open question — untested, text model only (no VL/multimodal hipfire
+    // model or live restart was available to confirm either way). Until
+    // verified live, media attachments are dropped for hipfire and the
+    // message travels as plain text (empty text → the MEDIA_UNAVAILABLE
+    // placeholder). The one-time "text-only" warning is raised in
+    // streamReply (once per send, for the new turn only) — NOT here, since
+    // runChatRound re-runs per tool round and would otherwise toast on every
+    // round.
     const allowMedia = engine !== "hipfire";
     const hasMedia = messages.some((m) => m.role === "user" && (m.audio?.path || m.image?.path));
     // Resolve image/audio attachments to base64 just before sending. Done in
@@ -310,9 +311,9 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     //      `enable_thinking` (supports_thinking === false) — the field would
     //      be a no-op at best and risky at worst. Unknown (null modelInfo) →
     //      keep sending, matching prior behaviour.
-    // shapeChatBody rewrites all of this for hipfire (model:<tag>, no
-    // stream_options, no chat_template*, no chat_template_kwargs — see its
-    // TODO(hipfire-verify) notes).
+    // shapeChatBody rewrites all of this for hipfire (model:<tag>,
+    // stream_options for the CONFIRMED usage frame, no chat_template*, no
+    // chat_template_kwargs — see its doc comment).
     const modelLacksThinking = modelInfo?.supports_thinking === false;
     const body = shapeChatBody(engine, {
       messages: apiMessages,
@@ -368,10 +369,10 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
               touched = true;
               visibleChunk = true;
             }
-            // TODO(hipfire-verify): confirmed shape assumption — hipfire's
-            // reasoning is documented as arriving via `delta.reasoning_content`,
-            // same field name as llama-server. This parsing is already
-            // engine-agnostic, so no branch is needed unless that's wrong.
+            // CONFIRMED (live verification): hipfire's reasoning arrives via
+            // `delta.reasoning_content`, the same field name as llama-server,
+            // in both streamed and non-streamed responses. This parsing is
+            // already engine-agnostic, so no branch is needed.
             if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
               streamedReasoning += delta.reasoning_content;
               touched = true;
@@ -440,18 +441,20 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     }
 
     const elapsed = (performance.now() - t0) / 1000;
-    // llama reports exact usage; hipfire may send none (Phase 0, unverified),
-    // so ONLY hipfire falls back to a chunk-count estimate timed first→last.
-    // llama without usage (abort / mid-stream error) reports null rather than
-    // fabricating a count from chunks. finalizeTokenStats never yields
-    // NaN/Infinity.
+    // CONFIRMED (live verification): hipfire emits a real closing usage frame
+    // just like llama — a streamed completion's final SSE frame before
+    // `[DONE]` carried `"usage":{"completion_tokens":160,...}`. So neither
+    // engine estimates from chunk counts anymore; allowEstimate is false for
+    // both, and a stream that ends without a usage frame (abort / mid-stream
+    // error, either engine) reports null rather than a fabricated count.
+    // finalizeTokenStats never yields NaN/Infinity.
     const { tokens, tps } = finalizeTokenStats({
       usageTokens,
       contentChunks,
       firstContentAt,
       lastContentAt,
       totalElapsedSec: elapsed,
-      allowEstimate: engine === "hipfire",
+      allowEstimate: false,
     });
     const split = splitThink(rawContent);
     const reasoning =
@@ -498,10 +501,11 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
 
     // Warn ONCE per send, and only when the NEW user turn (the message being
     // sent/resent right now — always the last of baseMessages in both callers)
-    // carries media this engine can't take. hipfire is text-only (Phase 0 —
-    // TODO(hipfire-verify) — its image/audio parts are dropped in
-    // runChatRound (the turn still travels as the MEDIA_UNAVAILABLE
-    // placeholder). Historical attachments from earlier turns are replaced
+    // carries media this engine can't take. hipfire media support is still an
+    // open TODO(hipfire-verify) — untested, text model only — so its
+    // image/audio parts are dropped in runChatRound (the turn still travels
+    // as the MEDIA_UNAVAILABLE placeholder). Historical attachments from
+    // earlier turns are replaced
     // silently — no toast — so we inspect only this turn, and do it here
     // rather than in runChatRound (which re-runs per tool round). Gated on
     // activeEngine (the RUNNING server), not the toggle, so a live

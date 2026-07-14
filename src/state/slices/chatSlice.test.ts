@@ -1130,6 +1130,35 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
       expect.stringContaining("text-only"),
     );
   });
+
+  // Regression: hipfire DOES emit a real closing usage frame (confirmed live
+  // — see chatHelpers.ts finalizeTokenStats), so a hipfire round must report
+  // the exact `usage.completion_tokens`, never the SSE chunk count.
+  it("(c) hipfire chat round reports the exact usage.completion_tokens, not a chunk-count estimate", async () => {
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore
+      .getState()
+      .setSettings(makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }));
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "Hel" } }] })}\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "lo " } }] })}\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "there" } }] })}\n`,
+        // Only 3 content chunks streamed — a chunk-count estimate would say
+        // 3. The real usage frame says 160; that's what must win.
+        `data: ${JSON.stringify({ usage: { prompt_tokens: 24, completion_tokens: 160 } })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+    await useAppStore.getState().sendChat("hi");
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.stream_options).toEqual({ include_usage: true });
+    const last = useAppStore.getState().chats[0].messages.at(-1)!;
+    expect(last.content).toBe("Hello there");
+    expect(last.tokens).toBe(160);
+    expect(last.tokens).not.toBe(3);
+  });
 });
 
 describe("chat slice — request body + edge SSE", () => {

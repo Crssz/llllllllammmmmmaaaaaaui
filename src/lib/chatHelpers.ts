@@ -142,35 +142,44 @@ export type ChatBodyParts = {
  * `stream_options` for the usage frame, and the jinja `chat_template_kwargs` /
  * `chat_template` fields when the caller says so.
  *
- * hipfire is documented as OpenAI-compatible (Phase 0 of the integration
- * plan). Assumptions encoded here, each unverified against a live server:
- *   - `model` is the configured hipfire tag, not "local" (a hipfire server can
- *     have exactly one model loaded via `serve <tag>`, but sending the tag it
- *     was launched with is the documented-safe choice).
- *   - it may emit no final `usage` frame, so `stream_options` is omitted (see
- *     `finalizeTokenStats`'s chunk-count fallback, gated to hipfire only).
+ * hipfire is OpenAI-compatible. Facts below are from LIVE verification against
+ * a running hipfire server (real HTTP captures), not documentation guesses:
+ *   - `model` MUST be the configured hipfire tag, not "local" — CONFIRMED:
+ *     sending "local" returns HTTP 404 "model not found" (hipfire serves
+ *     exactly one model per `serve <tag>` and requires that tag as `model`).
+ *   - hipfire DOES emit a real closing `usage` frame, in both streaming and
+ *     non-streaming responses — CONFIRMED: the final SSE frame before
+ *     `data: [DONE]` carried `"usage":{"prompt_tokens":24,
+ *     "completion_tokens":160,...}` alongside a native
+ *     `"timings":{"decode_tok_s":90.7,...}`. So `stream_options` is requested
+ *     here the same as for llama (see `finalizeTokenStats`, which no longer
+ *     needs to estimate from chunk counts for hipfire).
  *   - llama's `chat_template*` fields are llama-server-specific (jinja
  *     template overrides) and are not sent to hipfire.
- *   - tool-call streaming and image/audio content parts are unverified for
- *     hipfire, so tools are gated off here too (chatSlice separately drops
- *     media attachments for hipfire before this is called).
+ *   - tool-call streaming is CONFIRMED unsupported: hipfire has no structured
+ *     tool-calling — a `tools` request returns a raw `<tool_call>` TEXT token
+ *     in the content stream, not an OpenAI `delta.tool_calls` object. Tools
+ *     stay gated off for hipfire; this is settled behavior, not an open
+ *     question. image_url/input_audio content parts remain untested (no VL
+ *     model / no live restart available) — still gated off, text model only
+ *     (chatSlice drops media attachments for hipfire before this is called).
  */
 export function shapeChatBody(engine: EngineKind, parts: ChatBodyParts): Record<string, unknown> {
   const { messages, tools, attachTemplateKwargs, chatTemplate, hipfireTag } = parts;
 
   if (engine === "hipfire") {
-    // TODO(hipfire-verify): confirm hipfire accepts `tools` in the request
-    // body and streams `delta.tool_calls` the same shape as llama-server; gate
-    // tools off (as here) until confirmed live rather than risk a 400/silent
-    // drop that poisons a tool-using chat.
-    // TODO(hipfire-verify): confirm whether hipfire exposes a request-side
-    // reasoning toggle at all (llama's chat_template_kwargs.enable_thinking is
-    // a jinja-template mechanism specific to llama-server) — until confirmed,
-    // don't send it; supported hipfire models are documented as
-    // hybrid-thinking, so reasoning may simply always be on.
+    // CONFIRMED (live verification): hipfire has no structured tool-calling —
+    // a `tools` request returns a raw `<tool_call>` TEXT token, not an
+    // OpenAI `tool_calls` delta object. Tools stay gated off for hipfire.
+    // TODO(hipfire-verify): still unconfirmed whether hipfire exposes a
+    // request-side reasoning toggle at all (llama's chat_template_kwargs.
+    // enable_thinking is a jinja-template mechanism specific to llama-server)
+    // — until confirmed, don't send it; supported hipfire models are
+    // documented as hybrid-thinking, so reasoning may simply always be on.
     return {
       model: hipfireTag,
       stream: true,
+      stream_options: { include_usage: true },
       messages,
     };
   }
@@ -195,25 +204,25 @@ export function shapeChatBody(engine: EngineKind, parts: ChatBodyParts): Record<
 /**
  * Finalize the token count + tokens-per-second for a completed streaming round.
  *
- * llama-server reports exact `completion_tokens` in the SSE usage frame (we
- * request it via `stream_options.include_usage`), timed over the whole request.
- * When a usage frame is present it always wins.
+ * Both llama-server and hipfire report exact `completion_tokens` in the SSE
+ * usage frame (requested via `stream_options.include_usage`), timed over the
+ * whole request. CONFIRMED live for hipfire too: the final SSE frame before
+ * `data: [DONE]` carried `"usage":{"completion_tokens":160,...}` alongside a
+ * native `"timings":{"decode_tok_s":90.7,...}` — hipfire gives exact counts
+ * like llama, not an estimate. When a usage frame is present it always wins,
+ * for either engine.
  *
- * Without a usage frame the behaviour is engine-gated via `allowEstimate`:
- *   - hipfire (allowEstimate = true) is documented as possibly emitting no
- *     usage frame (Phase 0), so we fall back to counting the SSE chunks that
- *     carried visible output (non-empty `delta.content` /
- *     `delta.reasoning_content`) and time them from the first such chunk to
- *     the last — a rough but non-garbage tps. Zero-output streams yield
- *     null/null so the UI never renders NaN or Infinity.
- *   - llama (allowEstimate = false) only lacks usage on a user abort or a
- *     mid-stream error. Chunks are NOT tokens (llama batches/splits them), so
- *     estimating would fabricate an exact-looking count — instead we return
- *     null/null and the UI shows the token count as unknown, as before.
+ * `allowEstimate` gates a chunk-count fallback for when a usage frame is
+ * missing entirely. It is now kept as a defensive fallback only, not a
+ * documented hipfire behavior — no call site currently passes true, since
+ * both engines are confirmed to send usage on a normal completed round. A
+ * missing usage frame (a user abort or a mid-stream error, on either engine)
+ * reports null/null instead of fabricating a count from chunks, which are
+ * NOT tokens (both engines batch/split them across SSE frames).
  */
 export function finalizeTokenStats(input: {
-  /** `completion_tokens` from the usage frame, or null when the engine
-   *  (hipfire) never sent one — or llama aborted/errored before emitting it. */
+  /** `completion_tokens` from the usage frame, or null when it wasn't sent
+   *  (e.g. aborted/errored before the closing frame arrived). */
   usageTokens: number | null;
   /** How many SSE chunks carried non-empty content/reasoning_content. */
   contentChunks: number;
@@ -222,9 +231,10 @@ export function finalizeTokenStats(input: {
   lastContentAt: number | null;
   /** Whole-request wall clock in seconds (used for the usage-frame path). */
   totalElapsedSec: number;
-  /** Only engines that may never emit a usage frame (hipfire) may estimate
-   *  tokens from the visible-chunk count. llama passes false so an
-   *  aborted/errored stream reports null rather than a fabricated count. */
+  /** Defensive fallback switch only — CONFIRMED live that both llama and
+   *  hipfire send a real usage frame on a normal completed round, so no
+   *  current call site passes true. An aborted/errored stream (either
+   *  engine) reports null rather than a fabricated count. */
   allowEstimate: boolean;
 }): { tokens: number | null; tps: number | null } {
   const {

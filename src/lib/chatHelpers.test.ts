@@ -212,7 +212,7 @@ describe("shapeChatBody", () => {
     expect(withoutTools.tools).toBeUndefined();
   });
 
-  it("hipfire: sends model as the configured tag, no stream_options, no tools, no chat_template*", () => {
+  it("hipfire: sends model as the configured tag, stream_options for usage, no tools, no chat_template*", () => {
     const body = shapeChatBody(
       "hipfire",
       baseParts({
@@ -224,7 +224,9 @@ describe("shapeChatBody", () => {
     );
     expect(body.model).toBe("qwen3.6:27b");
     expect(body.stream).toBe(true);
-    expect(body.stream_options).toBeUndefined();
+    // CONFIRMED live: hipfire emits a real closing usage frame, so it's
+    // requested the same as llama (see finalizeTokenStats).
+    expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.tools).toBeUndefined();
     expect(body.chat_template).toBeUndefined();
     expect(body.chat_template_kwargs).toBeUndefined();
@@ -264,7 +266,12 @@ describe("finalizeTokenStats", () => {
     expect(r.tps).toBeNull();
   });
 
-  it("llama (allowEstimate=false) without usage reports null/null rather than fabricating a count", () => {
+  // Both llama and hipfire pass allowEstimate=false at their call sites (see
+  // chatSlice.ts) — CONFIRMED live that hipfire, like llama, always sends a
+  // real usage frame on a normal completed round. A missing usage frame
+  // (abort / mid-stream error, either engine) must report null/null rather
+  // than fabricating a count from chunks.
+  it("without usage and allowEstimate=false reports null/null rather than fabricating a count", () => {
     const r = finalizeTokenStats({
       usageTokens: null,
       contentChunks: 12,
@@ -277,7 +284,10 @@ describe("finalizeTokenStats", () => {
     expect(r.tps).toBeNull();
   });
 
-  it("hipfire (allowEstimate=true) without usage falls back to a chunk-count estimate", () => {
+  // The allowEstimate=true path below is kept as a defensive fallback in the
+  // function itself — no current call site passes true — exercised here so
+  // the mechanism doesn't silently rot if it's ever needed again.
+  it("defensive fallback: allowEstimate=true without usage falls back to a chunk-count estimate", () => {
     const r = finalizeTokenStats({
       usageTokens: null,
       contentChunks: 20,
@@ -291,7 +301,7 @@ describe("finalizeTokenStats", () => {
     expect(r.tps).toBe(20);
   });
 
-  it("hipfire estimate: zero-output stream yields null/null, never NaN/Infinity", () => {
+  it("defensive fallback estimate: zero-output stream yields null/null, never NaN/Infinity", () => {
     const r = finalizeTokenStats({
       usageTokens: null,
       contentChunks: 0,
@@ -304,7 +314,7 @@ describe("finalizeTokenStats", () => {
     expect(r.tps).toBeNull();
   });
 
-  it("hipfire estimate: identical first/last timestamps yields a token count but null tps", () => {
+  it("defensive fallback estimate: identical first/last timestamps yields a token count but null tps", () => {
     const r = finalizeTokenStats({
       usageTokens: null,
       contentChunks: 5,
