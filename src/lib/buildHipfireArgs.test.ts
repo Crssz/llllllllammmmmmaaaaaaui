@@ -29,13 +29,10 @@ describe("buildHipfireArgs", () => {
     expect(args[2]).toBe("127.0.0.1:8080");
   });
 
-  it("omits --kv-mode, --idle-timeout, --spec, -md, --draft-max, --tp when unset", () => {
+  it("omits --kv-mode, --idle-timeout, --tp when unset", () => {
     const args = buildHipfireArgs({ tag: "t" });
     expect(args).not.toContain("--kv-mode");
     expect(args).not.toContain("--idle-timeout");
-    expect(args).not.toContain("--spec");
-    expect(args).not.toContain("-md");
-    expect(args).not.toContain("--draft-max");
     expect(args).not.toContain("--tp");
   });
 
@@ -45,23 +42,28 @@ describe("buildHipfireArgs", () => {
     expect(args[args.indexOf("--idle-timeout") + 1]).toBe("300");
   });
 
-  it("emits bare --spec (a toggle, not a valued flag) when spec is truthy", () => {
-    const args = buildHipfireArgs({ tag: "t", spec: true });
-    const i = args.indexOf("--spec");
-    expect(i).toBeGreaterThanOrEqual(0);
-    // The next token is not a value for --spec — it's absent entirely here.
-    expect(args[i + 1]).toBeUndefined();
-  });
-
-  it("emits -md and --draft-max when a draft model + max are set", () => {
-    const args = buildHipfireArgs({ tag: "t", model_draft: "qwen3.6:27b-draft", draft_max: 16 });
-    expect(args[args.indexOf("-md") + 1]).toBe("qwen3.6:27b-draft");
-    expect(args[args.indexOf("--draft-max") + 1]).toBe("16");
-  });
-
   it("emits --tp when set", () => {
     const args = buildHipfireArgs({ tag: "t", tp: 2 });
     expect(args[args.indexOf("--tp") + 1]).toBe("2");
+  });
+
+  // Regression: --spec/-md/--draft-max are `hipfire run`-only flags — LIVE
+  // verification confirmed `hipfire serve --help` doesn't accept them and the
+  // daemon fails to start if they're passed. buildHipfireArgs must never emit
+  // them on the serve argv, even when those legacy-shaped values are present
+  // in the flag bag (e.g. stale settings persisted before this fix).
+  it("never emits --spec, -md, or --draft-max on the serve argv, even when those values are set", () => {
+    const args = buildHipfireArgs({
+      tag: "t",
+      spec: true,
+      model_draft: "qwen3.6:27b-draft",
+      draft_max: 16,
+    });
+    expect(args).not.toContain("--spec");
+    expect(args).not.toContain("-md");
+    expect(args).not.toContain("--draft-max");
+    expect(args).not.toContain("--model-draft");
+    expect(args).not.toContain("--draft");
   });
 
   it("does not require a model path — hipfire serves a pre-registered tag, not a raw gguf", () => {

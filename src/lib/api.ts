@@ -312,8 +312,10 @@ export type Settings = {
    *  engine_kind === "hipfire". Empty when unset. */
   hipfire_path: string;
   /** hipfire runtime flag bag (keys: tag, host, port, kv_mode, idle_timeout,
-   *  spec, model_draft, draft_max, tp), parallel to `flags` but consumed by
-   *  buildHipfireArgs. */
+   *  tp), parallel to `flags` but consumed by buildHipfireArgs. Speculative-
+   *  decoding keys (spec/model_draft/draft_max) were removed — confirmed live
+   *  that those are `hipfire run`-only flags that make `serve` fail to start;
+   *  speculation is config-driven (`hipfire config set speculation|...`). */
   hipfire_flags: Record<string, unknown>;
 };
 

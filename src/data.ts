@@ -748,15 +748,27 @@ export const HIPFIRE_FLAG_GROUPS: FlagGroup[] = [
     defaultOpen: true,
     flags: [
       {
-        // TODO(hipfire-verify): confirm the accepted --kv-mode values against
-        // a live `hipfire serve --help`.
+        // VERIFIED (live `hipfire config list`): accepted --kv-mode values
+        // are auto|q8|asym4|asym3|asym2|fwht4|fwht3|fwht2|turbo. (TODO
+        // resolved — this replaces the earlier unverified f16/q8/q4 guess.)
         key: "kv_mode",
         label: "KV cache mode",
         desc: "KV cache quantization mode. Empty/unset uses hipfire's default.",
         flag: "--kv-mode",
         type: "select",
         value: "",
-        options: ["", "f16", "q8", "q4"],
+        options: [
+          "",
+          "auto",
+          "q8",
+          "asym4",
+          "asym3",
+          "asym2",
+          "fwht4",
+          "fwht3",
+          "fwht2",
+          "turbo",
+        ],
       },
       {
         key: "tp",
@@ -768,40 +780,18 @@ export const HIPFIRE_FLAG_GROUPS: FlagGroup[] = [
       },
     ],
   },
-  {
-    id: "hipfire-spec",
-    label: "Speculative decoding",
-    icon: "Bolt",
-    defaultOpen: false,
-    flags: [
-      {
-        // TODO(hipfire-verify): confirm --spec is a bare toggle (not a valued
-        // flag like llama's --spec-type) against a live hipfire.
-        key: "spec",
-        label: "Enable speculative decoding",
-        desc: "Turns on speculative decoding using the draft tag below",
-        flag: "--spec",
-        type: "toggle",
-        value: false,
-      },
-      {
-        key: "model_draft",
-        label: "Draft tag",
-        desc: "hipfire tag of the draft model (short flag -md, unlike llama's --model-draft)",
-        flag: "-md",
-        type: "text",
-        value: "",
-      },
-      {
-        key: "draft_max",
-        label: "Max draft tokens",
-        desc: "Cap on speculated tokens per step",
-        flag: "--draft-max",
-        type: "text",
-        value: "",
-      },
-    ],
-  },
+  // A "Speculative decoding" flag group previously lived here (spec /
+  // model_draft / draft_max, emitted as --spec/-md/--draft-max). REMOVED:
+  // live verification (`hipfire serve --help`) confirmed those are
+  // `hipfire run`-only flags — `serve` rejects them and fails to start. The
+  // serve daemon controls speculation entirely through config keys instead
+  // (`hipfire config list`: speculation=auto, dflash_mode=auto, mtp_mode,
+  // ngram_mode, ...) and engages DFlash automatically when a draft model is
+  // present (confirmed live: a streamed completion returned
+  // timings:{...,"dflash":true} with no serve flags at all). Per-daemon
+  // speculation control, if ever wanted, must be done via
+  // `hipfire config set speculation|dflash_mode ...` BEFORE serving — a
+  // future enhancement, not a UI flag group here. See buildHipfireArgs.ts.
 ];
 
 // Flatten the HIPFIRE_FLAG_GROUPS defaults into a single flag-values record,

@@ -10,10 +10,9 @@ export type HipfireFlagValues = Record<string, string | number | boolean>;
 // <host>:<port>` — tag and host:port are POSITIONAL, not flags. `parse_port`
 // (server.rs) reads the port back out of that positional host:port token.
 //
-// TODO(hipfire-verify): --kv-mode, --idle-timeout, --spec/-md/--draft-max and
-// --tp are documented in the integration plan's flag inventory but their
-// exact value spellings/ranges are unconfirmed against a live hipfire —
-// verify against `hipfire serve --help` once available.
+// VERIFIED live against `hipfire serve --help`: serve accepts only
+// -d/--detach, --kv-mode, --idle-timeout, --no-prewarm, --tp. --kv-mode,
+// --idle-timeout, and --tp below are confirmed correct as serve flags.
 export function buildHipfireArgs(vals: HipfireFlagValues): string[] {
   const out: string[] = [];
   const truthy = (v: unknown) => v !== undefined && v !== null && v !== "";
@@ -26,9 +25,19 @@ export function buildHipfireArgs(vals: HipfireFlagValues): string[] {
   // Only-when-set knobs — hipfire's own defaults apply when omitted.
   if (truthy(vals.kv_mode)) out.push("--kv-mode", String(vals.kv_mode));
   if (truthy(vals.idle_timeout)) out.push("--idle-timeout", String(vals.idle_timeout));
-  if (vals.spec) out.push("--spec");
-  if (truthy(vals.model_draft)) out.push("-md", String(vals.model_draft));
-  if (truthy(vals.draft_max)) out.push("--draft-max", String(vals.draft_max));
   if (truthy(vals.tp)) out.push("--tp", String(vals.tp));
+
+  // VERIFIED: --spec, -md/--model-draft, and --draft-max/--draft are
+  // `hipfire run`-only flags. `hipfire serve --help` does not list them, and
+  // passing any of them to `serve` makes the daemon fail to start. The serve
+  // daemon configures speculative decoding through config keys instead
+  // (`hipfire config list` shows speculation=auto, dflash_mode=auto,
+  // mtp_mode, ngram_mode, ...) — with dflash_mode=auto and a draft model
+  // present, DFlash engages automatically (confirmed live: a streamed
+  // completion returned timings:{...,"dflash":true} with no serve flags at
+  // all). Per-daemon speculation control, if ever wanted, must be done via
+  // `hipfire config set speculation|dflash_mode ...` BEFORE serving — a
+  // future enhancement, not serve argv — so none of those flags are emitted
+  // here.
   return out;
 }
