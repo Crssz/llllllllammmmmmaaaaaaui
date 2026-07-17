@@ -12,12 +12,14 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { log } from "../lib/logger";
 
 // Standalone field shown only under the hipfire engine and rendered with the
-// same FlagRow as the flag groups: the hipfire.exe locator, wired to
-// settings.hipfire_path.
+// same FlagRow as the flag groups: the hipfire binary locator, wired to
+// settings.hipfire_path. Optional — when left empty, the backend resolves
+// the `hipfire` CLI on PATH (or the canonical ~/.hipfire/bin install) at
+// launch time, so this only needs setting to override that default.
 const HIPFIRE_BINARY_FIELD: FlagDef = {
   key: "hipfire_path",
-  label: "hipfire executable",
-  desc: "Full path to hipfire.exe — the source-built Vulkan/HIP server binary",
+  label: "hipfire executable (optional)",
+  desc: "Optional — defaults to the `hipfire` CLI on your PATH (~/.hipfire/bin). Set only to override.",
   flag: "hipfire.exe",
   type: "path",
   value: "",
@@ -400,7 +402,7 @@ export function ConfigureScreen({
     forgetModelConfig,
     setMmproj,
     unpinMmproj,
-    startServer,
+    reloadServer,
     stopServer,
     server,
     startError,
@@ -418,7 +420,7 @@ export function ConfigureScreen({
       forgetModelConfig: s.forgetModelConfig,
       setMmproj: s.setMmproj,
       unpinMmproj: s.unpinMmproj,
-      startServer: s.startServer,
+      reloadServer: s.reloadServer,
       stopServer: s.stopServer,
       server: s.server,
       startError: s.startError,
@@ -474,18 +476,19 @@ export function ConfigureScreen({
   // For the live command preview, render with the resolved binary path.
   const binaryDisplay = isHipfire ? "hipfire" : "llama-server";
 
-  // Start/Reload gating differs per engine: hipfire needs its exe path and a
-  // tag to serve; llama needs a build directory and a model.
-  const startDisabled =
-    busy || (isHipfire ? !settings.hipfire_path || !hipfireTag : !settings.build_dir || !modelPath);
+  // Start/Reload gating differs per engine: hipfire only needs a tag to serve
+  // — its binary is optional and auto-resolves at launch time (explicit
+  // hipfire_path override, else the `hipfire` CLI on PATH, else
+  // ~/.hipfire/bin); a binary that can't be found surfaces as a launch-time
+  // error instead of blocking the button. llama needs a build directory and
+  // a model.
+  const startDisabled = busy || (isHipfire ? !hipfireTag : !settings.build_dir || !modelPath);
   const startHint = isHipfire
-    ? !settings.hipfire_path
-      ? "Set the hipfire executable path first"
-      : !hipfireTag
-        ? "Set a model tag to serve first"
-        : server.running
-          ? "Restart hipfire with current flags"
-          : "Start hipfire"
+    ? !hipfireTag
+      ? "Set a model tag to serve first"
+      : server.running
+        ? "Restart hipfire with current flags"
+        : "Start hipfire"
     : !settings.build_dir
       ? "Pick a llama.cpp build directory first"
       : !modelPath
@@ -546,11 +549,15 @@ export function ConfigureScreen({
     if (picked) setHipfirePath(picked);
   };
 
+  // Delegate to the store's reloadServer() rather than a local stop-then-start:
+  // it validates the active engine's prerequisites (tag, and — for hipfire —
+  // that the binary actually resolves) BEFORE stopping a healthy server, so a
+  // doomed restart can never strand the user with nothing running. See
+  // serverSlice's launchPrereqError/resolveExePath.
   const reload = async () => {
     setBusy(true);
     try {
-      if (server.running) await stopServer();
-      await startServer(args);
+      await reloadServer();
     } finally {
       setBusy(false);
     }
@@ -828,11 +835,11 @@ export function ConfigureScreen({
                     <span>hipfire engine</span>
                     {settings.hipfire_path ? (
                       <span className="badge green" style={{ marginLeft: 6 }}>
-                        <span className="dot" /> set
+                        <span className="dot" /> override set
                       </span>
                     ) : (
                       <span className="badge ghost" style={{ marginLeft: 6 }}>
-                        not set
+                        auto (PATH)
                       </span>
                     )}
                   </div>

@@ -131,6 +131,94 @@ pub fn parse_port(args: &[String]) -> u16 {
     8080
 }
 
+/// Candidate filenames for the `hipfire` CLI shim, checked in order, per
+/// platform. On Windows the installed CLI is a `.cmd` shim (no `.exe` ships),
+/// but `.exe`/`.bat` are checked too in case a future/alternate install shape
+/// uses them.
+fn hipfire_candidate_names() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["hipfire.cmd", "hipfire.exe", "hipfire.bat"]
+    } else {
+        &["hipfire"]
+    }
+}
+
+/// Core of `resolve_hipfire_bin`, parameterized over the PATH/HOME values so
+/// tests can exercise the search/fallback branches deterministically without
+/// mutating real process env vars (flaky under parallel test execution) or
+/// depending on a real `hipfire` install being present on the dev machine.
+fn resolve_hipfire_bin_with_env(
+    explicit: &str,
+    path_var: Option<&str>,
+    home_var: Option<&str>,
+) -> Result<PathBuf, String> {
+    // (a) explicit user override wins, but only when it actually exists —
+    // a stale/typo'd path falls through to auto-resolution rather than
+    // hard-failing, so clearing a bad override still lets the app launch.
+    if !explicit.trim().is_empty() {
+        let p = PathBuf::from(explicit);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+
+    // (b) search PATH for the installed CLI shim.
+    if let Some(path_var) = path_var {
+        for dir in std::env::split_paths(path_var) {
+            for name in hipfire_candidate_names() {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    // (c) fall back to hipfire's own canonical install location, in case the
+    // installer didn't (or couldn't) put it on PATH.
+    if let Some(home) = home_var {
+        let fallback_name = if cfg!(windows) { "hipfire.cmd" } else { "hipfire" };
+        let fallback = PathBuf::from(home)
+            .join(".hipfire")
+            .join("bin")
+            .join(fallback_name);
+        if fallback.is_file() {
+            return Ok(fallback);
+        }
+    }
+
+    Err("hipfire not found on PATH — install it or set the binary path in Configure".to_string())
+}
+
+/// Resolve the hipfire binary to spawn (also used by `hipfire_convert` for
+/// `hipfire quantize`). Resolution order:
+///   (a) `explicit`, if non-empty and it names an existing file — user
+///       override always wins;
+///   (b) the `hipfire` shim found by searching `PATH` (a `.cmd` on Windows,
+///       since the installed CLI is a Bun script wrapped in a shim rather
+///       than a native exe);
+///   (c) hipfire's own canonical install dir (`~/.hipfire/bin/`);
+///   (d) an error naming both fixes (install hipfire, or set the path in
+///       Configure).
+pub fn resolve_hipfire_bin(explicit: &str) -> Result<PathBuf, String> {
+    let path_var = std::env::var("PATH").ok();
+    let home_var = if cfg!(windows) {
+        std::env::var("USERPROFILE").ok()
+    } else {
+        std::env::var("HOME").ok()
+    };
+    resolve_hipfire_bin_with_env(explicit, path_var.as_deref(), home_var.as_deref())
+}
+
+/// Tauri command wrapper around `resolve_hipfire_bin` — a separate Rust
+/// identifier because a command function can't share a name with the plain
+/// helper it wraps, but it's registered/invoked from the frontend under this
+/// name.
+#[tauri::command]
+pub fn resolve_hipfire_bin_cmd(explicit: String) -> Result<String, String> {
+    resolve_hipfire_bin(&explicit).map(|p| p.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub fn start_server(
     app: AppHandle,
@@ -482,5 +570,89 @@ mod tests {
         assert!(s.child.lock().unwrap().is_none());
         assert!(s.info.lock().unwrap().is_none());
         assert!(!s.ready.load(Ordering::SeqCst));
+    }
+
+    // ── resolve_hipfire_bin ──────────────────────────────────────────────
+
+    #[test]
+    fn resolve_hipfire_bin_returns_explicit_existing_path_as_is() {
+        // A real, existing file (this test binary's own PATH search never
+        // gets consulted since the explicit check short-circuits first) —
+        // any existing file works; use a temp file so the test doesn't
+        // depend on anything about the dev machine's layout.
+        let dir = std::env::temp_dir();
+        let file = dir.join("lm-st-test-hipfire-explicit.tmp");
+        std::fs::write(&file, b"stub").expect("write temp file");
+        let explicit = file.to_string_lossy().into_owned();
+
+        let resolved = resolve_hipfire_bin(&explicit).expect("explicit existing path resolves");
+        assert_eq!(resolved, file);
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn resolve_hipfire_bin_ignores_nonexistent_explicit_and_falls_through() {
+        // A bogus explicit path must not be returned verbatim — it should be
+        // ignored and fall through to the PATH/HOME search. With both
+        // scrubbed (None), that search comes up empty and yields the
+        // not-found Err rather than the invalid explicit path.
+        let bogus = std::env::temp_dir()
+            .join("lm-st-test-hipfire-does-not-exist.tmp")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!PathBuf::from(&bogus).exists());
+
+        let err = resolve_hipfire_bin_with_env(&bogus, None, None)
+            .expect_err("nonexistent explicit + empty PATH/HOME must error");
+        assert!(err.contains("hipfire not found on PATH"));
+    }
+
+    #[test]
+    fn resolve_hipfire_bin_errs_with_empty_explicit_and_scrubbed_path_home() {
+        let err = resolve_hipfire_bin_with_env("", None, None)
+            .expect_err("no explicit + no PATH/HOME must error");
+        assert_eq!(
+            err,
+            "hipfire not found on PATH — install it or set the binary path in Configure"
+        );
+    }
+
+    #[test]
+    fn resolve_hipfire_bin_finds_shim_on_synthetic_path() {
+        // Search PATH branch, exercised against a synthetic PATH (a temp dir
+        // holding a fake shim) rather than any real hipfire install, so this
+        // stays deterministic regardless of the host machine.
+        let dir = std::env::temp_dir().join("lm-st-test-hipfire-path-dir");
+        std::fs::create_dir_all(&dir).expect("mkdir temp path dir");
+        let shim_name = if cfg!(windows) { "hipfire.cmd" } else { "hipfire" };
+        let shim = dir.join(shim_name);
+        std::fs::write(&shim, b"stub").expect("write fake shim");
+
+        let path_var = dir.to_string_lossy().into_owned();
+        let resolved = resolve_hipfire_bin_with_env("", Some(&path_var), None)
+            .expect("synthetic PATH search resolves the shim");
+        assert_eq!(resolved, shim);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_hipfire_bin_falls_back_to_canonical_install_dir() {
+        // Canonical fallback branch: no explicit path, empty PATH, but a
+        // synthetic HOME with `~/.hipfire/bin/<shim>` present.
+        let home = std::env::temp_dir().join("lm-st-test-hipfire-home");
+        let bin_dir = home.join(".hipfire").join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("mkdir synthetic home bin dir");
+        let shim_name = if cfg!(windows) { "hipfire.cmd" } else { "hipfire" };
+        let shim = bin_dir.join(shim_name);
+        std::fs::write(&shim, b"stub").expect("write fake shim");
+
+        let home_var = home.to_string_lossy().into_owned();
+        let resolved = resolve_hipfire_bin_with_env("", None, Some(&home_var))
+            .expect("canonical fallback resolves the shim");
+        assert_eq!(resolved, shim);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

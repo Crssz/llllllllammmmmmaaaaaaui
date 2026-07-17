@@ -68,22 +68,46 @@ export function activeEngine(get: () => AppStore): EngineKind {
 
 // Return the startError hint if the active engine can't legally launch right
 // now, or null when its prerequisites are met. Mirrors Configure's start-button
-// gating: hipfire needs its exe path AND a tag to serve; llama needs only a
-// build directory (it has always launched without a model, so requiring one
-// here would regress the llama path). Reload paths consult this BEFORE
-// stopping a healthy server, so an engine toggle can't strand the user with a
-// dead server the new engine was never able to start. Also stops a hipfire
-// launch from reaching the backend with an empty tag.
-function launchPrereqError(get: () => AppStore): string | null {
+// gating: hipfire only needs a tag to serve — the binary itself is optional
+// and auto-resolves (explicit hipfire_path, else the `hipfire` CLI on PATH,
+// else ~/.hipfire/bin); a binary that can't be found surfaces as a launch-time
+// error instead of blocking here. llama needs only a build directory (it has
+// always launched without a model, so requiring one here would regress the
+// llama path). Reload paths consult this BEFORE stopping a healthy server, so
+// an engine toggle can't strand the user with a dead server the new engine was
+// never able to start. Also stops a hipfire launch from reaching the backend
+// with an empty tag.
+export function launchPrereqError(get: () => AppStore): string | null {
   const { settings } = get();
   if (settings.engine_kind === "hipfire") {
-    if (!settings.hipfire_path) return "Set the hipfire executable path first.";
     const tag = String((settings.hipfire_flags as FlagValues)?.tag ?? "");
     if (!tag) return "Set a model tag to serve first (convert a GGUF, or type an existing tag).";
     return null;
   }
   if (!settings.build_dir) return "Pick a llama.cpp build directory first.";
   return null;
+}
+
+// Resolve the binary to spawn for the active engine. llama-server resolves
+// its own binary under build_dir on the backend, so this only does work for
+// hipfire: `settings.hipfire_path` wins when it names a real file, otherwise
+// the backend searches PATH for the installed `hipfire` CLI shim and falls
+// back to the canonical `~/.hipfire/bin` install dir. Returns `{ exePath }`
+// on success (null for llama) or `{ error }` when hipfire and no binary can
+// be found anywhere — the caller is responsible for surfacing that error
+// and bailing out BEFORE touching a running server (see the prereq-before-
+// teardown pattern in reloadServer/reloadIfStale).
+async function resolveExePath(
+  get: () => AppStore,
+): Promise<{ exePath: string | null } | { error: string }> {
+  const { settings } = get();
+  if (settings.engine_kind !== "hipfire") return { exePath: null };
+  try {
+    const exePath = await api.resolveHipfireBin(settings.hipfire_path ?? "");
+    return { exePath };
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // Poll the backend until a freshly-(re)started server reports the model loaded,
@@ -134,8 +158,17 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
       set({ startError: prereqError });
       return;
     }
+    // Resolve the binary to spawn (hipfire only — llama resolves its own
+    // under build_dir on the backend). A resolution failure aborts here,
+    // before anything is spawned, so no running server is ever touched.
+    const resolved = await resolveExePath(get);
+    if ("error" in resolved) {
+      log.notify("error", "server", `Failed to start hipfire: ${resolved.error}`);
+      set({ startError: resolved.error });
+      return;
+    }
     const buildDir = settings.build_dir ?? "";
-    const exePath = isHipfire ? settings.hipfire_path : null;
+    const exePath = resolved.exePath;
     set({ startError: null });
     log.info("server", `starting ${isHipfire ? "hipfire" : "llama-server"}`, {
       build_dir: buildDir,
@@ -193,6 +226,17 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
       set({ startError: prereqError });
       return;
     }
+    // Same protection for binary resolution: hipfire's binary is optional/
+    // auto-resolving, so it's not caught by launchPrereqError above — but a
+    // resolution failure must still refuse BEFORE stopServer(), or an engine
+    // toggle to hipfire with no binary installed would kill a healthy server
+    // and then fail to bring anything back up.
+    const resolved = await resolveExePath(get);
+    if ("error" in resolved) {
+      log.warn("server", `reload blocked: ${resolved.error}`);
+      set({ startError: resolved.error });
+      return;
+    }
     const args = activeArgs(get);
     if (get().server.running) {
       await get().stopServer();
@@ -216,9 +260,11 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     // Stale — but validate the active engine's prerequisites BEFORE tearing
     // down the healthy server. After an engine toggle, activeArgs is the NEW
     // engine's argv while loadedArgs is the OLD engine's, so this ALWAYS looks
-    // stale; if the new engine can't launch (no hipfire path / no tag) a naive
-    // reload would stop a working server and then fail the restart. Keep the
-    // old server up, surface the hint, and let the chat report a clear error.
+    // stale; if the new engine can't launch (no tag set) a naive reload would
+    // stop a working server and then fail the restart. Keep the old server
+    // up, surface the hint, and let the chat report a clear error. A hipfire
+    // binary that fails to resolve is caught the same way, one level down,
+    // by reloadServer's own check below (also before it stops anything).
     const prereqError = launchPrereqError(get);
     if (prereqError) {
       log.warn("server", `stale reload skipped: ${prereqError}`);

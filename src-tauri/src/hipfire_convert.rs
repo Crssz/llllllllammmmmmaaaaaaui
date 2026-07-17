@@ -98,13 +98,11 @@ pub fn hipfire_convert(
     if lock_or_poisoned(&state.child).is_some() {
         return Err("a conversion is already running".into());
     }
-    if hipfire_path.trim().is_empty() {
-        return Err("hipfire executable path is not set".into());
-    }
-    let exe = PathBuf::from(&hipfire_path);
-    if !exe.is_file() {
-        return Err(format!("hipfire executable not found at {hipfire_path}"));
-    }
+    // Same resolution as the server launch path: an explicit path wins when
+    // it exists, otherwise fall back to the `hipfire` CLI on PATH / the
+    // canonical `~/.hipfire/bin` install dir, so quantize also works without
+    // the user having browsed to an exe.
+    let exe = crate::server::resolve_hipfire_bin(&hipfire_path)?;
     if gguf_path.trim().is_empty() || !PathBuf::from(&gguf_path).is_file() {
         return Err(format!("GGUF file does not exist: {gguf_path}"));
     }
@@ -144,7 +142,8 @@ pub fn hipfire_convert(
     state.cancel.store(false, Ordering::SeqCst);
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     info!(
-        "hipfire_convert: gen {generation} exe={hipfire_path} args={}",
+        "hipfire_convert: gen {generation} exe={} args={}",
+        exe.display(),
         argv.join(" ")
     );
 

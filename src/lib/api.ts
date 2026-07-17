@@ -591,6 +591,12 @@ export const api = {
   stopServer: () => invoke<void>("stop_server"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
 
+  // Resolve the hipfire binary to spawn: `explicit` (settings.hipfire_path)
+  // wins when it names an existing file; otherwise the backend searches PATH
+  // for the installed `hipfire` CLI shim, then falls back to the canonical
+  // `~/.hipfire/bin` install dir. Rejects when none of those resolve.
+  resolveHipfireBin: (explicit: string) => invoke<string>("resolve_hipfire_bin_cmd", { explicit }),
+
   // Persist a mic recording (a complete WAV byte stream) to the app cache dir
   // and get back its path, ready to read back as base64 like a picked file.
   // `name` is an optional filename — Transcribe omits it (single overwriting

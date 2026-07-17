@@ -590,9 +590,11 @@ function Sidebar({
         ) : (
           <div className="rt-line" style={{ color: "var(--muted)", fontSize: 11 }}>
             {settings.engine_kind === "hipfire"
-              ? settings.hipfire_path
+              ? // The hipfire binary is optional (auto-resolves from PATH /
+                // ~/.hipfire/bin) — the tag is the real prerequisite now.
+                String((settings.hipfire_flags as FlagValues)?.tag ?? "")
                 ? "Press Start on Configure to launch"
-                : "Set the hipfire path on Configure"
+                : "Set a model tag on Configure"
               : settings.build_dir
                 ? "Press Start on Configure to launch"
                 : "Pick a build dir on Configure → Binary"}
@@ -673,11 +675,10 @@ function StatusBar() {
       </span>
       <span className="sep" />
       <span className="cmd-snippet">
-        {isHipfire && !binary ? (
-          <span style={{ color: "var(--muted)" }}>hipfire path not set</span>
-        ) : (
-          `$ ${cmdSnippet}`
-        )}
+        {/* The hipfire binary is optional — it auto-resolves from PATH /
+            ~/.hipfire/bin at launch time — so an unset hipfire_path is no
+            longer a blocking condition worth calling out here. */}
+        {`$ ${cmdSnippet}`}
       </span>
       <span className="right">{t}</span>
     </div>

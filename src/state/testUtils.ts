@@ -118,6 +118,14 @@ export function stubApi() {
     binary: "llama-server",
   });
   vi.spyOn(api, "stopServer").mockResolvedValue(undefined);
+  // Mirrors the real resolver's contract closely enough for slice tests: an
+  // explicit path is echoed back (as if it exists); an empty explicit value
+  // resolves to a synthetic "found on PATH" binary rather than rejecting, so
+  // existing hipfire tests that don't care about binary resolution keep
+  // passing. Tests that need the not-found path override this per-test.
+  vi.spyOn(api, "resolveHipfireBin").mockImplementation(async (explicit: string) =>
+    explicit && explicit.trim() ? explicit : "/opt/hipfire/bin/hipfire",
+  );
   vi.spyOn(api, "serverStatus").mockResolvedValue({
     running: false,
     ready: false,

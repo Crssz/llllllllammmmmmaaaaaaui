@@ -3,7 +3,7 @@ import { api } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
 import { log } from "../../lib/logger";
 import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
-import { activeEngine } from "./serverSlice";
+import { activeEngine, launchPrereqError } from "./serverSlice";
 
 describe("server slice", () => {
   beforeEach(() => {
@@ -178,12 +178,44 @@ describe("server slice — hipfire engine dispatch", () => {
     stubApi();
   });
 
-  it("startServer blocks with a hipfire-specific hint when the exe path is unset", async () => {
+  it("launchPrereqError: hipfire with hipfire_path empty but a tag set has no prereq error", () => {
+    // The binary is optional now — it auto-resolves at launch time — so an
+    // empty hipfire_path must not block on its own once a tag is set.
     useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }),
+      makeSettings({ engine_kind: "hipfire", hipfire_path: "", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    expect(launchPrereqError(useAppStore.getState)).toBeNull();
+  });
+
+  it("launchPrereqError: hipfire with no tag still errors, even with a path set", () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_path: "C:/hipfire/hipfire.exe" }),
+    );
+    expect(launchPrereqError(useAppStore.getState)).toMatch(/tag/i);
+  });
+
+  it("startServer proceeds when hipfire_path is empty but a tag is set (binary auto-resolves)", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_path: "", hipfire_flags: { tag: "qwen3.6:27b" } }),
     );
     await useAppStore.getState().startServer(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
-    expect(useAppStore.getState().startError).toMatch(/hipfire executable/i);
+    expect(api.resolveHipfireBin).toHaveBeenCalledWith("");
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    const [, , exePath] = vi.mocked(api.startServer).mock.calls[0];
+    expect(exePath).toBe("/opt/hipfire/bin/hipfire");
+    expect(useAppStore.getState().server.running).toBe(true);
+    expect(useAppStore.getState().startError).toBeNull();
+  });
+
+  it("startServer surfaces a clear error and never spawns when the hipfire binary can't be resolved", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_path: "", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    vi.spyOn(api, "resolveHipfireBin").mockRejectedValueOnce(
+      new Error("hipfire not found on PATH — install it or set the binary path in Configure"),
+    );
+    await useAppStore.getState().startServer(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
+    expect(useAppStore.getState().startError).toMatch(/hipfire not found/i);
     expect(api.startServer).not.toHaveBeenCalled();
   });
 
@@ -212,11 +244,11 @@ describe("server slice — hipfire engine dispatch", () => {
     expect(useAppStore.getState().loadedEngine).toBe("hipfire");
   });
 
-  it("reloadServer refuses to tear down a healthy llama server when hipfire can't launch", async () => {
+  it("reloadServer refuses to tear down a healthy llama server when hipfire has no tag configured", async () => {
     const s = useAppStore.getState();
     // A healthy llama-server is already running (e.g. adopted, or launched
     // before the toggle flipped).
-    s.setSettings(makeSettings({ build_dir: "/b", engine_kind: "hipfire" })); // no hipfire_path set
+    s.setSettings(makeSettings({ build_dir: "/b", engine_kind: "hipfire" })); // no tag configured
     s.setServer({
       running: true,
       ready: true,
@@ -228,7 +260,34 @@ describe("server slice — hipfire engine dispatch", () => {
     // Critical fix: the running server must NOT have been torn down.
     expect(api.stopServer).not.toHaveBeenCalled();
     expect(api.startServer).not.toHaveBeenCalled();
-    expect(useAppStore.getState().startError).toMatch(/hipfire executable/i);
+    expect(useAppStore.getState().startError).toMatch(/tag/i);
+    expect(useAppStore.getState().server.running).toBe(true);
+  });
+
+  it("reloadServer refuses to tear down a healthy server when the hipfire binary can't be resolved", async () => {
+    const s = useAppStore.getState();
+    // A tag IS configured (the only sync prereq now), but the binary itself
+    // can't be found anywhere — this is the new, async failure mode the
+    // binary auto-resolution introduces, and it must get the same
+    // before-teardown protection as the sync prereq checks above.
+    s.setSettings(
+      makeSettings({ build_dir: "/b", engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    s.setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "llama-server" },
+    });
+    vi.spyOn(api, "resolveHipfireBin").mockRejectedValueOnce(
+      new Error("hipfire not found on PATH — install it or set the binary path in Configure"),
+    );
+
+    await useAppStore.getState().reloadServer();
+
+    // The running server must NOT have been torn down.
+    expect(api.stopServer).not.toHaveBeenCalled();
+    expect(api.startServer).not.toHaveBeenCalled();
+    expect(useAppStore.getState().startError).toMatch(/hipfire not found/i);
     expect(useAppStore.getState().server.running).toBe(true);
   });
 
@@ -255,7 +314,46 @@ describe("server slice — hipfire engine dispatch", () => {
     // Only the initial llama launch happened — no doomed hipfire relaunch.
     expect(api.startServer).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().server.running).toBe(true);
-    expect(useAppStore.getState().startError).toMatch(/hipfire executable/i);
+    expect(useAppStore.getState().startError).toMatch(/tag/i);
+  });
+
+  it("reloadIfStale leaves a running server up when a tag is set but the hipfire binary can't be resolved", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/m.gguf");
+    await s.startServer(buildArgs(useAppStore.getState().flags));
+    expect(useAppStore.getState().server.running).toBe(true);
+
+    // Toggle to hipfire with a tag configured (passes the sync check) but the
+    // binary can't be resolved (fails the async one, one level down inside
+    // reloadServer) — the still-healthy llama server must survive either way.
+    useAppStore.getState().setSettings({
+      ...useAppStore.getState().settings,
+      engine_kind: "hipfire",
+      hipfire_flags: { tag: "qwen3.6:27b" },
+    });
+    vi.spyOn(api, "resolveHipfireBin").mockRejectedValueOnce(
+      new Error("hipfire not found on PATH — install it or set the binary path in Configure"),
+    );
+    // reloadServer never touches the running server, so the backend still
+    // truthfully reports the untouched old server as running/ready — mirror
+    // that here so waitForServerReady's poll reflects reality rather than the
+    // suite's default "stopped" stub.
+    vi.spyOn(api, "serverStatus").mockResolvedValue({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "llama-server" },
+    });
+
+    const ok = await useAppStore.getState().reloadIfStale();
+
+    // reloadServer bailed before stopping anything, so the old server is
+    // still running and ready — reloadIfStale reports it usable as-is.
+    expect(ok).toBe(true);
+    expect(api.stopServer).not.toHaveBeenCalled();
+    expect(api.startServer).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().server.running).toBe(true);
+    expect(useAppStore.getState().startError).toMatch(/hipfire not found/i);
   });
 
   it("activeArgs/reloadServer builds hipfire's serve argv when prerequisites are met", async () => {
