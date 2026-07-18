@@ -15,6 +15,13 @@ import { ChatMessage, ToolMessage, SystemMessage } from "../components/chat/Chat
 import { Composer } from "../components/chat/Composer";
 import { ChatDialogs } from "../components/chat/ChatDialogs";
 import { basename, estimateTokenUsage, precedingUserIdx } from "../lib/chatUi";
+import { activeEngine, activeModelLabel } from "../state/slices/serverSlice";
+
+// hipfire's context window isn't exposed via a launch flag the app controls
+// (unlike llama's --ctx-size / flags.ctx) — it's a fixed server-side default
+// (max_seq=32768, per the live-verification notes) until hipfire grows a
+// request- or config-visible override. Used only for the token-budget badge.
+const HIPFIRE_DEFAULT_MAX_SEQ = 32768;
 
 export function ChatScreen() {
   const chatMessages = useChatMessages();
@@ -54,6 +61,13 @@ export function ChatScreen() {
       cancelChat: s.cancelChat,
       server: s.server,
       flags: s.flags,
+      // Subscribed only so the shallow comparison re-renders this screen when
+      // activeEngine()/activeModelLabel() (below) would resolve differently —
+      // both read the full store fresh via useAppStore.getState(), so these
+      // three values aren't otherwise consumed directly.
+      loadedEngine: s.loadedEngine,
+      engineKind: s.settings.engine_kind,
+      hipfireTag: (s.settings.hipfire_flags as Record<string, unknown>)?.tag,
       newChat: s.newChat,
       deleteChat: s.deleteChat,
       togglePinChat: s.togglePinChat,
@@ -269,8 +283,19 @@ export function ChatScreen() {
     }
   };
 
-  const modelName = flags.model ? basename(flags.model as string) : "no model";
-  const canSend = server.ready && !!flags.model;
+  // activeEngine/activeModelLabel resolve off the RUNNING server (falling
+  // back to the Configure toggle only when nothing's up yet) — see
+  // serverSlice.ts. Both re-read the store fresh; the loadedEngine/
+  // engine_kind/hipfire_flags entries in the useShallow selector above exist
+  // solely to make this component re-render when they change.
+  const activeEng = activeEngine(useAppStore.getState);
+  const modelLabel = activeModelLabel(useAppStore.getState);
+  const isHipfireActive = activeEng === "hipfire";
+
+  // llama identifies itself by GGUF path (basenamed for display); hipfire has
+  // no --model flag — its identity IS the configured tag, shown as-is.
+  const modelName = modelLabel == null ? "no model" : isHipfireActive ? modelLabel : basename(modelLabel);
+  const canSend = server.ready && modelLabel != null;
 
   // Fold the status-dot meaning into the model badge's tooltip so the colored
   // dot has a legend: ready (green) / loading (yellow) / stopped (muted).
@@ -281,24 +306,36 @@ export function ChatScreen() {
       : "loading model…";
   const modelBadgeTitle = `${modelName} — ${modelStatusLabel}`;
 
-  // Reasoning toggle state. The toggle only does anything when --jinja is on
-  // AND the loaded model's chat template actually exposes `enable_thinking`
-  // (derived from the GGUF). `null` modelInfo (not yet inspected) is treated
-  // as "maybe" — we don't grey it out on uncertainty.
-  const thinkingKnownUnsupported = modelInfo?.supports_thinking === false;
+  // Reasoning toggle state. For llama, the toggle only does anything when
+  // --jinja is on AND the loaded model's chat template actually exposes
+  // `enable_thinking` (derived from the GGUF). `null` modelInfo (not yet
+  // inspected) is treated as "maybe" — we don't grey it out on uncertainty.
+  // hipfire has no request-side reasoning toggle at all (fact 4): thinking is
+  // config-driven server-side (`hipfire config set thinking`/`thinking_budget`),
+  // so it's always folded into "known unsupported" here — same as a llama
+  // template with no thinking mode, just a different reason in the tooltip.
+  const thinkingKnownUnsupported = isHipfireActive || modelInfo?.supports_thinking === false;
   const reasoningToggleActive = flags.jinja === true && !thinkingKnownUnsupported;
-  const reasoningTitle = !flags.jinja
-    ? "Enable --jinja in Configure → Templates for this toggle to take effect."
-    : thinkingKnownUnsupported
-      ? `This model's chat template has no thinking mode${
-          modelInfo?.thinking_style ? ` (style: ${modelInfo.thinking_style})` : ""
-        } — the toggle has no effect.`
-      : `Toggle 'enable_thinking' in chat_template_kwargs. Currently ${
-          reasoningEnabled ? "on" : "off"
-        }.${modelInfo?.thinking_style ? ` Template style: ${modelInfo.thinking_style}.` : ""}`;
+  const reasoningTitle = isHipfireActive
+    ? "hipfire controls thinking via its own server config (thinking / thinking_budget, set with `hipfire config set`) — it isn't adjustable per request."
+    : !flags.jinja
+      ? "Enable --jinja in Configure → Templates for this toggle to take effect."
+      : thinkingKnownUnsupported
+        ? `This model's chat template has no thinking mode${
+            modelInfo?.thinking_style ? ` (style: ${modelInfo.thinking_style})` : ""
+          } — the toggle has no effect.`
+        : `Toggle 'enable_thinking' in chat_template_kwargs. Currently ${
+            reasoningEnabled ? "on" : "off"
+          }.${modelInfo?.thinking_style ? ` Template style: ${modelInfo.thinking_style}.` : ""}`;
 
   // Page-head badge keeps showing the committed history token estimate.
-  const ctxMax = typeof flags.ctx === "number" && flags.ctx > 0 ? flags.ctx : 4096;
+  // hipfire has no --ctx-size-equivalent flag surfaced here (fact 6) — its
+  // context window is a server-side default (see HIPFIRE_DEFAULT_MAX_SEQ).
+  const ctxMax = isHipfireActive
+    ? HIPFIRE_DEFAULT_MAX_SEQ
+    : typeof flags.ctx === "number" && flags.ctx > 0
+      ? flags.ctx
+      : 4096;
   const tokenCount = estimateTokenUsage(chatMessages, "", ctxMax).historyTokens;
 
   return (
@@ -419,10 +456,19 @@ export function ChatScreen() {
                     : "Send your first message"}
               </div>
               <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+                {/* Keyed off activeEng (not just server.running/ready) so a
+                    running server is described as what it actually is — a
+                    hipfire toggle left on after a llama server dies still
+                    says "llama.cpp" here since activeEng falls back to the
+                    toggle only while nothing is running. */}
                 {!server.running
-                  ? "Open Configure, pick your llama.cpp build + a model, then press Start."
+                  ? isHipfireActive
+                    ? "Open Configure (or the model switcher), pick a hipfire model tag, then press Start."
+                    : "Open Configure, pick your llama.cpp build + a model, then press Start."
                   : !server.ready
-                    ? `Waiting for llama-server on :${server.info?.port} to finish loading the model.`
+                    ? isHipfireActive
+                      ? `Waiting for hipfire on :${server.info?.port} to finish loading the model.`
+                      : `Waiting for llama-server on :${server.info?.port} to finish loading the model.`
                     : `Talking to the model at 127.0.0.1:${server.info?.port} via /v1/chat/completions.`}
               </div>
             </div>

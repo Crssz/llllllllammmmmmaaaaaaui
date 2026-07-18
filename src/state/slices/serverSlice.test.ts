@@ -3,7 +3,7 @@ import { api } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
 import { log } from "../../lib/logger";
 import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
-import { activeEngine, launchPrereqError } from "./serverSlice";
+import { activeEngine, activeModelLabel, launchPrereqError } from "./serverSlice";
 
 describe("server slice", () => {
   beforeEach(() => {
@@ -419,5 +419,65 @@ describe("server slice — activeEngine selector (BUG 2 regression)", () => {
     // Not ready yet — a launch we DID start as hipfire is still "not the
     // active server" for shaping purposes until it reports ready.
     expect(activeEngine(useAppStore.getState)).toBe("llama");
+  });
+});
+
+describe("server slice — activeModelLabel selector", () => {
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+  });
+
+  it("llama with a model set returns the full path (caller basenames it)", () => {
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "llama" }));
+    useAppStore.getState().setFlag("model", "/models/owner/name/q4.gguf");
+    expect(activeModelLabel(useAppStore.getState)).toBe("/models/owner/name/q4.gguf");
+  });
+
+  it("llama with no model set returns null", () => {
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "llama" }));
+    expect(activeModelLabel(useAppStore.getState)).toBeNull();
+  });
+
+  it("hipfire with a tag set returns the tag", () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    expect(activeModelLabel(useAppStore.getState)).toBe("qwen3.6:27b");
+  });
+
+  it("hipfire with no tag set returns null", () => {
+    useAppStore.getState().setSettings(makeSettings({ engine_kind: "hipfire" }));
+    expect(activeModelLabel(useAppStore.getState)).toBeNull();
+  });
+
+  it("a running hipfire server wins over the toggle flipped to llama", () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }),
+    );
+    useAppStore.getState().setFlag("model", "/models/should-be-ignored.gguf");
+    useAppStore.getState().setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "x" },
+    });
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    expect(activeEngine(useAppStore.getState)).toBe("hipfire");
+    expect(activeModelLabel(useAppStore.getState)).toBe("qwen3.6:27b");
+  });
+
+  it("a running llama server wins over the toggle flipped to hipfire", () => {
+    useAppStore.getState().setSettings(
+      makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "should-be-ignored" } }),
+    );
+    useAppStore.getState().setFlag("model", "/models/owner/name/q4.gguf");
+    useAppStore.getState().setServer({
+      running: true,
+      ready: true,
+      info: { pid: 1, port: 8080, started_at: 0, binary: "x" },
+    });
+    useAppStore.setState({ loadedEngine: "llama" });
+    expect(activeEngine(useAppStore.getState)).toBe("llama");
+    expect(activeModelLabel(useAppStore.getState)).toBe("/models/owner/name/q4.gguf");
   });
 });

@@ -66,6 +66,24 @@ export function activeEngine(get: () => AppStore): EngineKind {
   return serverReady ? (loadedEngine ?? "llama") : settings.engine_kind;
 }
 
+// The active model's identity for whichever engine is actually driving
+// requests (per activeEngine above — a RUNNING server wins over the toggle,
+// same as request-shaping). llama identifies its model by the full GGUF path
+// in `flags.model` — callers basename it for display, mirroring the existing
+// Chat/TopBar badges. hipfire has no --model flag and no /props endpoint
+// (fact 5): it identifies its model by the configured `hipfire_flags.tag`,
+// used as-is (a tag isn't a path). Returns null when nothing is chosen yet —
+// Chat's send gate and the model badges treat that as "can't send yet".
+export function activeModelLabel(get: () => AppStore): string | null {
+  const { flags, settings } = get();
+  if (activeEngine(get) === "hipfire") {
+    const tag = String((settings.hipfire_flags as FlagValues)?.tag ?? "").trim();
+    return tag || null;
+  }
+  const model = String(flags.model ?? "").trim();
+  return model || null;
+}
+
 // Return the startError hint if the active engine can't legally launch right
 // now, or null when its prerequisites are met. Mirrors Configure's start-button
 // gating: hipfire only needs a tag to serve — the binary itself is optional
