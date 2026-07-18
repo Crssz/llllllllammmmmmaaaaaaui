@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import { log } from "../lib/logger";
 import { useAppStore } from "./store";
+import { activeEngine } from "./slices/serverSlice";
 import type { FlagValues } from "./types";
 
 /**
@@ -104,13 +105,20 @@ export function useAppEffects(initialFlags: FlagValues) {
   }, []);
 
   // Inspect the GGUF whenever the model path changes: surface MTP/thinking
-  // capabilities and auto-set --mmproj when a sibling exists.
+  // capabilities and auto-set --mmproj when a sibling exists. llama only —
+  // hipfire has no /props-backed GGUF inspection (fact 5): its model
+  // identity is a served tag, not a file on disk to point inspect_gguf at.
+  // Gated on activeEngine (a running server wins over the toggle, same
+  // dispatch chatSlice/transcribeSlice already use) so modelInfo can never
+  // carry stale llama data into hipfire-active UI (Chat's reasoning tooltip,
+  // the model-switcher overlay's details) — it's cleared the moment hipfire
+  // becomes the active engine, and re-fetched if the user switches back.
   useEffect(() => {
     let prevModel = useAppStore.getState().flags.model as string | undefined;
     const inspect = (path: string | undefined) => {
-      if (!path) {
+      if (activeEngine(useAppStore.getState) === "hipfire" || !path) {
         useAppStore.getState().setModelInfo(null, null);
-        return;
+        return undefined;
       }
       let cancelled = false;
       log.debug("model", `inspecting GGUF: ${path}`);
@@ -154,12 +162,20 @@ export function useAppEffects(initialFlags: FlagValues) {
 
     let teardown = inspect(prevModel);
     const unsub = useAppStore.subscribe((state, prev) => {
-      const next = state.flags.model as string | undefined;
-      const old = prev.flags.model as string | undefined;
-      if (next === old) return;
+      const modelChanged = state.flags.model !== prev.flags.model;
+      // Also re-evaluate whenever activeEngine() could resolve differently:
+      // the Configure toggle, which engine we last launched (loadedEngine),
+      // or the running server's running/ready flags (activeEngine prefers a
+      // running server over the toggle — see serverSlice.ts).
+      const engineMaybeChanged =
+        state.settings.engine_kind !== prev.settings.engine_kind ||
+        state.loadedEngine !== prev.loadedEngine ||
+        state.server.running !== prev.server.running ||
+        state.server.ready !== prev.server.ready;
+      if (!modelChanged && !engineMaybeChanged) return;
       if (teardown) teardown();
-      prevModel = next;
-      teardown = inspect(next);
+      prevModel = state.flags.model as string | undefined;
+      teardown = inspect(prevModel);
     });
     return () => {
       unsub();
