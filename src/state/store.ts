@@ -14,6 +14,7 @@ import { createBenchSlice, type BenchSlice } from "./slices/benchSlice";
 import { createEngineSlice, type EngineSlice } from "./slices/engineSlice";
 import { createCatalogSlice, type CatalogSlice } from "./slices/catalogSlice";
 import { createInteractionSlice, type InteractionSlice } from "./slices/interactionSlice";
+import { createHipfirePullSlice, type HipfirePullSlice } from "./slices/hipfirePullSlice";
 
 export type AppStore = SettingsSlice &
   BuildSlice &
@@ -29,7 +30,8 @@ export type AppStore = SettingsSlice &
   BenchSlice &
   EngineSlice &
   CatalogSlice &
-  InteractionSlice;
+  InteractionSlice &
+  HipfirePullSlice;
 
 export const useAppStore = create<AppStore>()((...a) => ({
   ...createSettingsSlice(...a),
@@ -47,6 +49,7 @@ export const useAppStore = create<AppStore>()((...a) => ({
   ...createEngineSlice(...a),
   ...createCatalogSlice(...a),
   ...createInteractionSlice(...a),
+  ...createHipfirePullSlice(...a),
 }));
 
 // Snapshot of the initial state — used by tests to reset the store between

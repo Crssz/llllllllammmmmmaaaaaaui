@@ -7,6 +7,8 @@ import {
   type CatalogProgress,
   type EngineDone,
   type EngineProgress,
+  type HipfirePullDoneEvent,
+  type HipfirePullProgressEvent,
 } from "../lib/api";
 import { log } from "../lib/logger";
 import { useAppStore } from "./store";
@@ -285,6 +287,40 @@ export function useAppEffects(initialFlags: FlagValues) {
     track(
       listen<CatalogDone>("catalog-done", (event) => {
         useAppStore.getState().catalogOnDone(event.payload);
+      }),
+    );
+    return () => {
+      cancelled = true;
+      for (const u of unlisteners) u();
+    };
+  }, []);
+
+  // Subscribe to hipfire-pull progress + terminal result events. Lifted here
+  // (rather than a listen() effect inside HipfirePullPanel) so a pull — a
+  // long-running HuggingFace download, up to 82GB in the catalog — keeps
+  // updating the store and its done event still gets handled even while the
+  // panel that started it isn't mounted.
+  useEffect(() => {
+    let cancelled = false;
+    const unlisteners: UnlistenFn[] = [];
+    const track = (p: Promise<UnlistenFn>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlisteners.push(u);
+        })
+        .catch((e) =>
+          log.warn("hipfire", "failed to subscribe to hipfire-pull events", { error: String(e) }),
+        );
+
+    track(
+      listen<HipfirePullProgressEvent>("hipfire-pull-progress", (event) => {
+        useAppStore.getState().hipfirePullOnProgress(event.payload.line);
+      }),
+    );
+    track(
+      listen<HipfirePullDoneEvent>("hipfire-pull-done", (event) => {
+        useAppStore.getState().hipfirePullOnDone(event.payload);
       }),
     );
     return () => {

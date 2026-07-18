@@ -11,8 +11,6 @@ import {
   type HipfireConvertDoneEvent,
   type HipfireConvertProgressEvent,
   type HipfireLocalModel,
-  type HipfirePullDoneEvent,
-  type HipfirePullProgressEvent,
 } from "../lib/api";
 import { buildArgs, type FlagValue } from "../lib/buildArgs";
 import { buildHipfireArgs } from "../lib/buildHipfireArgs";
@@ -32,6 +30,12 @@ const HIPFIRE_BINARY_FIELD: FlagDef = {
   type: "path",
   value: "",
 };
+
+// HipfireModelPicker and HipfirePullPanel both re-fetch (spawning a real
+// `hipfire list`/`hipfire list -r` child) whenever the hipfire path changes —
+// which happens on every keystroke while the optional override field is
+// being typed. Debounce both to one fetch per pause, not one per keystroke.
+const HIPFIRE_LIST_DEBOUNCE_MS = 400;
 
 function FlagRow({
   f,
@@ -401,20 +405,19 @@ function HipfireConvertPanel({
 // hipfire_flags.tag — the free-text field right above keeps working
 // independently, since a tag doesn't have to be local yet (serving one
 // auto-pulls it from HuggingFace first, per fact 1 in the 2026-07-18
-// live-verification notes). `refreshKey` lets a sibling panel (the pull
-// catalog below) force a re-fetch after a successful pull without lifting
-// the whole model list into shared state.
+// live-verification notes). Reads hipfirePullSlice's `modelsVersion` (bumped
+// store-side after a successful pull) instead of a refresh-key prop from a
+// sibling panel, so this re-fetches even if HipfirePullPanel isn't mounted.
 function HipfireModelPicker({
   hipfirePath,
   tag,
-  refreshKey,
   onSelect,
 }: Readonly<{
   hipfirePath: string;
   tag: string;
-  refreshKey: number;
   onSelect: (tag: string) => void;
 }>) {
+  const modelsVersion = useAppStore((s) => s.hipfirePull.modelsVersion);
   const [models, setModels] = useState<HipfireLocalModel[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -436,10 +439,15 @@ function HipfireModelPicker({
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount, same shape as Mcp.tsx's mcpRefreshStatus effect
-    refresh().catch(() => {});
+    // Debounced: hipfirePath updates on every keystroke in Configure's binary
+    // field, and each fetch spawns a real `hipfire list` child — don't spawn
+    // one per keystroke while the user is still typing an override path.
+    const timer = setTimeout(() => {
+      refresh().catch(() => {});
+    }, HIPFIRE_LIST_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hipfirePath, refreshKey]);
+  }, [hipfirePath, modelsVersion]);
 
   return (
     <div
@@ -500,21 +508,26 @@ function truncate(s: string, max: number): string {
 }
 
 // Browse hipfire's curated pull catalog (`hipfire list -r`) and pull a tag
-// from HuggingFace into the local store. Mirrors HipfireConvertPanel's
-// event-streaming state machine (progress lines + a terminal done event) and
-// UI placement, but drives `hipfire pull` instead of `hipfire quantize`.
-function HipfirePullPanel({
-  hipfirePath,
-  onPulled,
-}: Readonly<{ hipfirePath: string; onPulled: (tag: string) => void }>) {
+// from HuggingFace into the local store. Mirrors HipfireConvertPanel's UI
+// placement and progress-lines-plus-terminal-event shape, but the run state
+// itself lives in hipfirePullSlice (not local component state): a pull is a
+// long-running HuggingFace download — the catalog has an 82GB entry — that
+// must survive this panel unmounting (navigating away, switching engines,
+// Configure re-rendering) with Cancel still reachable and completion still
+// handled.
+function HipfirePullPanel({ hipfirePath }: Readonly<{ hipfirePath: string }>) {
   const [catalog, setCatalog] = useState<HipfireAvailableModel[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [tag, setTag] = useState("");
-  const [running, setRunning] = useState(false);
-  const [lines, setLines] = useState<string[]>([]);
-  const [result, setResult] = useState<{ ok: boolean; error: string | null } | null>(null);
-  const [generation, setGeneration] = useState<number | null>(null);
+  const { hipfirePull, hipfirePullStart, hipfirePullCancel } = useAppStore(
+    useShallow((s) => ({
+      hipfirePull: s.hipfirePull,
+      hipfirePullStart: s.hipfirePullStart,
+      hipfirePullCancel: s.hipfirePullCancel,
+    })),
+  );
+  const { running, lines, result, modelsVersion } = hipfirePull;
 
   const loadCatalog = async () => {
     setCatalogLoading(true);
@@ -533,59 +546,26 @@ function HipfirePullPanel({
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount, same shape as Mcp.tsx's mcpRefreshStatus effect
-    loadCatalog().catch(() => {});
+    // Debounced (see HIPFIRE_LIST_DEBOUNCE_MS) — fires on mount, on every
+    // settled hipfirePath edit, and once more after each successful pull
+    // (via modelsVersion) so a freshly pulled tag's "[downloaded]" marker
+    // shows up without a manual refresh click.
+    const timer = setTimeout(() => {
+      loadCatalog().catch(() => {});
+    }, HIPFIRE_LIST_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hipfirePath]);
-
-  useEffect(() => {
-    if (generation == null) return;
-    let cancelled = false;
-    const unlisteners: Array<() => void> = [];
-    listen<HipfirePullProgressEvent>("hipfire-pull-progress", (e) => {
-      if (cancelled || e.payload.generation !== generation) return;
-      setLines((prev) => [...prev.slice(-199), e.payload.line]);
-    })
-      .then((u) => (cancelled ? u() : unlisteners.push(u)))
-      .catch(() => {});
-    listen<HipfirePullDoneEvent>("hipfire-pull-done", (e) => {
-      if (cancelled || e.payload.generation !== generation) return;
-      setRunning(false);
-      setResult({ ok: e.payload.ok, error: e.payload.error });
-      if (e.payload.ok) {
-        onPulled(e.payload.tag);
-        loadCatalog().catch(() => {});
-      }
-    })
-      .then((u) => (cancelled ? u() : unlisteners.push(u)))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      for (const u of unlisteners) u();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generation]);
+  }, [hipfirePath, modelsVersion]);
 
   const pull = async () => {
-    setLines([]);
-    setResult(null);
-    setRunning(true);
-    try {
-      const gen = await api.hipfirePull(hipfirePath, tag.trim());
-      setGeneration(gen);
-    } catch (e) {
-      setRunning(false);
-      const msg = e instanceof Error ? e.message : String(e);
-      setResult({ ok: false, error: msg });
-      log.warn("hipfire", "pull failed to start", { error: msg });
-    }
+    await hipfirePullStart(hipfirePath, tag.trim());
   };
 
   const cancel = async () => {
-    await api.cancelHipfirePull().catch(() => {});
+    await hipfirePullCancel();
   };
 
-  const disabled = !hipfirePath || !tag.trim() || running;
+  const disabled = !tag.trim() || running;
 
   return (
     <div className="cfg-section">
@@ -660,7 +640,7 @@ function HipfirePullPanel({
             className="btn primary"
             disabled={disabled}
             onClick={() => pull().catch(() => {})}
-            title={!hipfirePath ? "Set the hipfire executable path first" : undefined}
+            title={!tag.trim() ? "Pick or type a tag to pull first" : undefined}
           >
             <I.Refresh
               size={12}
@@ -677,15 +657,22 @@ function HipfirePullPanel({
             <span
               style={{
                 fontSize: 11.5,
-                color: result.ok ? "var(--green)" : "var(--red)",
+                color: result.cancelled ? "var(--muted)" : result.ok ? "var(--green)" : "var(--red)",
                 display: "flex",
                 alignItems: "center",
                 gap: 4,
               }}
             >
-              {result.ok ? (
+              {result.cancelled ? (
                 <>
-                  <I.Check size={12} /> Pulled — available in the model picker below
+                  <I.Info size={12} /> Cancelled
+                </>
+              ) : result.ok ? (
+                <>
+                  <I.Check size={12} />{" "}
+                  {result.tag.endsWith("-draft")
+                    ? "Pulled — available in the model picker below"
+                    : "Pulled — set as the model to serve"}
                 </>
               ) : (
                 <>
@@ -784,9 +771,6 @@ export function ConfigureScreen({
   // for that message but re-appears when the store surfaces a *different* error.
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const { confirmElement, confirm } = useConfirm();
-  // Bumped after a successful HipfirePullPanel pull so HipfireModelPicker
-  // re-fetches the local model list without lifting it into shared state.
-  const [hipfireModelsRefreshKey, setHipfireModelsRefreshKey] = useState(0);
 
   const set = (k: string, v: FlagValue) => setFlag(k, v);
 
@@ -1190,13 +1174,7 @@ export function ConfigureScreen({
                   hipfirePath={settings.hipfire_path}
                   onConverted={(tag) => setHipfireFlag("tag", tag)}
                 />
-                <HipfirePullPanel
-                  hipfirePath={settings.hipfire_path}
-                  onPulled={(tag) => {
-                    setHipfireFlag("tag", tag);
-                    setHipfireModelsRefreshKey((k) => k + 1);
-                  }}
-                />
+                <HipfirePullPanel hipfirePath={settings.hipfire_path} />
                 {HIPFIRE_FLAG_GROUPS.map((g) => {
                   const IconCmp = I[g.icon];
                   return (
@@ -1226,7 +1204,6 @@ export function ConfigureScreen({
                           <HipfireModelPicker
                             hipfirePath={settings.hipfire_path}
                             tag={hipfireTag}
-                            refreshKey={hipfireModelsRefreshKey}
                             onSelect={(t) => setHipfireFlag("tag", t)}
                           />
                         )}
