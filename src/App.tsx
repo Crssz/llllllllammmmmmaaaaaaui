@@ -125,12 +125,16 @@ function TopBar({
           }}
         />
         <span className="name">{modelName}</span>
-        {flags.spec_type === "draft-mtp" && (
+        {/* spec_type is a llama-server-only flag (draft-mtp/draft-dflash) that
+            persists in settings across an engine switch — gate on the active
+            engine so a leftover llama spec_type can't imply MTP/DFlash
+            speculative decoding applies to a hipfire tag. */}
+        {engine !== "hipfire" && flags.spec_type === "draft-mtp" && (
           <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
             + MTP
           </span>
         )}
-        {flags.spec_type === "draft-dflash" && (
+        {engine !== "hipfire" && flags.spec_type === "draft-dflash" && (
           <span className="mono" style={{ color: "var(--accent)", fontSize: 11 }}>
             + DFlash
           </span>
