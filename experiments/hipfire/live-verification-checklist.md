@@ -238,3 +238,84 @@ Results, and the code that changed in response:
    and is now also true of the window-destroy cleanup and the (practically unreachable)
    stale-child guard in `start_server`, which previously fired-and-forgot the kill. No change to
    argv, env, spawn, or probe semantics for llama either way.
+
+---
+
+## 2026-07-19 tools probe + unified chat UX
+
+**Tools probe** (live, `qwen3.6:27b` served via hipfire). Sent a standard OpenAI-shaped
+`POST /v1/chat/completions` with a `tools` array attached, once non-streamed and once
+streamed:
+
+- **Accepted and templated.** hipfire did not reject the request — `prompt_tokens` grew
+  versus the same turn without `tools`, and `reasoning_content` showed the model visibly
+  deciding whether to call the tool. So the chat template *does* render the tool schema into
+  the prompt when `tools` is present.
+- **Force-EOS at `<tool_call>`, both modes.** Non-streamed: the response's `content` was the
+  literal string `"<tool_call>"` with `finish_reason:"stop"` — generation was cut the instant
+  the model started emitting a tool call, before any arguments or the closing tag. Streamed:
+  identical — a single `delta:{"content":"<tool_call>\n"}` chunk, then `finish_reason:"stop"`
+  immediately.
+- **No structured `tool_calls` field ever appeared**, in either mode. There is no parseable
+  JSON tool call to extract — just a truncated text fragment.
+- **Conclusion: tool calls are broken upstream in the hipfire daemon itself**, not a request-
+  shaping gap on lm-st's side. `shapeChatBody`'s existing behavior — stripping `tools` entirely
+  for hipfire (`src/lib/chatHelpers.ts`) — was already correct and stays unchanged. The fix
+  this pass makes is UI surfacing (below), not request shaping.
+
+**Unified chat UX** (this pass, `hipfire-integration`). The reported bug: with
+`engine_kind=hipfire` and hipfire serving fine, Chat's send gate
+(`server.ready && !!flags.model`) was permanently false — `flags.model` is llama's GGUF-path
+flag, and hipfire never sets it (its identity is `settings.hipfire_flags.tag`). Fixed by
+introducing a shared engine dispatch for "what model is active", mirroring the existing
+`activeEngine` selector:
+
+- **A — `activeModelLabel` selector + Chat send gate.** New export next to `activeEngine` in
+  `src/state/slices/serverSlice.ts`: resolves to the non-empty `hipfire_flags.tag` for hipfire,
+  or the full `flags.model` path for llama (callers basename it), `null` if unset. `activeEngine`
+  itself already does the "running server wins over the toggle" dispatch, so this inherits it
+  for free. `Chat.tsx`'s `canSend`, model badge, and context-estimate badge (hipfire has no
+  `--ctx`-equivalent surfaced here — uses a named `HIPFIRE_DEFAULT_MAX_SEQ = 32768` constant,
+  citing hipfire's server-side default) now key off it. Unit-tested (llama with/without model,
+  hipfire with/without tag, running-hipfire-while-toggle-flipped-to-llama and the reverse).
+- **B — Reasoning toggle.** hipfire's thinking is config-driven (`hipfire config set
+  thinking`/`thinking_budget`) and not request-controllable at all (fact 4, prior pass) — the
+  toggle is now always shown inactive under hipfire with a tooltip explaining why, folded into
+  the same `thinkingKnownUnsupported` flag llama's "no thinking mode in this template" case
+  already used (so the composer's `n/a` label falls out for free).
+- **C — Model switcher overlay (`ModelLibraryOverlay.tsx`) unified.** Added a compact engine
+  switch at the top, wired to the same `setEngineKind` Configure uses (no parallel state). Under
+  `engine_kind=hipfire` the table lists local hipfire models via the existing
+  `list_hipfire_models` wrapper (tag + size, `-draft` tags annotated as draft companions);
+  picking one writes `hipfire_flags.tag` and calls `reloadServer()`, same as the llama row's
+  Load button. `loadedKey`/selected state keys off the active engine's identity. A failed
+  `list_hipfire_models` call (hipfire not installed) surfaces as a small inline error, not a
+  crash. modelInfo-derived badges (architecture/MTP/size) render llama-only. The llama branch is
+  byte-identical to before.
+- **D — modelInfo hygiene.** The GGUF-inspect effect (`state/effects.tsx`) that populates
+  `modelInfo` is llama-only (hipfire has no `/props` endpoint — fact 5, prior pass); it's now
+  gated on `activeEngine`, clearing `modelInfo` immediately whenever hipfire becomes the active
+  engine (and re-fetching if the user switches back), so stale llama GGUF data can never drive
+  the reasoning tooltip or the overlay's details while hipfire is active.
+- **E — Tools visibility on hipfire.** Request shaping is unchanged (tools stay stripped — see
+  the probe above). `SessionConfigFields.tsx` (the chat sidebar's session config, shared with
+  the workspace-defaults overlay) now accepts a `toolsDisabledForEngine` flag; when the active
+  engine is hipfire, `ChatSidebar` passes `true` and the MCP-server checkboxes + the project-
+  folder tools note render an inline "disabled for hipfire" badge/tooltip citing the force-EOS
+  behavior above — controls stay visible and configured, just inactive, per the same-UX
+  principle. `WorkspaceConfigOverlay` (workspace defaults, not a live conversation) doesn't pass
+  the flag, so it's unaffected.
+- **F — Branding sweep.** A handful of user-facing strings described the RUNNING server as
+  llama regardless of which engine was actually up: the top bar's model badge/Stop-button
+  title, the sidebar's runtime card, the status bar's live label, the command palette's
+  "Stop llama-server" entry, and the two "Start llama-server on the Configure tab first" chat
+  toasts. All now key off `activeEngine` (or `settings.engine_kind` where the string genuinely
+  describes a next-launch target, e.g. the status bar's argv preview, which was already
+  correct). `engineBinaryName` moved to `lib/chatUi.ts` so both `App.tsx` and
+  `CommandPalette.tsx` share one implementation instead of duplicating it. Configure's own
+  llama-specific sections (build picker, binary locator, flag groups) were left alone — a llama
+  user sees byte-identical copy throughout.
+
+All of the above is frontend-only and behind `activeEngine`/`settings.engine_kind`; no request
+shaping, `activeEngine` semantics, or Rust backend changed. `cargo test --lib` in `src-tauri`
+stays green untouched.
