@@ -3,6 +3,8 @@ import { I, type IconName } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { shortcut } from "../lib/platform";
+import { engineBinaryName } from "../lib/chatUi";
+import { activeEngine } from "../state/slices/serverSlice";
 
 /** Navigation entry the palette turns into a "Go to …" command. Mirrors the
  *  sidebar NAV shape so both stay in sync from one source in App. */
@@ -42,13 +44,17 @@ export function CommandPalette({
   onNavigate: (id: string) => void;
   onToggleLogs: () => void;
 }>) {
-  const { chats, newChat, selectChat, server, stopServer } = useAppStore(
+  const { chats, newChat, selectChat, server, stopServer, settings, loadedEngine } = useAppStore(
     useShallow((s) => ({
       chats: s.chats,
       newChat: s.newChat,
       selectChat: s.selectChat,
       server: s.server,
       stopServer: s.stopServer,
+      // Only fed into the commands useMemo's deps below, so it recomputes
+      // the "Stop …" label when activeEngine() would resolve differently.
+      settings: s.settings,
+      loadedEngine: s.loadedEngine,
     })),
   );
 
@@ -86,10 +92,12 @@ export function CommandPalette({
       },
     ];
     if (server.running) {
+      // activeEngine names whichever server is actually running (not just
+      // the Configure toggle) — see serverSlice.ts.
       actionCmds.push({
         key: "act:stop-server",
         group: "Actions",
-        label: "Stop llama-server",
+        label: `Stop ${engineBinaryName(activeEngine(useAppStore.getState))}`,
         icon: "Stop",
         run: () => {
           stopServer().catch(() => {});
@@ -126,7 +134,25 @@ export function CommandPalette({
     }));
 
     return [...navCmds, ...actionCmds, ...chatCmds];
-  }, [nav, chats, server.running, q, newChat, selectChat, stopServer, onNavigate, onToggleLogs, onClose]);
+    // settings.engine_kind/loadedEngine aren't referenced by name in the body
+    // above (activeEngine() reads the store fresh instead) but DO change
+    // which engine the "Stop …" label resolves to — kept in the deps so ESLint's
+    // static analysis doesn't miss a real recompute trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    nav,
+    chats,
+    server.running,
+    settings.engine_kind,
+    loadedEngine,
+    q,
+    newChat,
+    selectChat,
+    stopServer,
+    onNavigate,
+    onToggleLogs,
+    onClose,
+  ]);
 
   const visible = useMemo(
     () => (q ? commands.filter((c) => c.label.toLowerCase().includes(q)) : commands),

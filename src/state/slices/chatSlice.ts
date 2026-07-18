@@ -490,7 +490,11 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     }
     const { server, mcpStatuses, mcpTools, settings, requestApproval, requestUserChoice } = get();
     if (!server.running || !server.info) {
-      set({ chatError: "Start llama-server on the Configure tab first." });
+      // No server running — activeEngine falls back to the Configure toggle
+      // (the next-launch target), so this names whichever engine a Start
+      // right now would actually launch.
+      const engineName = activeEngine(get) === "hipfire" ? "hipfire" : "llama-server";
+      set({ chatError: `Start ${engineName} on the Configure tab first.` });
       return;
     }
     if (!server.ready) {
@@ -951,7 +955,8 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       if (!text && !audio?.path && !image?.path) return;
       const { server, chats, currentChatId } = get();
       if (!server.running || !server.info) {
-        set({ chatError: "Start llama-server on the Configure tab first." });
+        const engineName = activeEngine(get) === "hipfire" ? "hipfire" : "llama-server";
+        set({ chatError: `Start ${engineName} on the Configure tab first.` });
         return;
       }
       let targetSession = chats.find((c) => c.id === currentChatId) ?? null;

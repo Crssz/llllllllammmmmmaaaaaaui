@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../state/types";
+import type { EngineKind } from "../lib/api";
 
 // Basename of a path, handling both Windows (\) and POSIX (/) separators.
 // Shared UI helper — several screens had their own copy of this.
@@ -6,6 +7,15 @@ export function basename(p: string): string {
   if (!p) return "";
   const sep = p.includes("\\") ? "\\" : "/";
   return p.split(sep).pop() || p;
+}
+
+// The engine binary/name shown across the UI (top bar, sidebar, status bar,
+// command palette) — "hipfire" when that's the engine in question, "llama-
+// server" otherwise. Callers decide which EngineKind to pass: activeEngine()
+// (serverSlice.ts) when describing a live/running server, settings.engine_kind
+// when describing the next-launch target (e.g. a "stopped" label or preview).
+export function engineBinaryName(kind: EngineKind): string {
+  return kind === "hipfire" ? "hipfire" : "llama-server";
 }
 
 // `HH:MM` clock for a message timestamp.

@@ -12,6 +12,7 @@ import { BenchScreen } from "./screens/Bench";
 import { EngineManagerScreen } from "./screens/EngineManager";
 import { useAppStore } from "./state";
 import { useShallow } from "zustand/react/shallow";
+import { activeEngine, activeModelLabel } from "./state/slices/serverSlice";
 import { LogsPanel } from "./components/LogsPanel";
 import { ModelLibraryOverlay } from "./components/ModelLibraryOverlay";
 import { WorkspaceConfigOverlay } from "./components/WorkspaceConfigOverlay";
@@ -21,9 +22,10 @@ import { useTextPrompt } from "./components/TextPromptDialog";
 import { useConfirm } from "./components/ConfirmDialog";
 import { CommandPalette, type CommandPaletteNavItem } from "./components/CommandPalette";
 import { shortcut } from "./lib/platform";
-import type { ChatSession, EngineKind, Workspace } from "./lib/api";
+import type { ChatSession, Workspace } from "./lib/api";
 import { log } from "./lib/logger";
 import { buildHipfireArgs } from "./lib/buildHipfireArgs";
+import { basename, engineBinaryName } from "./lib/chatUi";
 import type { FlagValues } from "./state/types";
 
 type Tab =
@@ -55,18 +57,6 @@ const NAV: CommandPaletteNavItem[] = [
   { id: "engine", label: "Engine", icon: "Download", key: "0" },
 ];
 
-function basename(p: string): string {
-  if (!p) return "";
-  const sep = p.includes("\\") ? "\\" : "/";
-  return p.split(sep).pop() || p;
-}
-
-// The binary/engine name shown across the UI (sidebar, status bar, top bar) —
-// "hipfire" when that's the active engine, "llama-server" otherwise.
-function engineBinaryName(kind: EngineKind): string {
-  return kind === "hipfire" ? "hipfire" : "llama-server";
-}
-
 type ServerLike = { running: boolean; ready: boolean; info?: { port?: number } | null };
 
 // Compact "stopped / loading… / :PORT" label for the model picker.
@@ -90,17 +80,25 @@ function TopBar({
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
 }>) {
-  const { server, flags, stopServer, settings } = useAppStore(
+  const { server, flags, stopServer } = useAppStore(
     useShallow((s) => ({
       server: s.server,
       flags: s.flags,
       stopServer: s.stopServer,
+      // Subscribed only so this re-renders when activeEngine()/
+      // activeModelLabel() (below) would resolve differently — read fresh
+      // via useAppStore.getState() further down, not consumed by name here.
       settings: s.settings,
+      loadedEngine: s.loadedEngine,
     })),
   );
-  const engineName = engineBinaryName(settings.engine_kind);
-  const modelPath = (flags.model as string) || "";
-  const modelName = modelPath ? basename(modelPath) : "no model";
+  // A RUNNING server wins over the Configure toggle (activeEngine falls back
+  // to the toggle only while nothing's up) — this top bar always names/
+  // identifies what's actually serving, not just what would launch next.
+  const engine = activeEngine(useAppStore.getState);
+  const modelLabel = activeModelLabel(useAppStore.getState);
+  const engineName = engineBinaryName(engine);
+  const modelName = modelLabel == null ? "no model" : engine === "hipfire" ? modelLabel : basename(modelLabel);
   // Three states: stopped (muted), running-but-loading (yellow), ready (green).
   let dotColor = "var(--muted)";
   if (server.running) dotColor = server.ready ? "var(--green)" : "var(--yellow)";
@@ -116,7 +114,7 @@ function TopBar({
 
       <button
         className="modelpicker"
-        title={modelPath || "No model selected — click to open the library"}
+        title={modelLabel || "No model selected — click to open the library"}
         onClick={() => setPickerOpen(!pickerOpen)}
       >
         <span
@@ -223,6 +221,9 @@ function Sidebar({
       renameWorkspace: s.renameWorkspace,
       deleteWorkspace: s.deleteWorkspace,
       chatStreamingId: s.chatStreamingId,
+      // Subscribed only so this re-renders when activeEngine() (below) would
+      // resolve differently.
+      loadedEngine: s.loadedEngine,
     })),
   );
 
@@ -567,9 +568,11 @@ function Sidebar({
                 : "none",
             }}
           />
+          {/* activeEngine (not just the toggle) so a running server is named
+              for what it actually is; falls back to the toggle while stopped. */}
           {server.running
-            ? `${engineBinaryName(settings.engine_kind)} · pid ${server.info?.pid}`
-            : `${engineBinaryName(settings.engine_kind)} · stopped`}
+            ? `${engineBinaryName(activeEngine(useAppStore.getState))} · pid ${server.info?.pid}`
+            : `${engineBinaryName(activeEngine(useAppStore.getState))} · stopped`}
         </div>
         {server.running ? (
           <>
@@ -645,9 +648,21 @@ function useTime() {
 function StatusBar() {
   const t = useTime();
   const { server, build, flags, settings } = useAppStore(
-    useShallow((s) => ({ server: s.server, build: s.build, flags: s.flags, settings: s.settings })),
+    useShallow((s) => ({
+      server: s.server,
+      build: s.build,
+      flags: s.flags,
+      settings: s.settings,
+      // Subscribed only so this re-renders when activeEngine() (below) would
+      // resolve differently.
+      loadedEngine: s.loadedEngine,
+    })),
   );
   const isHipfire = settings.engine_kind === "hipfire";
+  // Next-launch preview (binary path, cmdSnippet) stays keyed off the
+  // Configure toggle — it's explicitly NOT the running process's actual args
+  // (see comment below). The `live` status text below is different: it
+  // describes the server that's actually up, so it's keyed off activeEngine.
   const engineName = engineBinaryName(settings.engine_kind);
   const binary = isHipfire
     ? settings.hipfire_path
@@ -659,6 +674,7 @@ function StatusBar() {
   const cmdSnippet = isHipfire
     ? `hipfire ${buildHipfireArgs(settings.hipfire_flags as FlagValues).join(" ")}`
     : `${binary} --model ${basename((flags.model as string) || "")} -c ${flags.ctx} -ngl ${String(flags.ngl)}`;
+  const liveEngineName = engineBinaryName(activeEngine(useAppStore.getState));
   return (
     <div className="statusbar">
       <span
@@ -669,9 +685,9 @@ function StatusBar() {
       >
         {server.running
           ? server.ready
-            ? `${engineName} :${server.info?.port}`
-            : `${engineName} :${server.info?.port} (loading)`
-          : `${engineName} (stopped)`}
+            ? `${liveEngineName} :${server.info?.port}`
+            : `${liveEngineName} :${server.info?.port} (loading)`
+          : `${liveEngineName} (stopped)`}
       </span>
       <span className="sep" />
       <span className="cmd-snippet">
