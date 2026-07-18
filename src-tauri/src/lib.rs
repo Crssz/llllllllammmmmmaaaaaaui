@@ -5,6 +5,7 @@ mod chats;
 mod engines;
 mod gguf;
 mod hipfire_convert;
+mod hipfire_pull;
 mod hw;
 mod mcp;
 mod models_scan;
@@ -34,6 +35,9 @@ use crate::engines::{
 };
 use crate::gguf::inspect_gguf;
 use crate::hipfire_convert::{cancel_hipfire_convert, hipfire_convert, HipfireConvertState};
+use crate::hipfire_pull::{
+    cancel_hipfire_pull, hipfire_pull, list_hipfire_available, HipfirePullState,
+};
 use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
 use crate::server::{
@@ -167,6 +171,7 @@ pub fn run() {
         .manage(EngineState::default())
         .manage(CatalogState::default())
         .manage(HipfireConvertState::default())
+        .manage(HipfirePullState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -216,6 +221,9 @@ pub fn run() {
             cancel_catalog_download,
             hipfire_convert,
             cancel_hipfire_convert,
+            list_hipfire_available,
+            hipfire_pull,
+            cancel_hipfire_pull,
             crate::workspace::workspace_list,
             crate::workspace::workspace_read,
             crate::workspace::workspace_write,
@@ -239,6 +247,13 @@ pub fn run() {
                     }
                 }
                 if let Some(state) = window.try_state::<HipfireConvertState>() {
+                    let mut child = lock_or_poisoned(&state.child);
+                    if let Some(mut c) = child.take() {
+                        // Always hipfire (the .cmd shim) — see kill_child_tree.
+                        crate::server::kill_child_tree(&mut c, true);
+                    }
+                }
+                if let Some(state) = window.try_state::<HipfirePullState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
                         // Always hipfire (the .cmd shim) — see kill_child_tree.

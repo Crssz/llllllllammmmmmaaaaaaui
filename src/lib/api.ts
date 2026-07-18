@@ -474,6 +474,36 @@ export type HipfireConvertDoneEvent = {
   tag: string;
 };
 
+// ── hipfire model registry / pull catalog (mirror Rust server.rs / hipfire_pull.rs) ─
+
+/** One locally-registered hipfire model (mirrors Rust `HipfireLocalModel`),
+ *  from `hipfire list`'s "Local models:" section — ready to `serve` without
+ *  triggering an auto-pull from HuggingFace. */
+export type HipfireLocalModel = { file: string; size: string; tag: string };
+
+/** One entry in hipfire's curated pull catalog (mirrors Rust
+ *  `HipfireAvailableModel`), from `hipfire list -r`'s "Available models:"
+ *  section. `downloaded` mirrors the "[downloaded]" suffix hipfire appends to
+ *  `note` for tags already present locally. */
+export type HipfireAvailableModel = {
+  tag: string;
+  size: string;
+  note: string;
+  downloaded: boolean;
+};
+
+/** `hipfire-pull-progress` event payload. */
+export type HipfirePullProgressEvent = { generation: number; line: string };
+
+/** `hipfire-pull-done` event payload. */
+export type HipfirePullDoneEvent = {
+  generation: number;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  tag: string;
+};
+
 /** Terminal event for a benchmark run (success, failure, or cancellation). */
 export type BenchDoneEvent = {
   generation: number;
@@ -597,6 +627,12 @@ export const api = {
   // `~/.hipfire/bin` install dir. Rejects when none of those resolve.
   resolveHipfireBin: (explicit: string) => invoke<string>("resolve_hipfire_bin_cmd", { explicit }),
 
+  // List hipfire's locally-registered models (`hipfire list`'s "Local
+  // models:" section). `explicit`, when given, is the same hipfire_path
+  // override resolveHipfireBin takes.
+  listHipfireModels: (explicit?: string | null) =>
+    invoke<HipfireLocalModel[]>("list_hipfire_models", { explicit: explicit ?? null }),
+
   // Persist a mic recording (a complete WAV byte stream) to the app cache dir
   // and get back its path, ready to read back as base64 like a picked file.
   // `name` is an optional filename — Transcribe omits it (single overwriting
@@ -714,6 +750,16 @@ export const api = {
   hipfireConvert: (hipfirePath: string, ggufPath: string, format: string, tag: string) =>
     invoke<number>("hipfire_convert", { hipfirePath, ggufPath, format, tag }),
   cancelHipfireConvert: () => invoke<void>("cancel_hipfire_convert"),
+
+  // Browse hipfire's curated pull catalog and pull a tag from HuggingFace
+  // into the local store. Mirrors hipfireConvert's event-streaming contract:
+  // resolves with the run's generation id; progress arrives via
+  // `hipfire-pull-progress` events and the result via `hipfire-pull-done`.
+  listHipfireAvailable: (explicit?: string | null) =>
+    invoke<HipfireAvailableModel[]>("list_hipfire_available", { explicit: explicit ?? null }),
+  hipfirePull: (hipfirePath: string, tag: string) =>
+    invoke<number>("hipfire_pull", { hipfirePath, tag }),
+  cancelHipfirePull: () => invoke<void>("cancel_hipfire_pull"),
 
   pickFolder: (title = "Select a directory") =>
     open({ directory: true, multiple: false, title }) as Promise<string | null>,
