@@ -163,15 +163,16 @@ export function useAppEffects(initialFlags: FlagValues) {
     let teardown = inspect(prevModel);
     const unsub = useAppStore.subscribe((state, prev) => {
       const modelChanged = state.flags.model !== prev.flags.model;
-      // Also re-evaluate whenever activeEngine() could resolve differently:
-      // the Configure toggle, which engine we last launched (loadedEngine),
-      // or the running server's running/ready flags (activeEngine prefers a
-      // running server over the toggle — see serverSlice.ts).
-      const engineMaybeChanged =
-        state.settings.engine_kind !== prev.settings.engine_kind ||
-        state.loadedEngine !== prev.loadedEngine ||
-        state.server.running !== prev.server.running ||
-        state.server.ready !== prev.server.ready;
+      // Re-evaluate only when activeEngine()'s RESOLVED value actually flips
+      // (e.g. a genuine engine switch, or a running server that finally lets
+      // go of the toggle it was masking) — not on every raw running/ready/
+      // loadedEngine/engine_kind toggle, most of which leave activeEngine()
+      // unchanged (e.g. a plain llama start/stop: engine_kind stays "llama"
+      // and loadedEngine is set to "llama" in the same tick, so activeEngine
+      // is "llama" both before and after). Reusing activeEngine() itself
+      // (rather than re-deriving its inputs here) keeps this in lockstep with
+      // serverSlice's canonical definition.
+      const engineMaybeChanged = activeEngine(() => state) !== activeEngine(() => prev);
       if (!modelChanged && !engineMaybeChanged) return;
       if (teardown) teardown();
       prevModel = state.flags.model as string | undefined;
