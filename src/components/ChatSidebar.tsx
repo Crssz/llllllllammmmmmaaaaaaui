@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { defaultSessionConfig, type ChatSessionConfig } from "../lib/api";
 import { Section, SessionConfigFields } from "./SessionConfigFields";
 import { useConfirm } from "./ConfirmDialog";
+import { activeEngine } from "../state/slices/serverSlice";
 
 export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onToggle: () => void }>) {
   const currentChat = useCurrentChat();
@@ -27,8 +28,17 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
       applyPresetToSession: s.applyPresetToSession,
       saveSessionAsPreset: s.saveSessionAsPreset,
       deletePreset: s.deletePreset,
+      // Subscribed only so this re-renders when activeEngine() (below) would
+      // resolve differently — it re-reads the full store fresh, so these
+      // aren't otherwise consumed directly.
+      server: s.server,
+      loadedEngine: s.loadedEngine,
     })),
   );
+  // hipfire strips tool calls from every request (fact 3: the daemon force-
+  // stops generation at `<tool_call>`, no structured call ever emitted) — the
+  // session's MCP/workspace-tool controls stay visible but render disabled.
+  const toolsDisabledForEngine = activeEngine(useAppStore.getState) === "hipfire";
 
   const [newPresetName, setNewPresetName] = useState("");
   const [savingPreset, setSavingPreset] = useState(false);
@@ -177,6 +187,7 @@ export function ChatSidebar({ open, onToggle }: Readonly<{ open: boolean; onTogg
         mcpServers={mcpServers}
         mcpStatuses={mcpStatuses}
         mcpTools={mcpTools}
+        toolsDisabledForEngine={toolsDisabledForEngine}
       />
       {confirmElement}
     </aside>

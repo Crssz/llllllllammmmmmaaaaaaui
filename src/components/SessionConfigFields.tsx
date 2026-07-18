@@ -74,18 +74,33 @@ export function ToolPermSelect({
  * single chat's session config (`ChatSidebar`) and a workspace's default
  * config (`WorkspaceConfigOverlay`).
  */
+// Shown next to "MCP servers" when the active engine can't run tool calls at
+// all (hipfire — see TOOLS_DISABLED_HINT below) — same tooltip text on the
+// section badge and on every disabled server checkbox, so hovering either
+// one explains the same thing.
+const TOOLS_DISABLED_HINT =
+  "Tool calls aren't supported by the hipfire engine yet: the daemon force-stops generation the moment a model emits <tool_call>, before any structured call is parseable. MCP servers stay configured here but won't be offered to the model while hipfire is active.";
+
 export function SessionConfigFields({
   config: cfg,
   onChange: update,
   mcpServers,
   mcpStatuses,
   mcpTools,
+  toolsDisabledForEngine = false,
 }: Readonly<{
   config: ChatSessionConfig;
   onChange: (patch: Partial<ChatSessionConfig>) => void;
   mcpServers: McpServerConfig[];
   mcpStatuses: Record<string, McpStatus>;
   mcpTools: Record<string, McpTool[]>;
+  /** True when the active engine can't run tool calls (hipfire — fact 3: the
+   *  daemon force-EOSes at `<tool_call>`, no structured tool_calls ever
+   *  emitted). MCP/workspace-tool controls stay visible (same-UX principle)
+   *  but render disabled with an explanatory tooltip instead of disappearing.
+   *  Defaults to false so WorkspaceConfigOverlay (workspace defaults for
+   *  chats that may run under either engine later) is unaffected. */
+  toolsDisabledForEngine?: boolean;
 }>) {
   const toggleMcp = (serverId: string, on: boolean) => {
     const cur = new Set(cfg.mcp_server_ids);
@@ -108,6 +123,21 @@ export function SessionConfigFields({
   return (
     <>
       <Section title="Project folder" icon="Folder">
+        {toolsDisabledForEngine && (
+          <div
+            className="badge ghost"
+            title={TOOLS_DISABLED_HINT}
+            style={{
+              fontSize: 11,
+              color: "var(--muted)",
+              marginBottom: 8,
+              cursor: "help",
+              display: "inline-flex",
+            }}
+          >
+            <I.Info size={10} /> File tools disabled for hipfire
+          </div>
+        )}
         {cfg.workspace_root ? (
           <>
             <div
@@ -195,6 +225,21 @@ export function SessionConfigFields({
       </Section>
 
       <Section title="MCP servers" icon="Globe">
+        {toolsDisabledForEngine && (
+          <div
+            className="badge ghost"
+            title={TOOLS_DISABLED_HINT}
+            style={{
+              fontSize: 11,
+              color: "var(--muted)",
+              marginBottom: 8,
+              cursor: "help",
+              display: "inline-flex",
+            }}
+          >
+            <I.Info size={10} /> Tools disabled for hipfire
+          </div>
+        )}
         {mcpServers.length === 0 ? (
           <div style={{ fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}>
             No MCP servers registered. Add one on the MCP tab.
@@ -204,10 +249,16 @@ export function SessionConfigFields({
             const enabled = cfg.mcp_server_ids.includes(s.id);
             const st = mcpStatuses[s.id];
             return (
-              <label key={s.id} className="chat-side-mcp">
+              <label
+                key={s.id}
+                className="chat-side-mcp"
+                title={toolsDisabledForEngine ? TOOLS_DISABLED_HINT : undefined}
+                style={toolsDisabledForEngine ? { opacity: 0.6 } : undefined}
+              >
                 <input
                   type="checkbox"
                   checked={enabled}
+                  disabled={toolsDisabledForEngine}
                   onChange={(e) => toggleMcp(s.id, e.target.checked)}
                 />
                 <span
