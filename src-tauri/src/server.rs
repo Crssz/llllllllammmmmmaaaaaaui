@@ -170,6 +170,72 @@ fn health_response_indicates_ready(buf: &[u8]) -> bool {
     }
 }
 
+/// Kill `child`, using a full Windows process-tree kill when `tree_kill` is
+/// set. hipfire's installed CLI is a `.cmd` shim, so spawning it (`serve` or
+/// `quantize`/`pull`) really launches `cmd.exe`, which in turn spawns the
+/// actual `bun.exe` process doing the work. Proven live 2026-07-18: killing
+/// just the top `cmd.exe` process (exactly what `child.kill()` does) leaves
+/// `bun.exe` running, still holding the model's VRAM and the server port —
+/// and no `hipfire stop`/`hipfire stop --force` can clean it up on Windows
+/// (both are broken there; see the live-verification notes). `taskkill /F /T
+/// /PID <pid>` kills the whole tree by PID instead of just the top process.
+///
+/// Falls back to a plain `child.kill()` when `tree_kill` is unset, `taskkill`
+/// itself fails to spawn or exits non-zero, or the platform isn't Windows (on
+/// Unix the hipfire child IS `bun` directly — no intermediate shell wrapper
+/// to worry about, so `tree_kill` has no effect there). Always reaps the
+/// child afterwards via `wait()` so it doesn't linger as a zombie.
+pub fn kill_child_tree(child: &mut Child, tree_kill: bool) {
+    #[cfg(windows)]
+    {
+        if tree_kill {
+            let pid = child.id();
+            let result = quiet_command(Path::new("taskkill"))
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            match result {
+                Ok(status) if status.success() => {
+                    debug!("kill_child_tree: taskkill reaped pid {pid} and its process tree");
+                }
+                Ok(status) => {
+                    warn!(
+                        "kill_child_tree: taskkill exited {status} for pid {pid} — falling back to child.kill()"
+                    );
+                    let _ = child.kill();
+                }
+                Err(e) => {
+                    warn!(
+                        "kill_child_tree: taskkill spawn failed for pid {pid} ({e}) — falling back to child.kill()"
+                    );
+                    let _ = child.kill();
+                }
+            }
+        } else {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // On Unix the hipfire child IS bun (no intermediate cmd.exe shim), so
+        // a plain kill is always sufficient — tree_kill only matters on
+        // Windows. Reference it so the parameter isn't unused there.
+        let _ = tree_kill;
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+/// Whether a child spawned with this `exe_path` needs a Windows process-tree
+/// kill — true only for the hipfire engine (`exe_path.is_some()`), never for
+/// llama (`exe_path.is_none()`), which spawns `llama-server` directly with no
+/// intermediate shell wrapper. Mirrors the `exe_path.is_some()` discriminator
+/// `start_server` already uses to pick the spawn path.
+fn needs_tree_kill(exe_path: &Option<String>) -> bool {
+    exe_path.is_some()
+}
+
 // True when `s` looks like the HOST half of a hipfire "host:port" token —
 // the shapes buildHipfireArgs.ts emits / the app documents: a dotted IPv4
 // ("127.0.0.1", "0.0.0.0"), the literal "localhost", or an IPv6 form
@@ -413,7 +479,10 @@ pub fn start_server(
             );
             return Ok(info);
         }
-        let _ = c.kill();
+        // This stray child (if any) was spawned by the PREVIOUS start_server
+        // call, so it needs the tree-kill flag that call recorded — not the
+        // new one we're about to compute below.
+        kill_child_tree(c, state.tree_kill.load(Ordering::SeqCst));
     }
 
     // Resolve the executable to spawn and the directory to spawn it in. When
@@ -455,6 +524,15 @@ pub fn start_server(
         }
         (server, bin_dir)
     };
+
+    // Record whether THIS child (about to be spawned) needs a Windows
+    // process-tree kill — the hipfire discriminator, same as the branch
+    // above. Stored now, ahead of the spawn, so it's correct for
+    // stop_server/window-close even if something later in this function
+    // fails after the child is already running.
+    state
+        .tree_kill
+        .store(needs_tree_kill(&exe_path), Ordering::SeqCst);
 
     // Validate --model points at an existing file before spawning. Without
     // this, the user sees the server spawn briefly and exit with a generic
@@ -589,8 +667,7 @@ pub fn stop_server(state: State<'_, ServerState>) -> Result<(), String> {
         } else {
             info!("stop_server: killing child");
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_child_tree(&mut child, state.tree_kill.load(Ordering::SeqCst));
     } else {
         debug!("stop_server: no child to kill");
     }
@@ -907,5 +984,25 @@ mod tests {
     fn health_response_not_ready_for_non_200_status() {
         let resp = b"HTTP/1.1 503 Service Unavailable\r\n\r\n{\"status\":\"loading\"}";
         assert!(!health_response_indicates_ready(resp));
+    }
+
+    // ── tree_kill flag plumbing ──────────────────────────────────────────
+
+    #[test]
+    fn server_state_default_tree_kill_is_false() {
+        let s = ServerState::default();
+        assert!(!s.tree_kill.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn needs_tree_kill_false_for_the_llama_path() {
+        assert!(!needs_tree_kill(&None));
+    }
+
+    #[test]
+    fn needs_tree_kill_true_when_exe_path_is_set() {
+        assert!(needs_tree_kill(&Some(
+            "C:/Users/pay20/.hipfire/bin/hipfire.cmd".to_string()
+        )));
     }
 }

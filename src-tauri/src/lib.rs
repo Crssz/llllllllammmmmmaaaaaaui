@@ -14,6 +14,7 @@ mod transcribe;
 mod util;
 mod workspace;
 
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use log::{error, info};
@@ -228,7 +229,7 @@ pub fn run() {
                 if let Some(state) = window.try_state::<ServerState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
-                        let _ = c.kill();
+                        crate::server::kill_child_tree(&mut c, state.tree_kill.load(Ordering::SeqCst));
                     }
                 }
                 if let Some(state) = window.try_state::<BenchState>() {
@@ -240,7 +241,8 @@ pub fn run() {
                 if let Some(state) = window.try_state::<HipfireConvertState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
-                        let _ = c.kill();
+                        // Always hipfire (the .cmd shim) — see kill_child_tree.
+                        crate::server::kill_child_tree(&mut c, true);
                     }
                 }
                 if let Some(reg) = window.try_state::<McpRegistry>() {

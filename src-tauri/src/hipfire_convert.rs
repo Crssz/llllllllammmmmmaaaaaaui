@@ -276,8 +276,14 @@ pub fn cancel_hipfire_convert(state: State<'_, HipfireConvertState>) -> Result<(
     state.cancel.store(true, Ordering::SeqCst);
     let mut slot = lock_or_poisoned(&state.child);
     if let Some(mut c) = slot.take() {
-        let _ = c.kill();
-        let _ = c.wait();
+        // `hipfire quantize` runs through the same `.cmd` shim as `serve` —
+        // spawning it launches `cmd.exe`, which spawns the actual `bun.exe`
+        // doing the conversion. A plain kill only reaps the top `cmd.exe` and
+        // can orphan `bun.exe` mid-conversion (see kill_child_tree / the
+        // 2026-07-18 live-verification cmd->bun orphan proof), so always
+        // tree-kill here rather than gating on an engine toggle — this
+        // command only ever spawns hipfire.
+        crate::server::kill_child_tree(&mut c, true);
         info!("cancel_hipfire_convert: killed running conversion");
     } else {
         debug!("cancel_hipfire_convert: nothing running");
