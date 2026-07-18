@@ -31,7 +31,6 @@ export type HipfirePullSlice = {
   hipfirePullCancel: () => Promise<void>;
   hipfirePullOnProgress: (line: string) => void;
   hipfirePullOnDone: (ev: HipfirePullDoneEvent) => void;
-  hipfirePullDismissResult: () => void;
 };
 
 const IDLE: HipfirePullUi = {
@@ -143,6 +142,4 @@ export const createHipfirePullSlice: StateCreator<AppStore, [], [], HipfirePullS
       log.notify("info", "hipfire", `Pulled ${ev.tag} — set as the model to serve`);
     }
   },
-
-  hipfirePullDismissResult: () => set((s) => ({ hipfirePull: { ...s.hipfirePull, result: null } })),
 });
