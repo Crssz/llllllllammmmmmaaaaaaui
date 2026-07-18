@@ -819,7 +819,7 @@ mod tests {
         assert!(!s.ready.load(Ordering::SeqCst));
     }
 
-    // â”€â”€ resolve_hipfire_bin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── resolve_hipfire_bin ──────────────────────────────────────────────
 
     #[test]
     fn resolve_hipfire_bin_returns_explicit_existing_path_as_is() {
@@ -903,7 +903,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    // â”€â”€ parse_hipfire_list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── parse_hipfire_list ───────────────────────────────────────────────
 
     #[test]
     fn parse_hipfire_list_reads_the_live_captured_fixture() {
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(models[0].tag, "qwen3.6:27b");
     }
 
-    // â”€â”€ health_response_indicates_ready â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── health_response_indicates_ready ──────────────────────────────────
 
     #[test]
     fn health_response_ready_for_plain_llama_ok_body() {
