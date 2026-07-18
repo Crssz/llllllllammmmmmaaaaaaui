@@ -170,6 +170,24 @@ fn health_response_indicates_ready(buf: &[u8]) -> bool {
     }
 }
 
+/// Readiness-probe deadline for a spawn: `Some(600s)` for llama (unchanged —
+/// byte-identical to before `health_response_indicates_ready` existed),
+/// `None` (no deadline) for hipfire. hipfire's `/health` now gates readiness
+/// on the model finishing its potentially multi-GB HuggingFace auto-pull plus
+/// the VRAM load (see `health_response_indicates_ready`), which routinely
+/// runs well past the 10 minutes this deadline was sized for back when a bare
+/// 200 meant ready. Dropping the deadline doesn't risk a leaked thread: the
+/// probe loop above still exits the moment it succeeds, or the moment
+/// `probe_gen` is bumped — by `stop_server`/a fresh `start_server`, or by
+/// `server_status` noticing via `try_wait()` that the child died.
+fn probe_timeout(hipfire: bool) -> Option<Duration> {
+    if hipfire {
+        None
+    } else {
+        Some(Duration::from_secs(600))
+    }
+}
+
 /// Kill `child`, using a full Windows process-tree kill when `tree_kill` is
 /// set. hipfire's installed CLI is a `.cmd` shim, so spawning it (`serve` or
 /// `quantize`/`pull`) really launches `cmd.exe`, which in turn spawns the
@@ -632,14 +650,15 @@ pub fn start_server(
     let ready = state.ready.clone();
     let probe_gen = state.probe_gen.clone();
     let probe_port = server_info.port;
+    let hipfire_probe = exe_path.is_some();
     std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        let deadline = probe_timeout(hipfire_probe).map(|d| std::time::Instant::now() + d);
         loop {
             if probe_gen.load(Ordering::SeqCst) != gen {
                 debug!("health-probe: generation changed, exiting");
                 return;
             }
-            if std::time::Instant::now() > deadline {
+            if deadline.is_some_and(|d| std::time::Instant::now() > d) {
                 warn!("health-probe: timed out after 10m without 200 OK");
                 return;
             }
@@ -984,6 +1003,21 @@ mod tests {
     fn health_response_not_ready_for_non_200_status() {
         let resp = b"HTTP/1.1 503 Service Unavailable\r\n\r\n{\"status\":\"loading\"}";
         assert!(!health_response_indicates_ready(resp));
+    }
+
+    // ── probe_timeout ─────────────────────────────────────────────────────
+
+    #[test]
+    fn probe_timeout_llama_keeps_the_original_ten_minute_deadline() {
+        assert_eq!(probe_timeout(false), Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn probe_timeout_hipfire_has_no_deadline() {
+        // hipfire's readiness can legitimately take longer than 10 minutes
+        // (multi-GB HuggingFace auto-pull + VRAM load) — see
+        // health_response_indicates_ready.
+        assert_eq!(probe_timeout(true), None);
     }
 
     // ── tree_kill flag plumbing ──────────────────────────────────────────
