@@ -128,3 +128,113 @@ The two fixes are being applied on `hipfire-integration`. Remaining boxes below 
 
 When every box is checked, delete the corresponding `// TODO(hipfire-verify)` comments (grep:
 `git grep -n "TODO(hipfire-verify)"`) and note any code fixes in a follow-up commit.
+
+---
+
+## 2026-07-18 model-loading re-verification
+
+hipfire's CLI changed model-loading behavior since the 2026-07-14 pass above. Ran read-only
+`hipfire list` / `hipfire list -r` / `hipfire help` / `hipfire serve --help` against the live
+install at `~/.hipfire/bin/hipfire.cmd` (no `serve`/`stop`/`pull` executed, no processes killed).
+Results, and the code that changed in response:
+
+1. **`serve` usage is now `hipfire serve [model] [host] [port] [flags]`.** `[model]` is
+   OPTIONAL — omitting it pre-warms `cfg.default_model` instead. It's resolved exactly like
+   `run`/`pull`, so **a non-local tag is auto-pulled from HuggingFace** before serving. `host`
+   and `port` may be separate positionals or the combined `"host:port"` shorthand — the combined
+   form was confirmed live (`hipfire serve qwen3.6:27b 127.0.0.1:8080` works), so lm-st's
+   existing argv shape needed no change there. Flags: `-d/--detach`, `--kv-mode <m>`,
+   `--idle-timeout <s>` (0 = never, max 86400), `--no-prewarm`, `--tp N`.
+   → **D**: `src/lib/buildHipfireArgs.ts` header comment refreshed; the tag positional is now
+   omitted entirely (not pushed as `""`) when unset, so an empty tag correctly falls through to
+   `serve`'s own default-model resolution instead of sending a stray empty positional.
+
+2. **`GET /health` returns 200 immediately once the daemon binds the port — BEFORE the model
+   finishes loading.** Exact captured bodies:
+   `{"status":"ok","model":null,"idle_timeout_sec":300,"pid":42784,"token":"42784-mrql36h5-mz74d1dt"}`
+   while loading/idle, and the same shape with `"model"` set to the **full file path** (e.g.
+   `"C:\Users\pay20\.hipfire\models\qwen3.6-27b.mq4"`, not the tag) once resident. So a bare 200
+   no longer means "ready" for hipfire — the daemon binds the port first and prewarms in the
+   background.
+   → **B**: `probe_health` (server.rs) now reads the full response into a bounded buffer
+   (instead of the first 64 bytes) and hands it to `health_response_indicates_ready`, which
+   still requires a 200 status line (so llama-server's 503-while-loading is unchanged), then
+   parses the JSON body: an object with `"model": null` → not ready; no `"model"` key at all
+   (llama-server's shape) or an empty/unparseable body → ready, same as before. Unit-tested
+   against the verbatim `model:null` body above, a `model:"<path>"` body, a plain llama body,
+   and an empty body.
+
+3. **`GET /v1/models` exists**: `{"data":[{"id":"qwen3.6-27b.mq4"},{"id":"qwen36-27b-dflash-mq4.hfq"}]}`
+   — ids are file stems, not tags. Chat requests still take the TAG in the `model` field
+   (unchanged from the 2026-07-14 pass). No code change; noted for a future model-id-mapping
+   feature if one is ever needed.
+
+4. **`hipfire config list` defaults**: `idle_timeout=300` — the model auto-**unloads** after 5
+   idle minutes, and the next request then pays a full cold reload. Wrong default for a
+   resident desktop chat app. `default_model=qwen3.6:27b`, `host=0.0.0.0`, `port=11435`.
+   → **D**: `buildHipfireArgs` now always emits `--idle-timeout` — the user's configured value
+   when set (including an explicit `"0"`), else `"0"` (never unload) — instead of omitting the
+   flag and falling through to hipfire's 300s default. `data.ts`'s `idle_timeout` flag
+   description updated to say so explicitly.
+
+5. **`hipfire list` output** (parser fixture — two-space indent, FILE, whitespace, SIZE,
+   whitespace, `(TAG)`):
+   ```
+   Local models:
+
+     qwen3.6-27b.mq4                     15.0GB (qwen3.6:27b)
+     qwen36-27b-dflash-mq4.hfq            0.9GB (qwen3.6:27b-draft)
+   ```
+   → **A**: new `list_hipfire_models` Tauri command (server.rs, next to `resolve_hipfire_bin`)
+   runs `<bin> list` and parses only the "Local models:" section via the pure, unit-tested
+   `parse_hipfire_list` (fixture above + an empty-output case + a combined `list -r` case).
+   Feeds a picker (`HipfireModelPicker`, Configure.tsx) for the "Model tag" field, alongside the
+   existing free-text input.
+
+6. **`hipfire list -r` output** adds an "Available models:" section (curated pull catalog,
+   50+ entries) — TAG, SIZE, then a free-text NOTE (may be many words, unicode, and end with a
+   `[downloaded]` marker for tags already present locally). Representative lines used as the
+   parser fixture (multi-word note, unicode, both `[downloaded]` forms):
+   ```
+   Available models:
+
+     qwen3.5:0.8b            0.55GB  386 / 5100 tok/s
+     deepseek-v4-flash         82GB  DeepSeek V4 Flash, MQ2-Lloyd routed-expert MoE (arch_id=9). Includes MTP sidecar for K=2 spec-decode (+29% TG on code). temp=1.0 is safety-critical: greedy/low-temp falls into token loops on the quant.
+     qwen3.6:27b               15GB  44 tok/s AR / 185 tok/s w/ draft on code [downloaded]
+     qwen3.6:27b-draft       0.92GB  DFlash draft for qwen3.6:27b - pairs with target for ~4x decode on code (refreshed 2026-04-27 from z-lab@0919688) [downloaded]
+   ```
+   → **F**: new `hipfire_pull.rs` module (mirrors `hipfire_convert.rs`'s process-orchestration
+   and event-streaming pattern) adds `list_hipfire_available` (pure, unit-tested
+   `parse_hipfire_available` against the fixture above, including the long deepseek note and
+   both `[downloaded]` lines) and `hipfire_pull`/`cancel_hipfire_pull`, streaming raw
+   stdout/stderr lines via `hipfire-pull-progress` / `hipfire-pull-done` events. Frontend:
+   `HipfirePullPanel` (Configure.tsx) — catalog dropdown, Pull button, streaming log, error
+   surface; refreshes the local-model picker (item 5) on success. User-click only, never
+   auto-started.
+
+7. **`hipfire stop` is effectively broken on Windows**, even against its own freshly-written,
+   correct pidfile: `"Not killing PID X: no port / token / (cmdline+startTime) confirmation -
+   refusing to kill (possible reused pid) - removing stale pidfile"` (the confirmation needs
+   `lsof`/`ss`, unavailable on Windows). `hipfire stop --force` prints `"win32: orphan reap is
+   Linux-only; the port was NOT freed"`. lm-st never shells out to `hipfire stop` (it manages
+   the child process handle directly), so this doesn't block anything, but it rules out
+   `hipfire stop` as a cleanup fallback — see item 8's fix instead.
+
+8. **Orphan proven live**: spawning `hipfire.cmd` creates the tree `cmd.exe -> (conhost.exe +
+   bun.exe)`, where `bun.exe` IS the serving daemon (there is no `daemon.exe`). Killing the top
+   `cmd.exe` process — exactly what `Child::kill()` does — leaves `bun.exe` running, still
+   holding the model's VRAM and the port.
+   → **C**: `ServerState` gained a `tree_kill: AtomicBool`, set at spawn time from the same
+   `exe_path.is_some()` discriminator `start_server` already uses to pick the hipfire vs. llama
+   spawn path. Every hipfire-child kill site (`stop_server`, the stale-child kill at the top of
+   `start_server`, the window-destroy cleanup for `ServerState`/`HipfireConvertState`/
+   `HipfirePullState`, and `cancel_hipfire_convert`/`cancel_hipfire_pull`) now goes through the
+   new `kill_child_tree` helper (server.rs), which shells out to `taskkill /F /T /PID <pid>` on
+   Windows when the tree-kill flag is set, falling back to a plain `child.kill()` when it's
+   unset, `taskkill` itself fails, or the platform isn't Windows (on Unix the hipfire child IS
+   `bun` directly — no intermediate shell wrapper). The llama path (`tree_kill` unset) issues
+   the exact same `child.kill()` as before at every site; `kill_child_tree` also always
+   `child.wait()`s afterwards to reap, per its spec — that was already true of `stop_server`,
+   and is now also true of the window-destroy cleanup and the (practically unreachable)
+   stale-child guard in `start_server`, which previously fired-and-forgot the kill. No change to
+   argv, env, spawn, or probe semantics for llama either way.

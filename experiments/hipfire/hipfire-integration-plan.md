@@ -31,6 +31,13 @@ confirmation against a live server. Implement each with the documented default b
 
 - **`/health`**: implemented as returns HTTP 200 when ready (lm-st's probe only checks for
   `200`). Assumption: not 503-while-loading. → `probe_health`.
+  **UPDATED 2026-07-18 (live-verified — see the live-verification checklist's re-verification
+  section):** the assumption was wrong in a different way than expected — hipfire doesn't
+  503-while-loading, but it also doesn't wait for the model before returning 200. `/health`
+  returns 200 the instant the daemon binds the port, with a body carrying `"model":null` until
+  a model is actually resident (`"model":"<full file path>"` once ready). `probe_health` now
+  reads the full body and treats `model: null` as not-ready; a bare 200 with no `model` key
+  (llama-server's shape) still means ready, unchanged.
 - **Port flag**: hipfire takes positional `host:port` / config, not `--port`. The launcher
   must pass `127.0.0.1:<port>` positionally and `parse_port` must read hipfire's form. →
   `parse_port`.
@@ -64,6 +71,17 @@ Cherry-pick the server.rs + settings.rs commits from the zinc branch; they gener
 3. **(Optional) `src-tauri/src/gguf.rs`**: cherry-pick `tensor_types` (tensor-table walk +
    `ggml_type_name`) if you want a pre-launch compatibility check (hipfire is VRAM-only, no
    CPU offload → a wrong-size or unsupported-quant model is a hard OOM, worth pre-flighting).
+4. **ADDED 2026-07-18 — Windows process-tree kill for hipfire.** Not part of the original
+   plan; discovered during the 2026-07-18 re-verification. hipfire's installed CLI is a `.cmd`
+   shim, so spawning it (`serve`/`quantize`/`pull`) really launches `cmd.exe`, which spawns the
+   actual `bun.exe` doing the work. `Child::kill()` only kills the top `cmd.exe`, orphaning
+   `bun.exe` still holding the model's VRAM and the server port — and `hipfire stop` /
+   `hipfire stop --force` are both broken on Windows and can't clean it up either (see the
+   live-verification checklist). `stop_server`, the window-destroy cleanup, and every other
+   hipfire-child `.kill()` site now go through `kill_child_tree` (server.rs), which shells out
+   to `taskkill /F /T /PID <pid>` on Windows when a `tree_kill` flag (set at spawn time from the
+   same `exe_path.is_some()` discriminator) is set, falling back to a plain `child.kill()`
+   otherwise (including the entire llama path, unconditionally, everywhere) and on non-Windows.
 
 **Difficulty: implementer-easy** for the settings + parameterized spawn (well-specified,
 cherry-pickable). **implementer-hard** only if the health predicate needs real
@@ -83,6 +101,13 @@ hipfire needs `.mq4/.hf4` files, not the `.gguf` files in `F:\models` and the HF
   surface hipfire's own `list`/registry, or track conversions in lm-st settings and map
   `gguf path → converted tag`. The existing `models_scan.rs` GGUF tree is llama-only; hipfire
   model discovery is a separate view.
+  **RESOLVED 2026-07-18:** surfaced hipfire's own registry directly rather than tracking a
+  parallel map in settings — `list_hipfire_models` (server.rs) runs `hipfire list` and parses
+  its "Local models:" section into a picker for the Configure "Model tag" field, and
+  `list_hipfire_available` + `hipfire_pull` (new `hipfire_pull.rs`, mirroring
+  `hipfire_convert.rs`'s event-streaming pattern) surface `hipfire list -r`'s curated
+  "Available models:" catalog with a Pull button, so a tag doesn't have to be converted from a
+  local GGUF at all — `hipfire pull <tag>` downloads it from HuggingFace directly.
 - **Quantizer gaps to guard**: source types Q4_0/Q8_0/Q4_K/Q5_K/Q6_K/F16/BF16/F32 are
   supported; IQ-quants, Q5_0/Q5_1, Q2_K/Q3_K panic. Pre-check the GGUF's tensor types
   (Phase-1 `tensor_types`) and refuse with a clear message rather than letting the child
