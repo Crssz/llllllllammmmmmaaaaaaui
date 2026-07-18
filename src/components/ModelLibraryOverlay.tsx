@@ -45,6 +45,7 @@ export function ModelLibraryOverlay({
     modelInfo,
     setEngineKind,
     setHipfireFlag,
+    loadedEngine,
     hipfireModelsVersion,
   } = useAppStore(
     useShallow((s) => ({
@@ -62,6 +63,12 @@ export function ModelLibraryOverlay({
       modelInfo: s.modelInfo,
       setEngineKind: s.setEngineKind,
       setHipfireFlag: s.setHipfireFlag,
+      // Which engine the running server was actually launched as — used
+      // below so the hipfire "loaded/serving" badge and its Load button
+      // can't claim a running llama server is serving a hipfire tag (and
+      // vice versa isn't needed: the llama branch's own `server.running`
+      // check stays untouched to keep the llama path byte-identical).
+      loadedEngine: s.loadedEngine,
       // Bumped store-side after a successful pull elsewhere (e.g. Configure's
       // HipfirePullPanel) — re-fetching on it means a model pulled while this
       // overlay isn't even open shows up without a manual refresh click.
@@ -376,7 +383,13 @@ export function ModelLibraryOverlay({
                     draft companion
                   </span>
                 )}
-                {server.running && server.info && (
+                {/* On the hipfire view, only claim the pid/port belongs to
+                    this tag when the running server was actually launched
+                    as hipfire — otherwise a running llama server's pid/port
+                    would render right next to a stale hipfire tag. The
+                    llama branch (!isHipfire) keeps the original unguarded
+                    check so that view stays byte-identical. */}
+                {(!isHipfire || loadedEngine === "hipfire") && server.running && server.info && (
                   <span className="badge green" style={{ fontSize: 10 }}>
                     pid {server.info.pid} · :{server.info.port}
                   </span>
@@ -525,6 +538,12 @@ export function ModelLibraryOverlay({
               <div className="model-table" style={{ border: 0, borderRadius: 0 }}>
                 {hipfireRows.map((m) => {
                   const isLoaded = m.tag === loadedKey;
+                  // "Loaded" here means the running server is actually hipfire
+                  // serving this exact tag — not merely that this tag is the
+                  // configured selection. Without the loadedEngine check, a
+                  // running llama server plus a stale hipfire_flags.tag would
+                  // falsely render this row as "loaded · serving".
+                  const isServing = isLoaded && server.running && loadedEngine === "hipfire";
                   const isDraft = m.tag.endsWith("-draft");
                   return (
                     <div
@@ -544,7 +563,7 @@ export function ModelLibraryOverlay({
                           </span>
                         )}
                         {isLoaded &&
-                          (server.running ? (
+                          (isServing ? (
                             <span
                               className="badge green"
                               style={{ fontSize: 9.5, padding: "1px 5px" }}
@@ -572,10 +591,10 @@ export function ModelLibraryOverlay({
                         className="btn"
                         style={{ padding: "3px 9px" }}
                         onClick={() => doLoadHipfire(m.tag, true)}
-                        disabled={isLoaded}
-                        title={isLoaded ? "Already selected" : "Serve this tag & restart the server"}
+                        disabled={isServing}
+                        title={isServing ? "Already selected" : "Serve this tag & restart the server"}
                       >
-                        {isLoaded ? (
+                        {isServing ? (
                           <>
                             <I.Check size={11} /> Loaded
                           </>
