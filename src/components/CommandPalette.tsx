@@ -64,6 +64,10 @@ export function CommandPalette({
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const q = query.trim().toLowerCase();
+  // Simple boolean so it's a valid useMemo dep (eslint's exhaustive-deps
+  // rejects inline expressions like `!!server.info`) — see the deps comment
+  // below for why activeEngine()'s inputs need to be tracked here.
+  const serverHasInfo = !!server.info;
 
   const commands = useMemo<Command[]>(() => {
     const navCmds: Command[] = nav.map((n) => ({
@@ -137,12 +141,18 @@ export function CommandPalette({
     // settings.engine_kind/loadedEngine aren't referenced by name in the body
     // above (activeEngine() reads the store fresh instead) but DO change
     // which engine the "Stop …" label resolves to — kept in the deps so ESLint's
-    // static analysis doesn't miss a real recompute trigger.
+    // static analysis doesn't miss a real recompute trigger. Same reasoning for
+    // server.ready/!!server.info: activeEngine() only trusts loadedEngine once
+    // the server is running AND ready AND has info (see serverSlice.ts) — without
+    // these, the "Stop …" label could resolve stale between a running-but-not-
+    // ready server and the moment it reports ready.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     nav,
     chats,
     server.running,
+    server.ready,
+    serverHasInfo,
     settings.engine_kind,
     loadedEngine,
     q,
