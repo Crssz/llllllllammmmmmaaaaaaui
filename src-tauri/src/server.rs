@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,16 @@ pub struct ServerState {
     /// Bumped on every start_server / stop_server so an in-flight probe
     /// thread for a stale generation exits instead of writing to `ready`.
     pub probe_gen: Arc<AtomicU64>,
+    /// True when the currently-running (or most recently spawned) child needs
+    /// a Windows process-tree kill rather than a plain `child.kill()`. Set at
+    /// spawn time from `exe_path.is_some()` — the same hipfire discriminator
+    /// `start_server` already uses — because hipfire's installed CLI is a
+    /// `.cmd` shim: spawning it really launches `cmd.exe`, which spawns the
+    /// actual `bun.exe` daemon doing the serving. Killing just the top
+    /// process (what `child.kill()` does) orphans `bun.exe`, still holding
+    /// the model's VRAM and the port (proven live 2026-07-18 — see
+    /// `kill_child_tree`). Always false on the llama path.
+    pub tree_kill: AtomicBool,
 }
 
 impl ServerState {
@@ -30,6 +40,7 @@ impl ServerState {
             info: Mutex::new(None),
             ready: Arc::new(AtomicBool::new(false)),
             probe_gen: Arc::new(AtomicU64::new(0)),
+            tree_kill: AtomicBool::new(false),
         }
     }
 }
@@ -62,9 +73,25 @@ struct ServerLogEvent {
     line: String,
 }
 
-/// Single-shot probe: TCP connect + raw GET /health, parse the status line.
-/// Returns true if llama-server replied 200; false for any failure (refused,
-/// 503 Loading model, read timeout, etc.).
+/// Single-shot probe: TCP connect + raw GET /health, read the full response
+/// and decide readiness from it. Returns true when the server is actually
+/// ready to serve a request; false for any failure (refused, non-200 status,
+/// read timeout, etc.) or — for hipfire — a 200 whose body says no model is
+/// resident yet.
+///
+/// llama-server's `/health` is a plain `{"status":"ok"}` with no "model" key,
+/// and already answers 503 ("Loading model") until the model is ready — the
+/// status-line check below is enough for it, unchanged from before.
+///
+/// hipfire's `/health` (confirmed live 2026-07-18) instead returns 200
+/// IMMEDIATELY once the daemon binds the port, *before* the model finishes
+/// loading — it prewarms in the background. Its body carries a "model" field
+/// that's `null` while loading/idle and the full resolved file path once a
+/// model is resident:
+///   {"status":"ok","model":null,"idle_timeout_sec":300,"pid":42784,"token":"…"}
+///   {"status":"ok","model":"C:\\Users\\…\\qwen3.6-27b.mq4","idle_timeout_sec":300,…}
+/// So for hipfire a bare 200 no longer means "ready" — see
+/// `health_response_indicates_ready` for the body-aware decision.
 fn probe_health(port: u16) -> bool {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
@@ -77,13 +104,70 @@ fn probe_health(port: u16) -> bool {
     if stream.write_all(req).is_err() {
         return false;
     }
-    let mut buf = [0u8; 64];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return false,
+    // Read the full response into a bounded buffer rather than a fixed
+    // 64-byte head: the readiness decision now needs the JSON body, not just
+    // the status line. The request sent `Connection: close`, so the peer
+    // closes its end after writing the response — loop until EOF (`Ok(0)`) or
+    // the read timeout fires, capping how much we ever buffer so a huge or
+    // pathological response can't grow this unbounded.
+    const MAX_LEN: usize = 4096;
+    let mut buf = Vec::with_capacity(MAX_LEN);
+    let mut chunk = [0u8; 512];
+    while buf.len() < MAX_LEN {
+        match stream.read(&mut chunk) {
+            Ok(0) => break, // EOF — peer closed per Connection: close
+            Ok(n) => {
+                let take = n.min(MAX_LEN - buf.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            Err(_) => break, // timeout or reset — decide from whatever we have
+        }
+    }
+    if buf.is_empty() {
+        return false;
+    }
+    health_response_indicates_ready(&buf)
+}
+
+/// Find the first occurrence of `needle` in `haystack`, or `None`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Decide readiness from a raw HTTP response buffer (status line + headers +
+/// body, as read by `probe_health`). Requires a 200 status line first — same
+/// as before this change, and still what makes llama-server's 503-while-
+/// loading correctly read as "not ready". When the status is 200, look at
+/// the JSON body (robust to the exact framing: take the slice from the body's
+/// first '{' to its last '}', rather than assuming exact chunking): if it
+/// parses as an object with a "model" key whose value is JSON null, the
+/// daemon has bound the port but no model is resident yet (hipfire, still
+/// loading) — not ready. If there's no "model" key at all (llama-server), or
+/// the body is empty/unparseable, keep today's semantics: a 200 status means
+/// ready.
+fn health_response_indicates_ready(buf: &[u8]) -> bool {
+    if !(buf.starts_with(b"HTTP/1.1 200") || buf.starts_with(b"HTTP/1.0 200")) {
+        return false;
+    }
+    let body = match find_subslice(buf, b"\r\n\r\n") {
+        Some(idx) => &buf[idx + 4..],
+        None => buf,
     };
-    let head = &buf[..n];
-    head.starts_with(b"HTTP/1.1 200") || head.starts_with(b"HTTP/1.0 200")
+    let start = body.iter().position(|&b| b == b'{');
+    let end = body.iter().rposition(|&b| b == b'}');
+    let (Some(s), Some(e)) = (start, end) else {
+        return true; // no JSON object in the body — bare 200 means ready
+    };
+    if e < s {
+        return true;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&body[s..=e]) {
+        Ok(serde_json::Value::Object(map)) => !matches!(map.get("model"), Some(serde_json::Value::Null)),
+        _ => true, // unparseable — keep today's semantics
+    }
 }
 
 // True when `s` looks like the HOST half of a hipfire "host:port" token —
@@ -658,7 +742,7 @@ mod tests {
         assert!(!s.ready.load(Ordering::SeqCst));
     }
 
-    // ── resolve_hipfire_bin ──────────────────────────────────────────────
+    // â”€â”€ resolve_hipfire_bin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn resolve_hipfire_bin_returns_explicit_existing_path_as_is() {
@@ -742,7 +826,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    // ── parse_hipfire_list ────────────────────────────────────────────────
+    // â”€â”€ parse_hipfire_list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn parse_hipfire_list_reads_the_live_captured_fixture() {
@@ -785,5 +869,43 @@ mod tests {
         let models = parse_hipfire_list(output);
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].tag, "qwen3.6:27b");
+    }
+
+    // â”€â”€ health_response_indicates_ready â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    #[test]
+    fn health_response_ready_for_plain_llama_ok_body() {
+        // llama-server's /health has no "model" key at all.
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}";
+        assert!(health_response_indicates_ready(resp));
+    }
+
+    #[test]
+    fn health_response_not_ready_when_hipfire_model_is_null() {
+        // Fact 2 verbatim: daemon bound the port, but no model is resident yet.
+        let body = br#"{"status":"ok","model":null,"idle_timeout_sec":300,"pid":42784,"token":"42784-mrql36h5-mz74d1dt"}"#;
+        let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n".to_vec();
+        resp.extend_from_slice(body);
+        assert!(!health_response_indicates_ready(&resp));
+    }
+
+    #[test]
+    fn health_response_ready_when_hipfire_model_is_resident() {
+        let body = br#"{"status":"ok","model":"C:\\Users\\pay20\\.hipfire\\models\\qwen3.6-27b.mq4","idle_timeout_sec":300,"pid":42784,"token":"x"}"#;
+        let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n".to_vec();
+        resp.extend_from_slice(body);
+        assert!(health_response_indicates_ready(&resp));
+    }
+
+    #[test]
+    fn health_response_ready_for_empty_body() {
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        assert!(health_response_indicates_ready(resp));
+    }
+
+    #[test]
+    fn health_response_not_ready_for_non_200_status() {
+        let resp = b"HTTP/1.1 503 Service Unavailable\r\n\r\n{\"status\":\"loading\"}";
+        assert!(!health_response_indicates_ready(resp));
     }
 }
