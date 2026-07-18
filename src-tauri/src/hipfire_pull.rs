@@ -241,28 +241,43 @@ pub fn hipfire_pull(
         let app = app.clone();
         let child_arc = state.child.clone();
         let cancel = state.cancel.clone();
+        let gen_counter = state.generation.clone();
         std::thread::spawn(move || {
+            // exit_ok is None when the generation counter moves out from under
+            // us before our own child resolves. Only cancel_hipfire_pull
+            // (bumps the counter immediately, before touching the child) or a
+            // NEW pull's start (which can only run once THIS slot is
+            // cleared — impossible while we're still looping below) ever
+            // advance it, so seeing a mismatch here can only mean
+            // cancel_hipfire_pull ran for OUR generation. Treat that as
+            // cancelled without ever locking/touching the shared slot again —
+            // by the time we'd look, it may already hold a NEWER generation's
+            // child, and consuming that child's exit status would wrongly
+            // report a successor pull's real outcome as ours.
             let exit_ok = loop {
                 std::thread::sleep(std::time::Duration::from_millis(200));
+                if gen_counter.load(Ordering::SeqCst) != generation {
+                    break None;
+                }
                 let mut slot = lock_or_poisoned(&child_arc);
                 let Some(c) = slot.as_mut() else {
                     // Already reaped/killed by cancel_hipfire_pull.
-                    break false;
+                    break Some(false);
                 };
                 match c.try_wait() {
                     Ok(Some(status)) => {
                         *slot = None;
-                        break status.success();
+                        break Some(status.success());
                     }
                     Ok(None) => continue,
                     Err(_) => {
                         *slot = None;
-                        break false;
+                        break Some(false);
                     }
                 }
             };
 
-            let done = if cancel.load(Ordering::SeqCst) {
+            let done = if exit_ok.is_none() || cancel.load(Ordering::SeqCst) {
                 HipfirePullDoneEvent {
                     generation,
                     ok: false,
@@ -270,7 +285,7 @@ pub fn hipfire_pull(
                     error: None,
                     tag: tag.clone(),
                 }
-            } else if exit_ok {
+            } else if exit_ok == Some(true) {
                 HipfirePullDoneEvent {
                     generation,
                     ok: true,
@@ -301,6 +316,11 @@ pub fn hipfire_pull(
 #[tauri::command]
 pub fn cancel_hipfire_pull(state: State<'_, HipfirePullState>) -> Result<(), String> {
     state.cancel.store(true, Ordering::SeqCst);
+    // Bump the generation immediately, before touching the child — this is
+    // what lets the reaper thread above notice a cancel right away instead of
+    // racing a NEWER pull that might reuse the child slot this call is about
+    // to empty (see its generation check).
+    state.generation.fetch_add(1, Ordering::SeqCst);
     let mut slot = lock_or_poisoned(&state.child);
     if let Some(mut c) = slot.take() {
         // `hipfire pull` runs through the same `.cmd` shim as `serve`/
