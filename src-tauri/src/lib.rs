@@ -35,7 +35,10 @@ use crate::gguf::inspect_gguf;
 use crate::hipfire_convert::{cancel_hipfire_convert, hipfire_convert, HipfireConvertState};
 use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
-use crate::server::{resolve_hipfire_bin_cmd, server_status, start_server, stop_server, ServerState};
+use crate::server::{
+    list_hipfire_models, resolve_hipfire_bin_cmd, server_status, start_server, stop_server,
+    ServerState,
+};
 use crate::settings::{load_settings, save_settings, Settings};
 use crate::transcribe::{read_audio_base64, read_image_base64, save_recording};
 use crate::util::{chrono_now_millis, lock_or_poisoned, push_recent};
@@ -183,6 +186,7 @@ pub fn run() {
             stop_server,
             server_status,
             resolve_hipfire_bin_cmd,
+            list_hipfire_models,
             save_recording,
             read_audio_base64,
             read_image_base64,

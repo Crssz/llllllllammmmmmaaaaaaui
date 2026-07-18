@@ -219,6 +219,92 @@ pub fn resolve_hipfire_bin_cmd(explicit: String) -> Result<String, String> {
     resolve_hipfire_bin(&explicit).map(|p| p.to_string_lossy().into_owned())
 }
 
+/// One locally-registered hipfire model, as reported by `hipfire list`'s
+/// "Local models:" section.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HipfireLocalModel {
+    pub file: String,
+    pub size: String,
+    pub tag: String,
+}
+
+/// Parse a single "Local models:" entry line, e.g.:
+///   "  qwen3.6-27b.mq4                     15.0GB (qwen3.6:27b)"
+/// Two-space indent, FILE (no spaces), whitespace, SIZE, whitespace, "(TAG)".
+/// Returns `None` for a line that doesn't have the indent + all three fields.
+fn parse_local_model_line(line: &str) -> Option<HipfireLocalModel> {
+    if !line.starts_with(' ') {
+        return None;
+    }
+    let mut parts = line.trim().split_whitespace();
+    let file = parts.next()?.to_string();
+    let size = parts.next()?.to_string();
+    let rest: String = parts.collect::<Vec<_>>().join(" ");
+    let tag = rest
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))?
+        .to_string();
+    if tag.is_empty() {
+        return None;
+    }
+    Some(HipfireLocalModel { file, size, tag })
+}
+
+/// Parse the "Local models:" section out of `hipfire list` output. Pure — no
+/// process spawning — so it's unit-testable against the exact live-captured
+/// fixture (live-verification-checklist.md, 2026-07-18 re-verification).
+/// Any other top-level (non-indented, non-blank) line — e.g. `list -r`'s
+/// "Available models:" header — ends the section. Returns an empty vec when
+/// the section is missing or has no entries.
+pub fn parse_hipfire_list(output: &str) -> Vec<HipfireLocalModel> {
+    let mut models = Vec::new();
+    let mut in_section = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed == "Local models:" {
+            in_section = true;
+            continue;
+        }
+        if !in_section || trimmed.is_empty() {
+            continue;
+        }
+        if !line.starts_with(' ') {
+            in_section = false;
+            continue;
+        }
+        if let Some(m) = parse_local_model_line(line) {
+            models.push(m);
+        }
+    }
+    models
+}
+
+/// Run `<hipfire> list` and parse its "Local models:" section — the tags
+/// already registered and ready to `serve` without triggering an auto-pull
+/// from HuggingFace. `explicit`, when given, is the same `hipfire_path`
+/// override `resolve_hipfire_bin` takes everywhere else.
+#[tauri::command]
+pub fn list_hipfire_models(explicit: Option<String>) -> Result<Vec<HipfireLocalModel>, String> {
+    let bin = resolve_hipfire_bin(explicit.as_deref().unwrap_or(""))?;
+    let work_dir = bin
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let output = quiet_command(&bin)
+        .arg("list")
+        .current_dir(&work_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("spawn hipfire list: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("hipfire list failed: {}", stderr.trim()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_hipfire_list(&stdout))
+}
+
 #[tauri::command]
 pub fn start_server(
     app: AppHandle,
@@ -654,5 +740,50 @@ mod tests {
         assert_eq!(resolved, shim);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    // ── parse_hipfire_list ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_hipfire_list_reads_the_live_captured_fixture() {
+        // Verbatim capture from `hipfire list` (live-verification-checklist.md,
+        // 2026-07-18 re-verification, fact 5).
+        let output = "Local models:\n\n  qwen3.6-27b.mq4                     15.0GB (qwen3.6:27b)\n  qwen36-27b-dflash-mq4.hfq            0.9GB (qwen3.6:27b-draft)\n";
+        let models = parse_hipfire_list(output);
+        assert_eq!(
+            models,
+            vec![
+                HipfireLocalModel {
+                    file: "qwen3.6-27b.mq4".to_string(),
+                    size: "15.0GB".to_string(),
+                    tag: "qwen3.6:27b".to_string(),
+                },
+                HipfireLocalModel {
+                    file: "qwen36-27b-dflash-mq4.hfq".to_string(),
+                    size: "0.9GB".to_string(),
+                    tag: "qwen3.6:27b-draft".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_hipfire_list_empty_output_yields_empty_vec() {
+        assert!(parse_hipfire_list("").is_empty());
+    }
+
+    #[test]
+    fn parse_hipfire_list_missing_section_yields_empty_vec() {
+        assert!(parse_hipfire_list("some unrelated CLI output\n").is_empty());
+    }
+
+    #[test]
+    fn parse_hipfire_list_stops_at_the_available_models_section() {
+        // A combined `list -r` output must not leak "Available models:" rows
+        // into the "Local models:" result.
+        let output = "Local models:\n\n  qwen3.6-27b.mq4                     15.0GB (qwen3.6:27b)\n\nAvailable models:\n\n  qwen3.5:0.8b            0.55GB  386 / 5100 tok/s\n";
+        let models = parse_hipfire_list(output);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].tag, "qwen3.6:27b");
     }
 }
