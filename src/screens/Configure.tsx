@@ -619,8 +619,9 @@ function HipfirePullPanel({
               </option>
               {catalog.map((m) => (
                 <option key={m.tag} value={m.tag}>
-                  {m.tag} — {m.size}
-                  {m.downloaded ? " [downloaded]" : ""} — {truncate(m.note, 80)}
+                  {/* m.note already carries hipfire's own "[downloaded]" suffix
+                      for a locally-present tag — don't append a second one. */}
+                  {m.tag} — {m.size} — {truncate(m.note, 80)}
                 </option>
               ))}
             </select>
