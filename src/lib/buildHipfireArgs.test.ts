@@ -2,16 +2,18 @@ import { describe, it, expect } from "vitest";
 import { buildHipfireArgs } from "./buildHipfireArgs";
 
 describe("buildHipfireArgs", () => {
-  it("always emits serve <tag> <host:port> positionally, even with an empty flag bag", () => {
+  it("omits the model positional entirely when no tag is set, rather than pushing an empty string", () => {
     const args = buildHipfireArgs({});
     expect(args[0]).toBe("serve");
-    expect(args[1]).toBe(""); // no tag set yet
-    expect(args[2]).toBe("127.0.0.1:8080");
+    expect(args[1]).toBe("127.0.0.1:8080"); // host:port shifts up — no "" tag positional
+    expect(args).not.toContain("");
   });
 
   it("carries the tag through as the first positional argument", () => {
     const args = buildHipfireArgs({ tag: "qwen3.6:27b" });
-    expect(args).toEqual(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
+    expect(args[0]).toBe("serve");
+    expect(args[1]).toBe("qwen3.6:27b");
+    expect(args[2]).toBe("127.0.0.1:8080");
   });
 
   it("defaults host to 127.0.0.1 and port to 8080", () => {
@@ -29,14 +31,27 @@ describe("buildHipfireArgs", () => {
     expect(args[2]).toBe("127.0.0.1:8080");
   });
 
-  it("omits --kv-mode, --idle-timeout, --tp when unset", () => {
+  it("omits --kv-mode and --tp when unset", () => {
     const args = buildHipfireArgs({ tag: "t" });
     expect(args).not.toContain("--kv-mode");
-    expect(args).not.toContain("--idle-timeout");
     expect(args).not.toContain("--tp");
   });
 
-  it("emits --kv-mode and --idle-timeout when set", () => {
+  // Regression: hipfire's own idle_timeout default (300s) silently unloads a
+  // resident model after 5 idle minutes — wrong for a desktop chat app. An
+  // unset/empty flag value must still emit an explicit "0" (never unload),
+  // not omit the flag and fall through to hipfire's default.
+  it("emits --idle-timeout 0 (never unload) when the flag is unset", () => {
+    const args = buildHipfireArgs({ tag: "t" });
+    expect(args[args.indexOf("--idle-timeout") + 1]).toBe("0");
+  });
+
+  it("emits the user's --idle-timeout value, including an explicit 0", () => {
+    const args = buildHipfireArgs({ tag: "t", idle_timeout: 0 });
+    expect(args[args.indexOf("--idle-timeout") + 1]).toBe("0");
+  });
+
+  it("emits --kv-mode and a non-default --idle-timeout when set", () => {
     const args = buildHipfireArgs({ tag: "t", kv_mode: "q8", idle_timeout: 300 });
     expect(args[args.indexOf("--kv-mode") + 1]).toBe("q8");
     expect(args[args.indexOf("--idle-timeout") + 1]).toBe("300");

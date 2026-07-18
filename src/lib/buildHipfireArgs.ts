@@ -3,12 +3,20 @@ export type HipfireFlagValues = Record<string, string | number | boolean>;
 // Build the hipfire `serve` argv list (no "hipfire" prefix). Parallel to
 // buildArgs() for llama-server / buildZincArgs() for zinc, but hipfire's CLI
 // shape is different from both: it serves a TAG registered ahead of time by
-// `hipfire quantize --install --register <tag>` (see hipfireConvert), not a
-// raw .gguf path — so unlike llama/zinc there is no model-file argument here.
+// `hipfire quantize --install --register <tag>` or pulled via `hipfire pull
+// <tag>` (see hipfireConvert / hipfirePull), not a raw .gguf path — so unlike
+// llama/zinc there is no model-file argument here.
 //
-// Documented shape (bench-hipfire-vs-llama.README.md): `hipfire serve <tag>
-// <host>:<port>` — tag and host:port are POSITIONAL, not flags. `parse_port`
-// (server.rs) reads the port back out of that positional host:port token.
+// VERIFIED live 2026-07-18: `serve [model] [host] [port] [flags]` — the model
+// tag positional is OPTIONAL (omitting it pre-warms `cfg.default_model`
+// instead of a specific tag). When a tag IS given it's resolved exactly like
+// `run`/`pull`, meaning a non-local tag gets auto-pulled from HuggingFace
+// before serving — see the "Model tag" picker's hint in Configure. host and
+// port may be separate positionals or the combined "host:port" shorthand
+// token; the combined form was confirmed live
+// (`hipfire serve qwen3.6:27b 127.0.0.1:8080` works), so this app keeps
+// emitting it as a single "<host>:<port>" token — `parse_port` (server.rs)
+// reads the port back out of that token.
 //
 // VERIFIED live against `hipfire serve --help`: serve accepts only
 // -d/--detach, --kv-mode, --idle-timeout, --no-prewarm, --tp. --kv-mode,
@@ -20,11 +28,22 @@ export function buildHipfireArgs(vals: HipfireFlagValues): string[] {
   const tag = truthy(vals.tag) ? String(vals.tag) : "";
   const host = truthy(vals.host) ? String(vals.host) : "127.0.0.1";
   const port = truthy(vals.port) ? String(vals.port) : "8080";
-  out.push("serve", tag, `${host}:${port}`);
+  out.push("serve");
+  // Omit the model positional entirely when no tag is set, rather than
+  // pushing an empty string — `serve` then falls back to cfg.default_model
+  // (see above) instead of getting a stray "" positional. Defensive only:
+  // the UI's launchPrereqError already requires a tag before Start unlocks.
+  if (tag) out.push(tag);
+  out.push(`${host}:${port}`);
 
-  // Only-when-set knobs — hipfire's own defaults apply when omitted.
+  // Only-when-set knobs — hipfire's own defaults apply when omitted, EXCEPT
+  // --idle-timeout: hipfire's own default (300s = 5 idle minutes) silently
+  // unloads the model, which is wrong for a resident desktop chat app that
+  // may sit idle between messages and would otherwise pay a full cold reload
+  // on the next send. Always emit --idle-timeout: the user's value when set
+  // (including an explicit "0"), else "0" (never unload).
   if (truthy(vals.kv_mode)) out.push("--kv-mode", String(vals.kv_mode));
-  if (truthy(vals.idle_timeout)) out.push("--idle-timeout", String(vals.idle_timeout));
+  out.push("--idle-timeout", truthy(vals.idle_timeout) ? String(vals.idle_timeout) : "0");
   if (truthy(vals.tp)) out.push("--tp", String(vals.tp));
 
   // VERIFIED: --spec, -md/--model-draft, and --draft-max/--draft are

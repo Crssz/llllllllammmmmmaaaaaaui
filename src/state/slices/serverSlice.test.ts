@@ -367,7 +367,9 @@ describe("server slice — hipfire engine dispatch", () => {
     await useAppStore.getState().reloadServer();
     expect(api.startServer).toHaveBeenCalledTimes(1);
     const [, args] = vi.mocked(api.startServer).mock.calls[0];
-    expect(args).toEqual(["serve", "qwen3.6:27b", "127.0.0.1:9090"]);
+    // buildHipfireArgs always appends --idle-timeout (defaulting to "0" —
+    // never unload — when the flag bag doesn't set one; see buildHipfireArgs.test.ts).
+    expect(args).toEqual(["serve", "qwen3.6:27b", "127.0.0.1:9090", "--idle-timeout", "0"]);
   });
 });
 

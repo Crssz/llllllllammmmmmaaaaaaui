@@ -710,7 +710,7 @@ export const HIPFIRE_FLAG_GROUPS: FlagGroup[] = [
       {
         key: "tag",
         label: "Model tag",
-        desc: "Tag registered by `hipfire quantize --install --register <tag>` — see the conversion panel above",
+        desc: "Tag to serve — from `hipfire pull <tag>` (see the local-model picker below) or from converting a GGUF via `quantize --install --register <tag>` (see the conversion panel above)",
         flag: "serve <tag>",
         type: "text",
         value: "",
@@ -734,7 +734,7 @@ export const HIPFIRE_FLAG_GROUPS: FlagGroup[] = [
       {
         key: "idle_timeout",
         label: "Idle timeout (s)",
-        desc: "Unload the model after this many idle seconds. Leave empty to use hipfire's default.",
+        desc: "Unload the model after this many idle seconds. Empty = 0 = keep the model resident; hipfire's own default is 300s.",
         flag: "--idle-timeout",
         type: "text",
         value: "",
