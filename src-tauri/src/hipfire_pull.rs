@@ -127,8 +127,15 @@ pub fn parse_hipfire_available(output: &str) -> Vec<HipfireAvailableModel> {
 
 /// Run `<hipfire> list -r` and parse its "Available models:" section — the
 /// curated catalog `hipfire pull <tag>` can fetch from HuggingFace.
+///
+/// `async fn` (server.rs's `list_hipfire_models` pattern): the frontend
+/// re-fetches this on every hipfire-path keystroke (HipfirePullPanel), and a
+/// sync `#[tauri::command]` would block the main (STA) thread for the
+/// lifetime of the spawned `hipfire list -r` child.
 #[tauri::command]
-pub fn list_hipfire_available(explicit: Option<String>) -> Result<Vec<HipfireAvailableModel>, String> {
+pub async fn list_hipfire_available(
+    explicit: Option<String>,
+) -> Result<Vec<HipfireAvailableModel>, String> {
     let bin = resolve_hipfire_bin(explicit.as_deref().unwrap_or(""))?;
     let work_dir = bin
         .parent()

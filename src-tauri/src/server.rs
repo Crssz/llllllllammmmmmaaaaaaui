@@ -451,8 +451,16 @@ pub fn parse_hipfire_list(output: &str) -> Vec<HipfireLocalModel> {
 /// already registered and ready to `serve` without triggering an auto-pull
 /// from HuggingFace. `explicit`, when given, is the same `hipfire_path`
 /// override `resolve_hipfire_bin` takes everywhere else.
+///
+/// `async fn` (workspace.rs's "async → worker pool, not the main thread"
+/// pattern): the frontend re-fetches this on every hipfire-path keystroke
+/// (HipfireModelPicker), and `Command::output()` blocks for the lifetime of
+/// the spawned `hipfire list` child. A sync `#[tauri::command]` runs on the
+/// main (STA) thread, so it would stall every other pending invoke — the
+/// settings-persistence write and the server-status poll among them — for
+/// each keystroke's ~100ms process spawn.
 #[tauri::command]
-pub fn list_hipfire_models(explicit: Option<String>) -> Result<Vec<HipfireLocalModel>, String> {
+pub async fn list_hipfire_models(explicit: Option<String>) -> Result<Vec<HipfireLocalModel>, String> {
     let bin = resolve_hipfire_bin(explicit.as_deref().unwrap_or(""))?;
     let work_dir = bin
         .parent()
