@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
-import { api, type GgufInfo } from "../lib/api";
+import { api, type GgufInfo, type HipfireLocalModel } from "../lib/api";
 import { ExpandedRow, bitsClass, flatten, type FlatRow } from "../screens/Models";
 import { useContextMenu, type MenuItem } from "./ContextMenu";
 import { quantDescription } from "../lib/quant";
@@ -13,6 +13,12 @@ function basename(p: string): string {
   if (!p) return "";
   const sep = p.includes("\\") ? "\\" : "/";
   return p.split(sep).pop() || p;
+}
+
+// hipfire's `size` is already a formatted string (e.g. "15.0GB") — parse the
+// leading number for the "size" sort, same idea as llama's quant.size_gb.
+function parseSizeGb(size: string): number {
+  return parseFloat(size) || 0;
 }
 
 export function ModelLibraryOverlay({
@@ -37,6 +43,9 @@ export function ModelLibraryOverlay({
     stopServer,
     reloadServer,
     modelInfo,
+    setEngineKind,
+    setHipfireFlag,
+    hipfireModelsVersion,
   } = useAppStore(
     useShallow((s) => ({
       flags: s.flags,
@@ -51,8 +60,16 @@ export function ModelLibraryOverlay({
       stopServer: s.stopServer,
       reloadServer: s.reloadServer,
       modelInfo: s.modelInfo,
+      setEngineKind: s.setEngineKind,
+      setHipfireFlag: s.setHipfireFlag,
+      // Bumped store-side after a successful pull elsewhere (e.g. Configure's
+      // HipfirePullPanel) — re-fetching on it means a model pulled while this
+      // overlay isn't even open shows up without a manual refresh click.
+      hipfireModelsVersion: s.hipfirePull.modelsVersion,
     })),
   );
+
+  const isHipfire = settings.engine_kind === "hipfire";
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const openMenu = useContextMenu();
@@ -60,6 +77,31 @@ export function ModelLibraryOverlay({
   const [sort, setSort] = useState<SortBy>("recent");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [rowInfo, setRowInfo] = useState<Record<string, GgufInfo | "loading" | "error">>({});
+
+  // Local hipfire model list — parallel to Configure's HipfireModelPicker,
+  // but this overlay is the ONLY place a hipfire user picks a model to serve
+  // (Configure's picker feeds the same hipfire_flags.tag field, just from a
+  // different screen), so it owns its own fetch rather than sharing state.
+  const [hipfireModels, setHipfireModels] = useState<HipfireLocalModel[]>([]);
+  const [hipfireModelsError, setHipfireModelsError] = useState<string | null>(null);
+  const [hipfireModelsLoading, setHipfireModelsLoading] = useState(false);
+
+  const refreshHipfireModels = async () => {
+    setHipfireModelsLoading(true);
+    setHipfireModelsError(null);
+    try {
+      const list = await api.listHipfireModels(settings.hipfire_path);
+      setHipfireModels(list);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setHipfireModels([]);
+      // hipfire not installed (or otherwise unreachable) surfaces here as a
+      // small inline error below — never a crash.
+      setHipfireModelsError(msg);
+    } finally {
+      setHipfireModelsLoading(false);
+    }
+  };
 
   // Reset transient state each time the popover opens. We accept the
   // cascading-render warning because the alternative — deriving
@@ -71,6 +113,15 @@ export function ModelLibraryOverlay({
       setExpandedKey(null);
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !isHipfire) return;
+    // Mirrors the expandedKey reset effect above — fetching on open/engine-
+    // switch/refresh is the point of this effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refreshHipfireModels().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isHipfire, settings.hipfire_path, hipfireModelsVersion]);
 
   // Click outside / Esc closes
   useEffect(() => {
@@ -119,9 +170,30 @@ export function ModelLibraryOverlay({
     return flat;
   }, [models, q, sort]);
 
+  const hipfireRows: HipfireLocalModel[] = useMemo(() => {
+    let list = hipfireModels;
+    if (q) {
+      const needle = q.toLowerCase();
+      list = list.filter(
+        (m) => m.tag.toLowerCase().includes(needle) || m.file.toLowerCase().includes(needle),
+      );
+    }
+    if (sort === "size") {
+      list = [...list].sort((a, b) => parseSizeGb(b.size) - parseSizeGb(a.size));
+    } else if (sort === "name") {
+      list = [...list].sort((a, b) => a.tag.localeCompare(b.tag));
+    }
+    return list;
+  }, [hipfireModels, q, sort]);
+
   if (!open) return null;
 
-  const loadedKey = (flags.model as string) || "";
+  // Loaded/selected identity — llama keys off the GGUF path (flags.model);
+  // hipfire has no --model flag and no /props endpoint (fact 5), so its
+  // identity is the configured tag instead.
+  const loadedKey = isHipfire
+    ? String((settings.hipfire_flags as Record<string, unknown>)?.tag ?? "")
+    : (flags.model as string) || "";
   const ensureRowInfo = (key: string, p: string) => {
     if (rowInfo[key]) return;
     setRowInfo((prev) => ({ ...prev, [key]: "loading" }));
@@ -145,6 +217,15 @@ export function ModelLibraryOverlay({
     // Switch to the picked model and restart the server so it's live
     // immediately — stops a running server first, then starts with the new
     // model (or just starts it if it was stopped).
+    reloadServer().catch(() => {});
+  };
+
+  // hipfire equivalent of doLoad: writes hipfire_flags.tag (the same update
+  // path Configure's HipfireModelPicker uses) instead of flags.model, then
+  // reloads exactly like the llama pick does.
+  const doLoadHipfire = (tag: string, andClose = true) => {
+    setHipfireFlag("tag", tag);
+    if (andClose) onClose();
     reloadServer().catch(() => {});
   };
 
@@ -178,6 +259,8 @@ export function ModelLibraryOverlay({
       onClick: () => navigator.clipboard?.writeText(r.quant.path).catch(() => {}),
     },
   ];
+
+  const rowCount = isHipfire ? hipfireRows.length : rows.length;
 
   return (
     <>
@@ -249,11 +332,13 @@ export function ModelLibraryOverlay({
                 }}
                 title={loadedKey}
               >
-                {basename(loadedKey)}
+                {isHipfire ? loadedKey : basename(loadedKey)}
               </div>
             ) : (
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-                Pick a GGUF below or browse to one on disk.
+                {isHipfire
+                  ? "Pick a local hipfire tag below, or pull one on Configure."
+                  : "Pick a GGUF below or browse to one on disk."}
               </div>
             )}
             {loadedKey && (
@@ -267,19 +352,28 @@ export function ModelLibraryOverlay({
                   flexWrap: "wrap",
                 }}
               >
-                {modelInfo?.architecture && (
+                {/* modelInfo is GGUF/--props-derived — llama only (fact 5).
+                    It's cleared whenever hipfire is active (see effects.tsx),
+                    but guard on isHipfire directly here too so these badges
+                    can never render stale llama data for a hipfire tag. */}
+                {!isHipfire && modelInfo?.architecture && (
                   <span className="badge ghost mono" style={{ fontSize: 10 }}>
                     {modelInfo.architecture}
                   </span>
                 )}
-                {modelInfo?.mtp_support && (
+                {!isHipfire && modelInfo?.mtp_support && (
                   <span className="badge accent" style={{ fontSize: 10 }}>
                     <I.Spark size={9} /> MTP ✓
                   </span>
                 )}
-                {modelInfo?.size_gb && (
+                {!isHipfire && modelInfo?.size_gb && (
                   <span className="badge ghost mono" style={{ fontSize: 10 }}>
                     {modelInfo.size_gb.toFixed(1)} GB
+                  </span>
+                )}
+                {isHipfire && loadedKey.endsWith("-draft") && (
+                  <span className="badge ghost" style={{ fontSize: 10 }}>
+                    draft companion
                   </span>
                 )}
                 {server.running && server.info && (
@@ -290,6 +384,23 @@ export function ModelLibraryOverlay({
               </div>
             )}
           </div>
+
+          {/* Engine switch — wired to the same settings.engine_kind setter
+              Configure uses. Switching here only changes the next-launch
+              target, exactly like Configure's toggle; it does not restart a
+              running server on its own. */}
+          <span
+            className="segmented"
+            title="Inference engine — switching does not restart the server"
+            style={{ flexShrink: 0 }}
+          >
+            <button className={isHipfire ? "" : "on"} onClick={() => setEngineKind("llama")}>
+              llama.cpp
+            </button>
+            <button className={isHipfire ? "on" : ""} onClick={() => setEngineKind("hipfire")}>
+              hipfire
+            </button>
+          </span>
 
           {server.running ? (
             <button
@@ -327,22 +438,45 @@ export function ModelLibraryOverlay({
             <I.Search />
             <input
               autoFocus
-              placeholder="Filter by owner, model, quant, or filename…"
+              placeholder={
+                isHipfire
+                  ? "Filter by tag or file…"
+                  : "Filter by owner, model, quant, or filename…"
+              }
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
           <span className="badge ghost mono">
-            {rows.length} {rows.length === 1 ? "row" : "rows"}
+            {rowCount} {rowCount === 1 ? "row" : "rows"}
           </span>
           <span
             className="badge ghost mono"
             style={{ color: "var(--muted)" }}
-            title={settings.models_dir ?? ""}
+            title={isHipfire ? settings.hipfire_path || "auto (PATH)" : (settings.models_dir ?? "")}
           >
-            {settings.models_dir ? basename(settings.models_dir) : "no directory"}
+            {isHipfire
+              ? settings.hipfire_path
+                ? basename(settings.hipfire_path)
+                : "auto (PATH)"
+              : settings.models_dir
+                ? basename(settings.models_dir)
+                : "no directory"}
           </span>
           <span style={{ flex: 1 }} />
+          {isHipfire && (
+            <button
+              className="btn ghost"
+              onClick={() => refreshHipfireModels().catch(() => {})}
+              title="Refresh local model list"
+              disabled={hipfireModelsLoading}
+            >
+              <I.Refresh
+                size={11}
+                style={{ animation: hipfireModelsLoading ? "spin 0.9s linear infinite" : "none" }}
+              />
+            </button>
+          )}
           <div className="segmented">
             {(["recent", "size", "name"] as SortBy[]).map((s) => (
               <button key={s} className={sort === s ? "on" : ""} onClick={() => setSort(s)}>
@@ -360,7 +494,103 @@ export function ModelLibraryOverlay({
             background: "var(--bg)",
           }}
         >
-          {rows.length === 0 ? (
+          {isHipfire ? (
+            hipfireModelsError ? (
+              <div
+                style={{
+                  padding: "24px",
+                  textAlign: "center",
+                  color: "var(--red)",
+                  fontSize: 12.5,
+                }}
+              >
+                Couldn&apos;t list local hipfire models: {hipfireModelsError}
+              </div>
+            ) : hipfireRows.length === 0 ? (
+              <div
+                style={{
+                  padding: "40px 24px",
+                  textAlign: "center",
+                  color: "var(--muted)",
+                  fontSize: 13,
+                }}
+              >
+                {hipfireModelsLoading
+                  ? "Scanning…"
+                  : hipfireModels.length === 0
+                    ? "No local hipfire models yet — pull one from HuggingFace or convert a GGUF on Configure."
+                    : "No models match your filter."}
+              </div>
+            ) : (
+              <div className="model-table" style={{ border: 0, borderRadius: 0 }}>
+                {hipfireRows.map((m) => {
+                  const isLoaded = m.tag === loadedKey;
+                  const isDraft = m.tag.endsWith("-draft");
+                  return (
+                    <div
+                      key={m.tag}
+                      className={"model-row" + (isLoaded ? " loaded-row" : "")}
+                      style={{ gridTemplateColumns: "minmax(160px, 1fr) minmax(160px, 1.6fr) 90px auto" }}
+                    >
+                      <div className="model-row-name">
+                        <span className="quant-tag mono">{m.tag}</span>
+                        {isDraft && (
+                          <span
+                            className="badge ghost"
+                            style={{ fontSize: 9.5, padding: "1px 5px" }}
+                            title="Speculative-decoding draft — pairs with its target model"
+                          >
+                            draft companion
+                          </span>
+                        )}
+                        {isLoaded &&
+                          (server.running ? (
+                            <span
+                              className="badge green"
+                              style={{ fontSize: 9.5, padding: "1px 5px" }}
+                              title="The server is serving this tag"
+                            >
+                              <span className="dot" /> loaded
+                            </span>
+                          ) : (
+                            <span
+                              className="badge ghost"
+                              style={{ fontSize: 9.5, padding: "1px 5px" }}
+                              title="Set as the tag to serve — start the server to load it"
+                            >
+                              selected
+                            </span>
+                          ))}
+                      </div>
+                      <div className="model-row-owner" title={m.file}>
+                        {m.file}
+                      </div>
+                      <div className="model-row-cell mono" style={{ textAlign: "right" }}>
+                        {m.size}
+                      </div>
+                      <button
+                        className="btn"
+                        style={{ padding: "3px 9px" }}
+                        onClick={() => doLoadHipfire(m.tag, true)}
+                        disabled={isLoaded}
+                        title={isLoaded ? "Already selected" : "Serve this tag & restart the server"}
+                      >
+                        {isLoaded ? (
+                          <>
+                            <I.Check size={11} /> Loaded
+                          </>
+                        ) : (
+                          <>
+                            <I.Play size={11} /> Load
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : rows.length === 0 ? (
             <div
               style={{
                 padding: "40px 24px",
@@ -526,44 +756,61 @@ export function ModelLibraryOverlay({
         >
           <I.Info size={11} />
           <span>
-            Load switches the model and restarts the server. Use a row&apos;s chevron to inspect &
-            quick-config first.
+            {isHipfire
+              ? "Load switches the model tag and restarts the server. New tags come from Configure — pull one from HuggingFace or convert a GGUF."
+              : "Load switches the model and restarts the server. Use a row's chevron to inspect & quick-config first."}
           </span>
           <span style={{ flex: 1 }} />
-          <button
-            className="btn"
-            onClick={() => {
-              // Match row-Load: after a file is chosen, restart the server so it
-              // actually loads (setting --model alone doesn't), then close. On
-              // cancel, keep the overlay open. Start failures surface via toast.
-              pickModel()
-                .then((picked) => {
-                  if (!picked) return;
+          {isHipfire ? (
+            <button
+              className="btn"
+              onClick={() => refreshHipfireModels().catch(() => {})}
+              disabled={hipfireModelsLoading}
+            >
+              <I.Refresh
+                size={11}
+                style={{ animation: hipfireModelsLoading ? "spin 0.9s linear infinite" : "none" }}
+              />{" "}
+              Refresh
+            </button>
+          ) : (
+            <>
+              <button
+                className="btn"
+                onClick={() => {
+                  // Match row-Load: after a file is chosen, restart the server so it
+                  // actually loads (setting --model alone doesn't), then close. On
+                  // cancel, keep the overlay open. Start failures surface via toast.
+                  pickModel()
+                    .then((picked) => {
+                      if (!picked) return;
+                      onClose();
+                      reloadServer().catch(() => {});
+                    })
+                    .catch(() => {});
+                }}
+              >
+                <I.Folder size={11} /> Browse for GGUF…
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  pickModelsDir().catch(() => {});
+                }}
+              >
+                <I.Folder size={11} /> Change directory…
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
                   onClose();
-                  reloadServer().catch(() => {});
-                })
-                .catch(() => {});
-            }}
-          >
-            <I.Folder size={11} /> Browse for GGUF…
-          </button>
-          <button
-            className="btn"
-            onClick={() => {
-              pickModelsDir().catch(() => {});
-            }}
-          >
-            <I.Folder size={11} /> Change directory…
-          </button>
-          <button
-            className="btn"
-            onClick={() => {
-              onClose();
-              onOpenModelsTab();
-            }}
-          >
-            <I.Sliders size={11} /> Full Models tab
-          </button>
+                  onOpenModelsTab();
+                }}
+              >
+                <I.Sliders size={11} /> Full Models tab
+              </button>
+            </>
+          )}
         </div>
       </div>
     </>
