@@ -1,8 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
-import { api, type GgufInfo, type ModelEntry, type OwnerEntry, type QuantFile } from "../lib/api";
+import {
+  api,
+  type GgufInfo,
+  type HipfireLocalModel,
+  type ModelEntry,
+  type OwnerEntry,
+  type QuantFile,
+} from "../lib/api";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useConfirm } from "../components/ConfirmDialog";
 import { quantDescription } from "../lib/quant";
@@ -48,6 +55,15 @@ export function bitsClass(bits: number): string {
 }
 
 export function ModelsScreen() {
+  const engineKind = useAppStore((s) => s.settings.engine_kind);
+  // hipfire's "library" is a flat local tag registry, not a scanned GGUF
+  // owner/model/quant tree — render the dedicated panel instead. The llama
+  // branch below (and everything it renders) is untouched by this check.
+  if (engineKind === "hipfire") return <HipfireModelsPanel />;
+  return <LlamaModelsPanel />;
+}
+
+function LlamaModelsPanel() {
   const {
     flags,
     settings,
@@ -546,6 +562,309 @@ export function ModelsScreen() {
                       isLoaded={isLoaded}
                     />
                   )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── hipfire local registry ──────────────────────────────────────────────────
+// hipfire has no scanned GGUF tree — its "library" is the flat set of tags
+// `hipfire list` already registers. Rows mirror the llama table's per-row
+// actions where they have a hipfire equivalent: "Serve" (writes
+// hipfire_flags.tag + reloadServer(), the same flow ModelLibraryOverlay's
+// hipfire row uses) and "Delete" (NEW hipfire_rm command, confirmed via
+// useConfirm and refused with a toast while the tag is the one actually being
+// served).
+function HipfireModelsPanel() {
+  const { settings, server, loadedEngine, setHipfireFlag, reloadServer, hipfireModelsVersion } =
+    useAppStore(
+      useShallow((s) => ({
+        settings: s.settings,
+        server: s.server,
+        loadedEngine: s.loadedEngine,
+        setHipfireFlag: s.setHipfireFlag,
+        reloadServer: s.reloadServer,
+        // Bumped store-side after a successful pull (Catalog's hipfire mode /
+        // Configure's HipfirePullPanel) — re-fetching on it means a model
+        // pulled elsewhere shows up here without a manual refresh click.
+        hipfireModelsVersion: s.hipfirePull.modelsVersion,
+      })),
+    );
+
+  const { confirmElement, confirm } = useConfirm();
+  const [models, setModels] = useState<HipfireLocalModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+
+  const refresh = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await api.listHipfireModels(settings.hipfire_path);
+      setModels(list);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setModels([]);
+      setError(msg);
+      log.warn("hipfire", "list_hipfire_models failed", { error: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refresh().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.hipfire_path, hipfireModelsVersion]);
+
+  const hipfireTag = String((settings.hipfire_flags as Record<string, unknown>)?.tag ?? "");
+
+  const rows = useMemo(() => {
+    let list = models;
+    if (q) {
+      const needle = q.toLowerCase();
+      list = list.filter(
+        (m) => m.tag.toLowerCase().includes(needle) || m.file.toLowerCase().includes(needle),
+      );
+    }
+    return [...list].sort((a, b) => a.tag.localeCompare(b.tag));
+  }, [models, q]);
+
+  const doServe = (tag: string) => {
+    setHipfireFlag("tag", tag);
+    reloadServer().catch(() => {});
+  };
+
+  // "Serving" means the running server is actually hipfire serving this exact
+  // tag — not merely that this tag is the configured selection (mirrors
+  // ModelLibraryOverlay's isServing / Models's isLoaded+server.running check).
+  const isServing = (tag: string) =>
+    tag === hipfireTag && server.running && loadedEngine === "hipfire";
+
+  const doDelete = async (m: HipfireLocalModel) => {
+    if (isServing(m.tag)) {
+      log.notify(
+        "warn",
+        "hipfire",
+        `"${m.tag}" is currently being served — stop the server before deleting it.`,
+      );
+      return;
+    }
+    const ok = await confirm({
+      title: `Delete "${m.tag}"?`,
+      body: "This removes the model from hipfire's local store and cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.hipfireRm(m.tag, settings.hipfire_path);
+      log.info("hipfire", `deleted ${m.tag}`);
+    } catch (e: unknown) {
+      log.notify(
+        "error",
+        "hipfire",
+        `Delete failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      await refresh().catch(() => {});
+    }
+  };
+
+  const rowMenuItems = (m: HipfireLocalModel): MenuItem[] => {
+    const serving = isServing(m.tag);
+    return [
+      {
+        label: "Serve",
+        icon: "Play",
+        disabled: serving,
+        onClick: () => doServe(m.tag),
+      },
+      "separator",
+      {
+        label: "Copy tag",
+        icon: "Copy",
+        onClick: () => navigator.clipboard?.writeText(m.tag).catch(() => {}),
+      },
+      {
+        label: "Copy filename",
+        icon: "Copy",
+        onClick: () => navigator.clipboard?.writeText(m.file).catch(() => {}),
+      },
+      "separator",
+      {
+        label: "Re-scan library",
+        icon: "Refresh",
+        disabled: loading,
+        onClick: () => refresh().catch(() => {}),
+      },
+      "separator",
+      {
+        label: "Delete from hipfire's store…",
+        icon: "Trash",
+        danger: true,
+        disabled: serving,
+        hint: serving ? "in use" : undefined,
+        onClick: () => {
+          doDelete(m).catch(() => {});
+        },
+      },
+    ];
+  };
+
+  const openMenu = useContextMenu();
+
+  return (
+    <>
+      {confirmElement}
+      <div className="page-head">
+        <div>
+          <div className="crumb">Models / hipfire library</div>
+          <h1>Model library</h1>
+        </div>
+        <div className="head-meta">
+          <span className="badge ghost mono">{models.length} tags</span>
+          <button
+            className="btn"
+            onClick={() => refresh().catch(() => {})}
+            disabled={loading}
+            title="Re-scan hipfire's local registry"
+          >
+            <I.Refresh
+              size={12}
+              style={{ animation: loading ? "spin 0.9s linear infinite" : "none" }}
+            />{" "}
+            Re-scan
+          </button>
+        </div>
+      </div>
+
+      <div className="page-body">
+        {error && (
+          <div className="badge red" style={{ alignSelf: "flex-start", fontSize: 11, marginBottom: 12 }}>
+            Couldn&apos;t list local models: {error}
+          </div>
+        )}
+
+        <div className="prof-toolbar" style={{ marginBottom: 16 }}>
+          <div className="prof-search">
+            <I.Search />
+            <input
+              placeholder="Filter by tag or file…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
+          <span className="badge ghost mono">
+            {rows.length} {rows.length === 1 ? "row" : "rows"}
+          </span>
+        </div>
+
+        {rows.length === 0 ? (
+          <div
+            style={{
+              padding: "40px 24px",
+              textAlign: "center",
+              color: "var(--muted)",
+              fontSize: 13,
+              border: "1px dashed var(--border)",
+              borderRadius: "var(--radius-lg)",
+            }}
+          >
+            {loading ? (
+              "Scanning…"
+            ) : models.length === 0 ? (
+              <>
+                No local hipfire models yet — pull one from <strong>Catalog</strong>, or convert a
+                GGUF into hipfire&apos;s store on <strong>Configure</strong>.
+              </>
+            ) : (
+              "No models match your filter."
+            )}
+          </div>
+        ) : (
+          <div className="model-table">
+            {rows.map((m) => {
+              const isLoaded = m.tag === hipfireTag;
+              const serving = isServing(m.tag);
+              const isDraft = m.tag.endsWith("-draft");
+              return (
+                <div
+                  key={m.tag}
+                  className={"model-row" + (isLoaded ? " loaded-row" : "")}
+                  style={{
+                    gridTemplateColumns: "minmax(160px, 1fr) minmax(160px, 1.6fr) 90px auto auto",
+                  }}
+                  onContextMenu={(e) => openMenu(e, rowMenuItems(m))}
+                >
+                  <div className="model-row-name">
+                    <span className="quant-tag mono">{m.tag}</span>
+                    {isDraft && (
+                      <span
+                        className="badge ghost"
+                        style={{ fontSize: 9.5, padding: "1px 5px" }}
+                        title="Speculative-decoding draft — pairs with its target model"
+                      >
+                        draft
+                      </span>
+                    )}
+                    {isLoaded &&
+                      (serving ? (
+                        <span
+                          className="badge green"
+                          style={{ fontSize: 9.5, padding: "1px 5px" }}
+                          title="The server is serving this tag"
+                        >
+                          <span className="dot" /> loaded
+                        </span>
+                      ) : (
+                        <span
+                          className="badge ghost"
+                          style={{ fontSize: 9.5, padding: "1px 5px" }}
+                          title="Set as the tag to serve — start the server to load it"
+                        >
+                          selected
+                        </span>
+                      ))}
+                  </div>
+                  <div className="model-row-owner mono" title={m.file}>
+                    {m.file}
+                  </div>
+                  <div className="model-row-cell mono" style={{ textAlign: "right" }}>
+                    {m.size}
+                  </div>
+                  <button
+                    className="btn"
+                    style={{ padding: "3px 9px" }}
+                    onClick={() => doServe(m.tag)}
+                    disabled={serving}
+                    title={serving ? "Already serving" : "Serve this tag & restart the server"}
+                  >
+                    {serving ? (
+                      <>
+                        <I.Check size={11} /> Loaded
+                      </>
+                    ) : (
+                      <>
+                        <I.Play size={11} /> Serve
+                      </>
+                    )}
+                  </button>
+                  <button
+                    className="iconbtn"
+                    onClick={() => doDelete(m).catch(() => {})}
+                    disabled={serving}
+                    title={serving ? "Currently being served — stop the server first" : "Delete from hipfire's store"}
+                  >
+                    <I.Trash size={13} />
+                  </button>
                 </div>
               );
             })}

@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { I } from "../icons";
-import { api, type BenchRequest, type BenchRow, type BenchRun } from "../lib/api";
+import {
+  api,
+  type BenchRequest,
+  type BenchRow,
+  type BenchRun,
+  type HipfireBenchSummary,
+  type HipfireLocalModel,
+} from "../lib/api";
 import { useAppStore, type FlagValues } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
@@ -205,13 +212,22 @@ function CompareBars({ rows }: Readonly<{ rows: BenchRow[] }>) {
 }
 
 export function BenchScreen() {
+  const engineKind = useAppStore((s) => s.settings.engine_kind);
+  // hipfire has its own real bench tool (`hipfire bench`) — render the
+  // dedicated panel instead of the old "no equivalent bench tool" banner.
+  // The llama branch below (and everything it renders) is untouched by this
+  // check.
+  if (engineKind === "hipfire") return <HipfireBenchScreen />;
+  return <LlamaBenchScreen />;
+}
+
+function LlamaBenchScreen() {
   const {
     buildDir,
     benchBinary,
     bench,
     benchRuns,
     benchViewingId,
-    engineKind,
     benchStart,
     benchCancel,
     benchSelectRun,
@@ -224,7 +240,6 @@ export function BenchScreen() {
       bench: s.bench,
       benchRuns: s.benchRuns,
       benchViewingId: s.benchViewingId,
-      engineKind: s.settings.engine_kind,
       benchStart: s.benchStart,
       benchCancel: s.benchCancel,
       benchSelectRun: s.benchSelectRun,
@@ -232,8 +247,6 @@ export function BenchScreen() {
       benchRenameRun: s.benchRenameRun,
     })),
   );
-
-  const isHipfire = engineKind === "hipfire";
 
   const openMenu = useContextMenu();
   const { promptElement, openPrompt } = useTextPrompt();
@@ -414,16 +427,6 @@ export function BenchScreen() {
       </div>
 
       <div className="page-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {isHipfire && (
-          <div className="panel">
-            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
-              <I.Info size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-              Benchmarking uses <span className="mono">llama-bench</span> and runs against llama.cpp
-              builds only — hipfire has no equivalent bench tool. Switch the engine on{" "}
-              <strong>Configure</strong> to run llama.cpp models here.
-            </div>
-          </div>
-        )}
         {!buildDir && (
           <div className="panel">
             <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
@@ -673,6 +676,356 @@ export function BenchScreen() {
       </div>
       {promptElement}
       {confirmElement}
+    </>
+  );
+}
+
+// ── hipfire bench ────────────────────────────────────────────────────────────
+// `hipfire bench <tag> --runs <N>` — a real throughput benchmark (2026-07-19
+// live capture, fact 1), unlike the old banner claimed. Driven by
+// hipfireBenchSlice (store-lifted, mirrors hipfirePullSlice) so a run
+// survives switching tabs. Results are session-local: the persisted bench-run
+// history (bench_runs.json / BenchRun) is llama-bench's JSON row shape
+// (model_filename, n_prompt/n_gen, avg_ts…) and has no clean way to carry a
+// hipfire summary's very different shape (header + prefill sweep + named
+// summary rows) without either forcing a lossy conversion or growing an
+// engine-tagged union — see the docs commit for the full rationale.
+function HipfireResultCard({
+  tag,
+  summary,
+  output,
+}: Readonly<{ tag: string; summary: HipfireBenchSummary | null; output: string }>) {
+  const [showRaw, setShowRaw] = useState(false);
+  const headerLine = summary
+    ? [
+        summary.header.model,
+        summary.header.arch,
+        summary.header.gpu,
+        summary.header.kv_cache ? `kv=${summary.header.kv_cache}` : null,
+        summary.header.vram,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <I.Bolt size={14} /> Results
+        <span className="meta" style={{ marginLeft: "auto" }}>
+          {tag}
+        </span>
+      </div>
+      <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {summary ? (
+          <>
+            {headerLine && (
+              <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+                {headerLine}
+              </div>
+            )}
+            {summary.prefill.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: "var(--subtle)", marginBottom: 6 }}>
+                  Prefill sweep
+                </div>
+                <table className="bench-table">
+                  <thead>
+                    <tr>
+                      <th>test</th>
+                      <th className="num">tok/s</th>
+                      <th className="num">± stddev</th>
+                      <th className="num">ms</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.prefill.map((r) => (
+                      <tr key={r.label}>
+                        <td>{r.label}</td>
+                        <td className="num ts">{r.mean.toFixed(1)}</td>
+                        <td className="num">{r.stdev > 0 ? `± ${r.stdev.toFixed(1)}` : "—"}</td>
+                        <td className="num">{r.ms != null ? `${r.ms.toFixed(1)} ms` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {summary.summary.length > 0 && (
+              <div>
+                <div style={{ fontSize: 11, color: "var(--subtle)", marginBottom: 6 }}>
+                  Decode / TTFT / Wall
+                </div>
+                <table className="bench-table">
+                  <thead>
+                    <tr>
+                      <th>metric</th>
+                      <th className="num">mean</th>
+                      <th className="num">min</th>
+                      <th className="num">max</th>
+                      <th className="num">± stddev</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.summary.map((r) => (
+                      <tr key={r.label}>
+                        <td>{r.label}</td>
+                        <td className="num ts">{r.mean.toFixed(1)}</td>
+                        <td className="num">{r.min.toFixed(1)}</td>
+                        <td className="num">{r.max.toFixed(1)}</td>
+                        <td className="num">{r.stdev > 0 ? `± ${r.stdev.toFixed(1)}` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {summary.decode_ms_per_tok != null && (
+              <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                Decode ms/tok: {summary.decode_ms_per_tok.toFixed(2)}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+            <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+            Couldn&apos;t parse a structured summary from the output — see the raw output below.
+          </div>
+        )}
+        <div>
+          <button className="btn ghost" onClick={() => setShowRaw((v) => !v)}>
+            <I.ChevR
+              size={11}
+              style={{
+                transform: showRaw ? "rotate(90deg)" : undefined,
+                transition: "transform 0.15s",
+              }}
+            />{" "}
+            {showRaw ? "Hide" : "Show"} raw output
+          </button>
+          {showRaw && (
+            <div className="bench-progress" style={{ marginTop: 8 }}>
+              {output || "(empty)"}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HipfireBenchScreen() {
+  const { settings, hipfireBench, hipfireBenchStart, hipfireBenchCancel, hipfireModelsVersion } =
+    useAppStore(
+      useShallow((s) => ({
+        settings: s.settings,
+        hipfireBench: s.hipfireBench,
+        hipfireBenchStart: s.hipfireBenchStart,
+        hipfireBenchCancel: s.hipfireBenchCancel,
+        hipfireModelsVersion: s.hipfirePull.modelsVersion,
+      })),
+    );
+
+  const [models, setModels] = useState<HipfireLocalModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [tag, setTag] = useState("");
+  const [runs, setRuns] = useState("3");
+
+  const refreshModels = async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const list = await api.listHipfireModels(settings.hipfire_path);
+      setModels(list);
+      // Default selection excludes "-draft" companion tags (they aren't meant
+      // to be served/benched on their own) but the dropdown still lists them
+      // so the user can pick one explicitly if they want to.
+      setTag((cur) => {
+        if (cur && list.some((m) => m.tag === cur)) return cur;
+        return list.find((m) => !m.tag.endsWith("-draft"))?.tag ?? list[0]?.tag ?? "";
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setModels([]);
+      setModelsError(msg);
+      log.warn("hipfire", "list_hipfire_models failed", { error: msg });
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refreshModels().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.hipfire_path, hipfireModelsVersion]);
+
+  const runsN = Math.max(1, Number(runs) || 1);
+  const canRun = !hipfireBench.running && Boolean(tag);
+  const runDisabledReason = hipfireBench.running
+    ? "A benchmark is already running"
+    : !tag
+      ? "Pick a local model tag first"
+      : null;
+
+  const onRun = () => {
+    if (!tag) return;
+    hipfireBenchStart(settings.hipfire_path, tag, runsN).catch(() => {});
+  };
+
+  const result = hipfireBench.result;
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <div className="crumb">Benchmark / hipfire bench</div>
+          <h1>Throughput benchmark</h1>
+        </div>
+        <div className="head-meta">
+          {hipfireBench.running ? (
+            <button className="btn" onClick={() => hipfireBenchCancel().catch(() => {})}>
+              <I.Stop /> Cancel
+            </button>
+          ) : (
+            <button
+              className="btn primary"
+              onClick={onRun}
+              disabled={!canRun}
+              title={runDisabledReason ?? "Run benchmark"}
+            >
+              <I.Bolt /> Run benchmark
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="page-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {modelsError && (
+          <div className="panel">
+            <div
+              className="panel-body"
+              style={{ fontSize: 12.5, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <I.X size={12} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>Couldn&apos;t list local models: {modelsError}</span>
+              <button
+                className="btn ghost"
+                style={{ color: "var(--text)" }}
+                onClick={() => refreshModels().catch(() => {})}
+              >
+                <I.Refresh size={12} /> Retry
+              </button>
+            </div>
+          </div>
+        )}
+        {!modelsError && models.length === 0 && !modelsLoading && (
+          <div className="panel">
+            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              <I.Info size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+              No local hipfire models yet — pull one on <strong>Catalog</strong> first.
+            </div>
+          </div>
+        )}
+        {hipfireBench.result && !hipfireBench.running && !hipfireBench.result.ok && (
+          <div className="panel">
+            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--red)" }}>
+              <I.X size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+              {hipfireBench.result.cancelled ? "Cancelled." : hipfireBench.result.error}
+            </div>
+          </div>
+        )}
+
+        <div className="panel">
+          <div className="panel-head">
+            <I.Sliders size={14} /> Configuration
+            <span className="meta" style={{ marginLeft: "auto" }}>
+              <button
+                className="btn ghost"
+                onClick={() => refreshModels().catch(() => {})}
+                disabled={modelsLoading}
+                title="Refresh local model list"
+              >
+                <I.Refresh
+                  size={11}
+                  style={{ animation: modelsLoading ? "spin 0.9s linear infinite" : "none" }}
+                />
+              </button>
+            </span>
+          </div>
+          <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div className="bench-field bench-model">
+              <label>
+                <span>Model tag</span>
+              </label>
+              <select
+                className="select mono"
+                value={tag}
+                onChange={(e) => setTag(e.target.value)}
+                disabled={models.length === 0}
+              >
+                <option value="" disabled>
+                  {models.length === 0 ? "no local models found" : "pick a model…"}
+                </option>
+                {models.map((m) => (
+                  <option key={m.tag} value={m.tag}>
+                    {m.tag} — {m.size}
+                    {m.tag.endsWith("-draft") ? " (draft companion)" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="Runs"
+              hint="--runs"
+              value={runs}
+              onChange={setRuns}
+              placeholder="3"
+              width={140}
+            />
+          </div>
+        </div>
+
+        {hipfireBench.running && (
+          <div className="panel">
+            <div className="panel-head">
+              <span
+                className="pulse"
+                style={{ background: "var(--yellow)", boxShadow: "0 0 8px var(--yellow)" }}
+              />
+              Running hipfire bench…
+              <span className="meta" style={{ marginLeft: "auto" }}>
+                {tag}
+              </span>
+            </div>
+            <div className="panel-body">
+              <div className="bench-progress">
+                {hipfireBench.lines.length === 0
+                  ? "warming up…"
+                  : hipfireBench.lines.slice(-60).join("\n")}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {result && !hipfireBench.running && result.ok && (
+          <HipfireResultCard tag={result.tag} summary={result.summary} output={result.output} />
+        )}
+
+        {!hipfireBench.running && !result && models.length > 0 && (
+          <div className="panel">
+            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              No results yet. Pick a model tag above and hit <strong>Run benchmark</strong>.
+            </div>
+          </div>
+        )}
+
+        <div className="engine-source mono">
+          <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+          hipfire bench results are session-only for now — not added to a persisted history
+          (llama-bench&apos;s run-history shape doesn&apos;t cleanly fit hipfire&apos;s summary).
+        </div>
+      </div>
     </>
   );
 }

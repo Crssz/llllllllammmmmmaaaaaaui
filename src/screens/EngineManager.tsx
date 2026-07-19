@@ -1,10 +1,17 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
-import { api, type EngineAsset, type EngineRelease, type InstalledEngine } from "../lib/api";
+import {
+  api,
+  type EngineAsset,
+  type EngineRelease,
+  type HipfireDiagResult,
+  type InstalledEngine,
+} from "../lib/api";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useConfirm } from "../components/ConfirmDialog";
+import { log } from "../lib/logger";
 
 // Plain-English guidance for the accelerator variants, so the filter/badges
 // aren't bare jargon ("vulkan", "hip", "cuda"). Keyed on the leading token so
@@ -218,6 +225,15 @@ function AssetRow({
 }
 
 export function EngineManagerScreen() {
+  const engineKind = useAppStore((s) => s.settings.engine_kind);
+  // hipfire has no release/build manager of its own (its binary path is set
+  // on Configure) — render a health/diagnostics page instead. The llama
+  // branch below (and everything it renders) is untouched by this check.
+  if (engineKind === "hipfire") return <HipfireDiagScreen />;
+  return <LlamaEngineManagerScreen />;
+}
+
+function LlamaEngineManagerScreen() {
   const {
     build,
     installedEngines,
@@ -509,6 +525,241 @@ export function EngineManagerScreen() {
             </div>
           </div>
         </div>
+      </div>
+    </>
+  );
+}
+
+// ── hipfire diag ─────────────────────────────────────────────────────────────
+// `hipfire diag` (~10s — a live HIP GPU probe) as a sectioned health page:
+// engine status, GPU, kernels, local models, config, plus a collapsible raw
+// output. One-shot on mount + a manual refresh (unlike the streaming
+// commands elsewhere, diag has no progress to show along the way — just a
+// loading state for the probe window).
+function DiagRow({ label, value }: Readonly<{ label: string; value: React.ReactNode }>) {
+  return (
+    <div className="row-ctrl-line">
+      <span className="lbl">{label}</span>
+      <span className="mono">{value}</span>
+    </div>
+  );
+}
+
+function HipfireDiagScreen() {
+  const hipfirePath = useAppStore((s) => s.settings.hipfire_path);
+  const [result, setResult] = useState<HipfireDiagResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showRaw, setShowRaw] = useState(false);
+
+  const refresh = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.hipfireDiag(hipfirePath);
+      setResult(res);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      log.warn("hipfire", "hipfire_diag failed", { error: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refresh().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hipfirePath]);
+
+  const diag = result?.diag;
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <div className="crumb">Engine / hipfire</div>
+          <h1>Engine health</h1>
+          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>
+            Live diagnostics from <span className="mono">hipfire diag</span> — the hipfire engine
+            binary itself is set on the <strong>Configure</strong> screen.
+          </div>
+        </div>
+        <div className="head-meta">
+          {diag?.daemon_found != null && (
+            <span className={"badge " + (diag.daemon_found ? "green" : "red")}>
+              <span className="dot" /> daemon {diag.daemon_found ? "found" : "not found"}
+            </span>
+          )}
+          <button
+            className="btn"
+            onClick={() => refresh().catch(() => {})}
+            disabled={loading}
+            title="Re-run hipfire diag (~10s — live GPU probe)"
+          >
+            <I.Refresh
+              size={12}
+              style={{ animation: loading ? "spin 0.9s linear infinite" : "none" }}
+            />{" "}
+            {loading ? "Probing…" : "Refresh"}
+          </button>
+        </div>
+      </div>
+
+      <div className="page-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {error && (
+          <div className="panel">
+            <div
+              className="panel-body"
+              style={{ fontSize: 12.5, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <I.X size={12} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>Couldn&apos;t run hipfire diag: {error}</span>
+              <button
+                className="btn ghost"
+                style={{ color: "var(--text)" }}
+                onClick={() => refresh().catch(() => {})}
+                disabled={loading}
+              >
+                <I.Refresh size={12} /> Retry
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loading && !result && (
+          <div className="panel">
+            <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              <I.Info size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+              Probing GPU via HIP runtime… this can take about 10 seconds.
+            </div>
+          </div>
+        )}
+
+        {diag && (
+          <>
+            <div className="panel">
+              <div className="panel-head">
+                <I.Gpu size={14} /> GPU
+              </div>
+              <div className="panel-body">
+                {diag.gpu ? (
+                  <div className="row-ctrl">
+                    <DiagRow label="arch" value={diag.gpu.arch ?? "—"} />
+                    <DiagRow label="HIP version" value={diag.gpu.hip_version ?? "—"} />
+                    <DiagRow
+                      label="VRAM"
+                      value={
+                        diag.gpu.vram_free_mb != null && diag.gpu.vram_total_mb != null
+                          ? `${diag.gpu.vram_free_mb.toLocaleString()} / ${diag.gpu.vram_total_mb.toLocaleString()} MB free`
+                          : "—"
+                      }
+                    />
+                    <DiagRow label="kv default" value={diag.gpu.kv_default ?? "—"} />
+                    <DiagRow label="WMMA" value={diag.gpu.wmma ?? "—"} />
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                    No GPU probe reported (hipcc/rocminfo unavailable, or the probe failed).
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-head">
+                <I.Cpu size={14} /> Kernels
+                <span className="meta" style={{ marginLeft: "auto" }}>
+                  {diag.kernels.length} arch{diag.kernels.length === 1 ? "" : "es"} with blobs
+                </span>
+              </div>
+              <div className="panel-body">
+                {diag.kernels.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                    No pre-compiled kernel blobs found for any arch.
+                  </div>
+                ) : (
+                  <div className="row-ctrl">
+                    {diag.kernels.map((k) => (
+                      <DiagRow
+                        key={k.arch}
+                        label={k.arch}
+                        value={`${k.blobs} blobs, ${k.hashes} hashes`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-head">
+                <I.Folder size={14} /> Local models
+                <span className="meta" style={{ marginLeft: "auto" }}>
+                  {diag.local_models.length}
+                </span>
+              </div>
+              <div className="panel-body">
+                {diag.local_models.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                    No local models registered.
+                  </div>
+                ) : (
+                  <div className="row-ctrl">
+                    {diag.local_models.map((m) => (
+                      <DiagRow key={m.name} label={m.name} value={m.size} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-head">
+                <I.Sliders size={14} /> Config
+                {diag.config_path && (
+                  <span className="meta mono" style={{ marginLeft: "auto" }} title={diag.config_path}>
+                    {diag.config_path}
+                  </span>
+                )}
+              </div>
+              <div className="panel-body">
+                {diag.config.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                    No config file found.
+                  </div>
+                ) : (
+                  <div className="row-ctrl">
+                    {diag.config.map(([k, v]) => (
+                      <DiagRow key={k} label={k} value={v} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="panel-body">
+                <button className="btn ghost" onClick={() => setShowRaw((v) => !v)}>
+                  <I.ChevR
+                    size={11}
+                    style={{
+                      transform: showRaw ? "rotate(90deg)" : undefined,
+                      transition: "transform 0.15s",
+                    }}
+                  />{" "}
+                  {showRaw ? "Hide" : "Show"} raw output
+                </button>
+                {showRaw && (
+                  <div className="bench-progress" style={{ marginTop: 8 }}>
+                    {result?.output || "(empty)"}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </>
   );

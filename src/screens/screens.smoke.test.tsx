@@ -88,10 +88,30 @@ async function renderScreen(ui: React.ReactElement) {
   return result;
 }
 
+// Flip the store to the hipfire engine before rendering a screen — mirrors
+// the existing "ConfigureScreen under the hipfire engine toggle" case below,
+// pulled out so every screen's hipfire-mode branch gets the same smoke check.
+async function switchToHipfire() {
+  const { useAppStore } = await import("../state/testUtils");
+  useAppStore.getState().setSettings({
+    ...useAppStore.getState().settings,
+    engine_kind: "hipfire",
+    hipfire_path: "C:/hipfire/hipfire.exe",
+    hipfire_flags: { tag: "qwen3.6:27b" },
+  });
+}
+
 describe("screen smoke render", () => {
   it("renders BenchScreen", async () => {
     const { container } = await renderScreen(<BenchScreen />);
     expect(container.firstChild).not.toBeNull();
+  });
+
+  it("renders BenchScreen under the hipfire engine toggle", async () => {
+    await switchToHipfire();
+    const { container } = await renderScreen(<BenchScreen />);
+    expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).toContain("hipfire bench");
   });
 
   it("renders BinaryLocator", async () => {
@@ -102,6 +122,13 @@ describe("screen smoke render", () => {
   it("renders CatalogScreen", async () => {
     const { container } = await renderScreen(<CatalogScreen />);
     expect(container.firstChild).not.toBeNull();
+  });
+
+  it("renders CatalogScreen under the hipfire engine toggle", async () => {
+    await switchToHipfire();
+    const { container } = await renderScreen(<CatalogScreen />);
+    expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).toContain("hipfire");
   });
 
   it("renders ChatScreen", async () => {
@@ -132,6 +159,13 @@ describe("screen smoke render", () => {
     expect(container.firstChild).not.toBeNull();
   });
 
+  it("renders EngineManagerScreen under the hipfire engine toggle", async () => {
+    await switchToHipfire();
+    const { container } = await renderScreen(<EngineManagerScreen />);
+    expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).toContain("Engine health");
+  });
+
   it("renders HardwareScreen", async () => {
     const { container } = await renderScreen(<HardwareScreen />);
     expect(container.firstChild).not.toBeNull();
@@ -145,6 +179,13 @@ describe("screen smoke render", () => {
   it("renders ModelsScreen", async () => {
     const { container } = await renderScreen(<ModelsScreen />);
     expect(container.firstChild).not.toBeNull();
+  });
+
+  it("renders ModelsScreen under the hipfire engine toggle", async () => {
+    await switchToHipfire();
+    const { container } = await renderScreen(<ModelsScreen />);
+    expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).toContain("hipfire library");
   });
 
   it("renders ProfilesScreen", async () => {

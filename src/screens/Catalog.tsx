@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
-import { api, type CatalogFile, type CatalogModel } from "../lib/api";
+import { api, type CatalogFile, type CatalogModel, type HipfireAvailableModel } from "../lib/api";
 import { bitsClass } from "./Models";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { quantDescription } from "../lib/quant";
+import { log } from "../lib/logger";
 
 type SortBy = "downloads" | "likes" | "trending" | "modified";
 
@@ -30,6 +31,15 @@ function fmtBytes(n: number): string {
 }
 
 export function CatalogScreen() {
+  const engineKind = useAppStore((s) => s.settings.engine_kind);
+  // hipfire has its own curated pull catalog (`hipfire list -r`), not a
+  // HuggingFace GGUF search — render the dedicated panel instead. The llama
+  // branch below (and everything it renders) is untouched by this check.
+  if (engineKind === "hipfire") return <HipfireCatalogPanel />;
+  return <LlamaCatalogScreen />;
+}
+
+function LlamaCatalogScreen() {
   const {
     settings,
     models,
@@ -385,6 +395,240 @@ export function CatalogScreen() {
           <span style={{ color: "var(--text-2)" }}>
             {settings.models_dir || "the app data folder"}
           </span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── hipfire pull catalog ─────────────────────────────────────────────────────
+// hipfire's curated pull catalog (`hipfire list -r`'s "Available models:"
+// section) — text search over tag+note, a Pull button per row driving the
+// EXISTING hipfirePullSlice (one pull at a time; other rows disable while it
+// runs), and a live log for the running pull. Never duplicates pull state —
+// the slice (shared with Configure's HipfirePullPanel) is the single owner.
+function stripDownloadedMarker(note: string): string {
+  return note.replace(/\s*\[downloaded\]\s*/gi, " ").trim();
+}
+
+function HipfireCatalogPanel() {
+  const { settings, hipfirePull, hipfirePullStart, hipfirePullCancel } = useAppStore(
+    useShallow((s) => ({
+      settings: s.settings,
+      hipfirePull: s.hipfirePull,
+      hipfirePullStart: s.hipfirePullStart,
+      hipfirePullCancel: s.hipfirePullCancel,
+    })),
+  );
+
+  const [catalog, setCatalog] = useState<HipfireAvailableModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  // Which row this panel itself requested a pull for — hipfirePull's store
+  // state doesn't track a tag while running, so this is what lets the row UI
+  // (Cancel + log vs. a disabled Pull) target the right row.
+  const [pullingTag, setPullingTag] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await api.listHipfireAvailable(settings.hipfire_path);
+      setCatalog(list);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setCatalog([]);
+      setError(msg);
+      log.warn("hipfire", "list_hipfire_available failed", { error: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Re-fetches on mount, on a settled hipfire_path edit, and after every
+    // successful pull (modelsVersion) so a freshly pulled tag's
+    // "[downloaded]" marker shows up without a manual refresh click — same
+    // trigger set as Models' hipfire panel and Configure's HipfirePullPanel.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refresh().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.hipfire_path, hipfirePull.modelsVersion]);
+
+  // Once the store-level pull finishes (success, failure, or cancel), this
+  // panel no longer owns a specific row's pull.
+  useEffect(() => {
+    if (!hipfirePull.running) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPullingTag(null);
+    }
+  }, [hipfirePull.running]);
+
+  const rows = useMemo(() => {
+    if (!q) return catalog;
+    const needle = q.toLowerCase();
+    return catalog.filter(
+      (m) => m.tag.toLowerCase().includes(needle) || m.note.toLowerCase().includes(needle),
+    );
+  }, [catalog, q]);
+
+  const onPull = (tag: string) => {
+    setPullingTag(tag);
+    hipfirePullStart(settings.hipfire_path, tag).catch(() => {});
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <div className="crumb">Models / hipfire catalog</div>
+          <h1>Model catalog</h1>
+        </div>
+        <div className="head-meta">
+          <span className="badge ghost mono">{catalog.length} models</span>
+          <button
+            className="btn"
+            onClick={() => refresh().catch(() => {})}
+            disabled={loading}
+            title="Re-fetch hipfire's curated pull catalog"
+          >
+            <I.Refresh
+              size={12}
+              style={{ animation: loading ? "spin 0.9s linear infinite" : "none" }}
+            />{" "}
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div className="page-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="prof-toolbar">
+          <div className="prof-search" style={{ flex: 1 }}>
+            <I.Search />
+            <input
+              placeholder="Filter by tag or description…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {error && (
+          <div className="panel">
+            <div
+              className="panel-body"
+              style={{ fontSize: 12.5, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <I.X size={12} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>Couldn&apos;t list the catalog: {error}</span>
+              <button
+                className="btn ghost"
+                style={{ color: "var(--text)" }}
+                onClick={() => refresh().catch(() => {})}
+                disabled={loading}
+              >
+                <I.Refresh size={12} /> Retry
+              </button>
+            </div>
+          </div>
+        )}
+
+        {hipfirePull.running && pullingTag && (
+          <div className="panel">
+            <div className="panel-head">
+              <I.Download size={14} /> Pulling{" "}
+              <span className="mono" style={{ marginLeft: 4 }}>
+                {pullingTag}
+              </span>
+              <button
+                className="btn ghost"
+                style={{ marginLeft: "auto" }}
+                onClick={() => hipfirePullCancel().catch(() => {})}
+              >
+                <I.X size={11} /> Cancel
+              </button>
+            </div>
+            <div className="panel-body">
+              <div className="bench-progress">
+                {hipfirePull.lines.length === 0
+                  ? "starting…"
+                  : hipfirePull.lines.slice(-40).join("\n")}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {loading && catalog.length === 0 ? (
+          <div className="catalog-empty">Loading hipfire&apos;s pull catalog…</div>
+        ) : rows.length === 0 ? (
+          <div className="catalog-empty">
+            {catalog.length === 0 ? "No catalog entries found." : "No models match your filter."}
+          </div>
+        ) : (
+          <div className="panel">
+            <div className="panel-body" style={{ padding: 0 }}>
+              {rows.map((m) => {
+                const isThisPulling = hipfirePull.running && pullingTag === m.tag;
+                const pullDisabled = hipfirePull.running && !isThisPulling;
+                return (
+                  <div className="catalog-file" key={m.tag}>
+                    <span className="catalog-file-name mono" title={m.tag}>
+                      {m.tag}
+                    </span>
+                    {m.tag.endsWith("-draft") && (
+                      <span
+                        className="badge ghost"
+                        style={{ fontSize: 9, padding: "0 5px" }}
+                        title="Speculative-decoding draft — pairs with its target model"
+                      >
+                        draft
+                      </span>
+                    )}
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: "var(--muted)",
+                        flex: 2,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={stripDownloadedMarker(m.note)}
+                    >
+                      {stripDownloadedMarker(m.note)}
+                    </span>
+                    <span className="catalog-file-size mono">{m.size}</span>
+                    {m.downloaded ? (
+                      <span className="badge ghost" style={{ fontSize: 10 }}>
+                        <I.Check size={10} style={{ verticalAlign: -1, marginRight: 2 }} />
+                        downloaded
+                      </span>
+                    ) : isThisPulling ? (
+                      <span className="badge accent" style={{ fontSize: 10 }}>
+                        <span className="dot" /> pulling
+                      </span>
+                    ) : (
+                      <button
+                        className="btn primary"
+                        onClick={() => onPull(m.tag)}
+                        disabled={pullDisabled}
+                        title={pullDisabled ? "Another pull is running" : `Pull ${m.tag}`}
+                      >
+                        <I.Download size={11} /> Pull
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="engine-source mono">
+          <I.Info size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+          from hipfire&apos;s curated pull catalog · downloads land in hipfire&apos;s local store
         </div>
       </div>
     </>
