@@ -329,7 +329,7 @@ pub fn run_hipfire_bench(
         generation: u64,
         reader: R,
         captured: Arc<Mutex<String>>,
-    ) {
+    ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             let buf = BufReader::new(reader);
             for line in buf.lines().map_while(Result::ok) {
@@ -349,16 +349,16 @@ pub fn run_hipfire_bench(
                     HipfireBenchProgressEvent { generation, line },
                 );
             }
-        });
+        })
     }
-    spawn_progress_pump(
+    let stdout_pump = spawn_progress_pump(
         app.clone(),
         state.generation.clone(),
         generation,
         stdout_pipe,
         captured.clone(),
     );
-    spawn_progress_pump(
+    let stderr_pump = spawn_progress_pump(
         app.clone(),
         state.generation.clone(),
         generation,
@@ -397,6 +397,15 @@ pub fn run_hipfire_bench(
                     }
                 }
             };
+
+            // Join both pumps before reading `captured` — unlike hipfire_pull.rs
+            // (which only streams progress and never re-reads its own buffer),
+            // bench actually consumes `captured` for parsing and the raw-output
+            // fallback, so a clone taken before the pumps finish draining their
+            // pipes could observe a truncated summary even though the process
+            // itself exited cleanly (see the module doc comment).
+            let _ = stdout_pump.join();
+            let _ = stderr_pump.join();
 
             let output = lock_or_poisoned(&captured).clone();
             let summary = parse_hipfire_bench_summary(&output);
