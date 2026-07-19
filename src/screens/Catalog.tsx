@@ -425,10 +425,11 @@ function HipfireCatalogPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  // Which row this panel itself requested a pull for — hipfirePull's store
-  // state doesn't track a tag while running, so this is what lets the row UI
-  // (Cancel + log vs. a disabled Pull) target the right row.
-  const [pullingTag, setPullingTag] = useState<string | null>(null);
+  // The pulling row's tag lives in hipfirePull.tag (store state, not local) —
+  // that's what lets the row UI (Cancel + log vs. a disabled Pull) survive
+  // this panel unmounting mid-pull (e.g. switching tabs) and remounting with
+  // the download still in flight.
+  const pullingTag = hipfirePull.tag;
 
   const refresh = async () => {
     setLoading(true);
@@ -456,15 +457,6 @@ function HipfireCatalogPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.hipfire_path, hipfirePull.modelsVersion]);
 
-  // Once the store-level pull finishes (success, failure, or cancel), this
-  // panel no longer owns a specific row's pull.
-  useEffect(() => {
-    if (!hipfirePull.running) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPullingTag(null);
-    }
-  }, [hipfirePull.running]);
-
   const rows = useMemo(() => {
     if (!q) return catalog;
     const needle = q.toLowerCase();
@@ -474,7 +466,6 @@ function HipfireCatalogPanel() {
   }, [catalog, q]);
 
   const onPull = (tag: string) => {
-    setPullingTag(tag);
     hipfirePullStart(settings.hipfire_path, tag).catch(() => {});
   };
 
@@ -518,7 +509,13 @@ function HipfireCatalogPanel() {
           <div className="panel">
             <div
               className="panel-body"
-              style={{ fontSize: 12.5, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+              style={{
+                fontSize: 12.5,
+                color: "var(--red)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
             >
               <I.X size={12} style={{ flexShrink: 0 }} />
               <span style={{ flex: 1 }}>Couldn&apos;t list the catalog: {error}</span>

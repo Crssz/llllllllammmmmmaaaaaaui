@@ -21,6 +21,24 @@ describe("hipfire pull slice", () => {
     expect(api.hipfirePull).toHaveBeenCalledWith("/hipfire", "qwen3.5:4b");
   });
 
+  // Regression: a panel rendering the running row (Catalog) must be able to
+  // read the pulling tag from the store, not a component-local copy that
+  // resets to null if the panel unmounts and remounts mid-pull.
+  it("hipfirePullStart records the tag synchronously, before the backend call resolves", () => {
+    vi.spyOn(api, "hipfirePull").mockReturnValue(new Promise(() => {})); // never resolves
+    useAppStore
+      .getState()
+      .hipfirePullStart("/hipfire", "qwen3.5:4b")
+      .catch(() => {});
+    expect(useAppStore.getState().hipfirePull.tag).toBe("qwen3.5:4b");
+  });
+
+  it("hipfirePullStart failure clears the tag along with running", async () => {
+    vi.spyOn(api, "hipfirePull").mockRejectedValueOnce(new Error("boom"));
+    await useAppStore.getState().hipfirePullStart("/hipfire", "qwen3.5:4b");
+    expect(useAppStore.getState().hipfirePull.tag).toBeNull();
+  });
+
   it("hipfirePullStart is a no-op while a pull is already running", async () => {
     vi.spyOn(api, "hipfirePull").mockResolvedValue(1);
     await useAppStore.getState().hipfirePullStart("/hipfire", "a");
@@ -59,7 +77,12 @@ describe("hipfire pull slice", () => {
 
     const s = useAppStore.getState();
     expect(s.hipfirePull.running).toBe(false);
-    expect(s.hipfirePull.result).toEqual({ ok: true, cancelled: false, error: null, tag: "qwen3.5:4b" });
+    expect(s.hipfirePull.result).toEqual({
+      ok: true,
+      cancelled: false,
+      error: null,
+      tag: "qwen3.5:4b",
+    });
     expect(s.hipfirePull.modelsVersion).toBe(1);
     expect(s.settings.hipfire_flags.tag).toBe("qwen3.5:4b");
   });

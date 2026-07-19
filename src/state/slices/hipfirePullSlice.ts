@@ -15,6 +15,12 @@ export type HipfirePullUi = {
   running: boolean;
   /** Generation id of the in-flight pull, used to ignore a stale `hipfire-pull-done`. */
   generation: number | null;
+  /** Tag the in-flight pull targets, null when idle. Set synchronously at
+   *  start (the tag is known before the backend call even resolves) so any
+   *  panel — including one that (re)mounted after the pull began — can render
+   *  the running row/label from shared state instead of a component-local
+   *  copy that resets to null on every mount. */
+  tag: string | null;
   /** Recent progress lines from `hipfire pull` (capped). */
   lines: string[];
   /** Outcome of the most recently finished pull, null until one lands. */
@@ -36,6 +42,7 @@ export type HipfirePullSlice = {
 const IDLE: HipfirePullUi = {
   running: false,
   generation: null,
+  tag: null,
   lines: [],
   result: null,
   modelsVersion: 0,
@@ -52,7 +59,9 @@ export const createHipfirePullSlice: StateCreator<AppStore, [], [], HipfirePullS
       log.warn("hipfire", "pull start ignored: a pull is already running");
       return;
     }
-    set((s) => ({ hipfirePull: { ...IDLE, modelsVersion: s.hipfirePull.modelsVersion, running: true } }));
+    set((s) => ({
+      hipfirePull: { ...IDLE, modelsVersion: s.hipfirePull.modelsVersion, running: true, tag },
+    }));
     log.info("hipfire", `pulling ${tag}`);
     try {
       const generation = await api.hipfirePull(hipfirePath, tag);
@@ -92,7 +101,10 @@ export const createHipfirePullSlice: StateCreator<AppStore, [], [], HipfirePullS
     const { generation, running } = get().hipfirePull;
     // Ignore an event for a superseded run (matches benchOnDone's guard).
     if (running && ev.generation !== generation) {
-      log.debug("hipfire", `ignoring stale hipfire-pull-done (gen ${ev.generation} != ${generation})`);
+      log.debug(
+        "hipfire",
+        `ignoring stale hipfire-pull-done (gen ${ev.generation} != ${generation})`,
+      );
       return;
     }
 
