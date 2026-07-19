@@ -438,11 +438,20 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         }
       }
     } catch (e: unknown) {
-      if ((e as { name?: string })?.name === "AbortError") {
+      // Global fetch rejects an aborted read with a DOMException named
+      // "AbortError". The plugin fetch (hipfire path) does NOT: per
+      // node_modules/@tauri-apps/plugin-http/dist-js/index.js it either
+      // throws `new Error('Request cancelled')` (name "Error") or, for the
+      // common mid-stream case, calls `controller.error('Request cancelled')`
+      // — rejecting with the bare STRING, not an Error at all. Treat
+      // abort.signal.aborted as the source of truth (it's set by our own
+      // cancelChat) so a hipfire Stop is classified the same as a llama Stop
+      // regardless of what shape the underlying fetch throws.
+      const msg = e instanceof Error ? e.message : String(e);
+      if ((e as { name?: string })?.name === "AbortError" || abort.signal.aborted) {
         log.info("chat", "request aborted by user");
         streamError = "aborted";
       } else {
-        const msg = e instanceof Error ? e.message : String(e);
         streamError = msg;
         log.error("chat", "request failed", { error: msg, url });
       }

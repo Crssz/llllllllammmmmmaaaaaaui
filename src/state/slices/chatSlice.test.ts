@@ -1224,6 +1224,42 @@ describe("chat slice — hipfire routes through the http plugin, not window.fetc
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(hipfireFetchMock).not.toHaveBeenCalled();
   });
+
+  // Regression: unlike window.fetch, @tauri-apps/plugin-http does NOT reject
+  // an aborted read with a DOMException named "AbortError" — per its source
+  // (dist-js/index.js), an abort mid-stream rejects the body reader via
+  // `controller.error('Request cancelled')`, a bare STRING with no `.name`
+  // at all. A cancel must still be classified as a clean "aborted" outcome
+  // (no red chatError banner, no "⚠️ ..." bubble), matching the llama path.
+  it("cancelChat on a hipfire round classifies the plugin's bare-string cancellation as a clean abort", async () => {
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore
+      .getState()
+      .setSettings(makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }));
+    vi.mocked(hipfireFetchMock).mockImplementationOnce((_url, init) => {
+      const signal = (init as RequestInit).signal!;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal.addEventListener("abort", () => controller.error("Request cancelled"));
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200, statusText: "OK" }));
+    });
+
+    const p = useAppStore.getState().sendChat("hi");
+    // Wait until the request is actually in-flight (abort controller
+    // installed) before cancelling.
+    await vi.waitFor(() => {
+      if (!useAppStore.getState()._chatAbort) throw new Error("request not in-flight yet");
+    });
+    useAppStore.getState().cancelChat();
+    await p;
+
+    expect(useAppStore.getState().chatPending).toBe(false);
+    expect(useAppStore.getState().chatError).toBeNull();
+    const last = useAppStore.getState().chats[0].messages.at(-1)!;
+    expect(last.content).not.toMatch(/⚠️/);
+  });
 });
 
 describe("chat slice — request body + edge SSE", () => {
