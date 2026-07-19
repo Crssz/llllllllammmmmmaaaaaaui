@@ -319,3 +319,133 @@ introducing a shared engine dispatch for "what model is active", mirroring the e
 All of the above is frontend-only and behind `activeEngine`/`settings.engine_kind`; no request
 shaping, `activeEngine` semantics, or Rust backend changed. `cargo test --lib` in `src-tauri`
 stays green untouched.
+
+---
+
+## 2026-07-19 bench + diag captures, and full screen parity
+
+Two more live captures this pass (read-only — `hipfire bench`/`hipfire diag` run to
+completion, no `serve`/`stop`/`pull`/`rm` executed), used to give every remaining screen
+(Models, Catalog, Bench, Engine) the same hipfire/llama parity Chat and Configure already had.
+
+### Fact 1 — `hipfire bench qwen3.6:27b --runs 1` (exit 0)
+
+Streams model-load progress lines, then a header block, per-run progress, and two summary
+tables. Abbreviated (see `src-tauri/src/hipfire_bench.rs`'s `tests` module for the exact fixture
+used to unit-test `parse_hipfire_bench_summary`):
+
+```
+hipfire bench
+  model:     qwen3.6-27b.mq4  [qwen3_5]
+  arch:      dim=5120, layers=64, vocab=248320
+  gpu:       gfx1201  (HIP 7.13)
+  kv_cache:  auto
+  max_seq:   32768
+  vram:      25712 MB loaded  (6761/32624 MB free)
+  runs:      1
+  mode:      standard
+  ...
+  Prefill    tok/s      mean      min      max    stdev     ms
+  pp128               822.7    822.7    822.7      0.0   155.6
+  pp512               797.2    797.2    797.2      0.0   642.3
+  pp1024              768.8    768.8    768.8      0.0   1332.0
+  pp2048              720.5    720.5    720.5      0.0   2842.6
+  ...
+  Prefill  tok/s      299.1    299.1    299.1      0.0   (user prompt, 22 tok)
+  TTFT     ms          73.6     73.6     73.6      0.0
+  Decode   tok/s       82.0     82.0     82.0      0.0
+  Wall     tok/s       78.3     78.3     78.3      0.0
+  Decode ms/tok: 12.20
+```
+
+`hipfire bench` takes `<model>` positional + `--runs N` (+ `--exp`), has **no `--help`** and
+**no JSON output mode** — everything is text-scraped. → **C**: `hipfire_bench.rs`
+(`run_hipfire_bench`/`cancel_hipfire_bench`, mirroring `hipfire_pull.rs`'s spawn/stream/
+generation/tree-kill pattern) streams raw stdout+stderr via `hipfire-bench-progress` while
+accumulating them; the terminal `hipfire-bench-done` carries both the full captured text and a
+`parse_hipfire_bench_summary` result (header fields, the pp128/512/1024/2048 sweep, the
+Prefill/TTFT/Decode/Wall rows, decode ms/tok) — a pure fn, unit-tested against the fixture above
+verbatim plus empty/garbage/truncated-input cases (never panics). **Corrects the old, factually
+wrong Bench.tsx banner** ("hipfire has no equivalent bench tool") — it did, this just hadn't
+been probed yet. Frontend: `HipfireBenchScreen` (Bench.tsx) — model dropdown from
+`list_hipfire_models` (excludes `-draft` tags from the default pick, still selectable), a runs
+field, Run/Cancel via the new `hipfireBenchSlice` (store-lifted, mirrors `hipfirePullSlice` so a
+run survives a tab switch), a live raw-log panel, and a result card. Bench results are
+**session-local** — not folded into the persisted `bench_runs.json` history: that history's
+`BenchRun`/`BenchRow` shape is llama-bench's JSON row schema (`model_filename`, `n_prompt`/
+`n_gen`, `avg_ts`…) and a hipfire summary (header + prefill sweep + named summary rows) doesn't
+fit it without either a lossy reduction to fake pp/tg rows or growing the persisted shape into
+an engine-tagged union — deferred rather than done half-heartedly for this pass.
+
+### Fact 2 — `hipfire diag` (exit 0, ~10s — live HIP GPU probe)
+
+```
+hipfire diagnostics
+registry:      cache
+platform:      Windows (native)
+hipcc:         NOT FOUND
+rocminfo:      NOT FOUND
+daemon:        found
+local models:  2
+  qwen3.6-27b.mq4                     15.0GB
+  qwen36-27b-dflash-mq4.hfq            0.9GB
+kernels/gfx1201: 48 blobs, 48 hashes
+(plus ~11 other kernels/<arch>: 0 blobs, 0 hashes lines)
+Probing GPU via HIP runtime...
+GPU dev 0: gfx1201 (34.2 GB VRAM, HIP 7.13)
+  GPU arch:    gfx1201
+  HIP version: 7.13
+  VRAM free:   32473 MB
+  VRAM total:  32624 MB
+  kv default:  q8 (auto -> registry default_kv_mode, else q8)
+  WMMA:        yes (4.1x prefill)
+config:        C:\Users\pay20\.hipfire\config.json
+  default_model = qwen3.6:27b
+  max_tokens = 512
+  dflash_mode = auto
+Done.
+```
+
+→ **D**: `hipfire_diag.rs`'s `hipfire_diag` is a one-shot `async fn` (the live probe takes
+~10s — a sync command would stall the main/STA thread for the whole window, same rationale as
+`list_hipfire_models`) returning the raw stdout plus a parsed `HipfireDiag` via the pure
+`parse_hipfire_diag`: daemon found/not, local models (name+size), non-zero per-arch kernel blob
+counts (the ~11 zero-blob arch lines carry no information and are filtered), the GPU probe block
+(arch/HIP version/VRAM free+total/kv default/WMMA), and the config path + `key = value` lines
+under it. Unit-tested against the fixture above and a fixture with the GPU probe section
+entirely absent (never panics either way). Frontend: `HipfireDiagScreen` (EngineManager.tsx) —
+sectioned cards (GPU / Kernels / Local models / Config), a collapsible raw-output panel, a
+refresh button, and a loading state for the ~10s probe.
+
+### Screen-parity summary (A–G)
+
+Every remaining engine-unaware screen now has a hipfire-mode branch, split into a
+`Llama<Screen>`/`Hipfire<Screen>` pair per file so the llama path stays byte-identical (same
+component, same JSX, untouched):
+
+- **A — Models.tsx**: `HipfireModelsPanel` — `list_hipfire_models` rows (tag/file/size, `-draft`
+  badge), Serve (writes `hipfire_flags.tag` + `reloadServer()`, the model switcher's flow),
+  Delete (**new** `hipfire_rm` command — `server.rs`, one-shot async wrapping `hipfire rm <tag>`,
+  destructive: confirmed via the screen's existing `useConfirm` and refused with a toast while
+  the tag is the one actually being served, keyed off `activeModelLabel`/`loadedEngine`), and a
+  refresh button. Empty state points at Catalog (pull) and Configure (quantize).
+- **B — Catalog.tsx**: `HipfireCatalogPanel` — `list_hipfire_available` rows with a client-side
+  tag+note filter, a Pull button per row driving the **existing** `hipfirePullSlice` (one pull at
+  a time, other rows disabled while it runs, a live log panel) — no duplicated pull state, and
+  the local-model list (Models/pickers) refreshes on success via the slice's existing
+  `modelsVersion` bump.
+- **C, D** — see facts 1–2 above.
+- **E — App.tsx**: Audio's nav entry + `Ctrl+8` shortcut are hidden whenever `activeEngine()` is
+  hipfire (a running llama server keeps Audio available even with the toggle flipped); no other
+  shortcut is renumbered. Landing on the Audio tab when it disappears routes to Chat.
+  Transcribe.tsx itself is untouched (fact 7: llama-only by design, no change).
+- **F — Mcp.tsx**: a passive banner, shown only when `activeEngine()` is hipfire, notes that MCP
+  servers aren't offered to hipfire chats (force-EOS at `<tool_call>`, 2026-07-19 tools-probe
+  section above) — config UI stays fully functional.
+- **G — Profiles.tsx**: `defaultProfileName` derives from `hipfire_flags.tag` when
+  `engine_kind` is hipfire, instead of falling through to a bare "untitled" (`flags.model` is
+  always empty under hipfire). Verified `saveProfile`/`loadProfile` already round-trip
+  `engine_kind` + `hipfire_flags` correctly (pre-existing `profilesSlice.test.ts` coverage) — no
+  fix needed there.
+
+`cargo test --lib`: 175 passed. `npm test`: 403 passed. `npm run typecheck`/`lint`: clean.
