@@ -491,8 +491,13 @@ webview concept, so it doesn't apply there at all.
   plugins.
 - `package.json`: added `@tauri-apps/plugin-http` `^2.5.9` (matching the Rust crate).
 - `src-tauri/capabilities/default.json`: granted `http:default` scoped to only the local
-  inference hosts a running server can bind — `http://127.0.0.1:*`, `http://localhost:*`,
-  `http://[::1]:*`. No broader scope.
+  inference hosts a running server can bind — `http://127.0.0.1:*`, `http://localhost:*`.
+  (A third entry, `http://[::1]:*`, was originally included too but proved invalid —
+  tauri-plugin-http's scope parser (urlpattern) cannot tokenize a bracketed IPv6 host, and
+  that single bad entry poisoned the whole scope, failing every plugin fetch with
+  `error deserializing scope: http://[::1]:* is not a valid URL pattern: tokenizer error:
+  invalid name; must be at least length 1 (at char 1)`. Removed; the app always dials
+  `http://127.0.0.1:PORT` so nothing is lost.)
 - `src/state/slices/chatSlice.ts` `runChatRound`: when the round's engine (`activeEngine`) is
   `"hipfire"`, the request is sent with `import { fetch as hipfireFetch } from
   "@tauri-apps/plugin-http"`; when `"llama"`, it keeps using the exact same global `fetch` call
