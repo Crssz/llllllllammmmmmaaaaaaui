@@ -449,3 +449,63 @@ component, same JSX, untouched):
   fix needed there.
 
 `cargo test --lib`: 175 passed. `npm test`: 403 passed. `npm run typecheck`/`lint`: clean.
+
+---
+
+## 2026-07-19 CORS probe + chat transport fix
+
+**Bug report** (live app run, hipfire served and warm — log showed `[hipfire] warm-up
+complete` and `[hipfire] http://127.0.0.1:8080/v1/chat/completions`): sending a chat failed
+instantly with `[chat] request failed {"error":"Failed to fetch","url":"http://127.0.0.1:8080/
+v1/chat/completions"}`, while a concurrent `GET /health` from PowerShell returned 200 with the
+model loaded — the daemon itself was healthy.
+
+**Root cause — probed live against the serving daemon.** A browser-style CORS preflight:
+
+```
+OPTIONS /v1/chat/completions HTTP/1.1
+Origin: http://localhost:1420
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: content-type
+```
+
+returned **HTTP 404 with zero `Access-Control-*` headers**. hipfire's daemon (a Bun HTTP
+server) has no CORS middleware and no `OPTIONS` route at all — `hipfire config list` has no
+`origins`/`cors` key either. Any JSON POST from a browser-engine page always triggers a
+preflight first, so the WebView2 page (origin `http://localhost:1420` in dev, `tauri.localhost`
+in prod) could never reach the daemon via `window.fetch`, regardless of how healthy the daemon
+was. llama-server works from the webview only because it happens to implement CORS (handles
+`OPTIONS`, sends `Access-Control-Allow-Origin`) — the app's direct-fetch chat architecture was
+silently depending on that the whole time.
+
+**Fix — hipfire chat now goes through `tauri-plugin-http`, not `window.fetch`.** This plugin's
+JS `fetch` has the same `fetch`/`Response` surface (confirmed against the installed guest JS,
+`node_modules/@tauri-apps/plugin-http/dist-js/index.js`: a real `ReadableStream` body fed by
+IPC `fetch_read_body` calls, so `response.body.getReader()` still works, and `AbortSignal`
+cancellation is wired via an `abort` event listener that calls `fetch_cancel`/errors the stream)
+but executes the actual request through `reqwest` in the Rust process — CORS is a browser/
+webview concept, so it doesn't apply there at all.
+
+- `src-tauri/Cargo.toml` + `src-tauri/src/lib.rs`: added `tauri-plugin-http` (`cargo add`,
+  resolved to 2.5.9) and registered `.plugin(tauri_plugin_http::init())` alongside the existing
+  plugins.
+- `package.json`: added `@tauri-apps/plugin-http` `^2.5.9` (matching the Rust crate).
+- `src-tauri/capabilities/default.json`: granted `http:default` scoped to only the local
+  inference hosts a running server can bind — `http://127.0.0.1:*`, `http://localhost:*`,
+  `http://[::1]:*`. No broader scope.
+- `src/state/slices/chatSlice.ts` `runChatRound`: when the round's engine (`activeEngine`) is
+  `"hipfire"`, the request is sent with `import { fetch as hipfireFetch } from
+  "@tauri-apps/plugin-http"`; when `"llama"`, it keeps using the exact same global `fetch` call
+  as before. The SSE reader, headers, body, and `AbortController`/signal handling are identical
+  on both paths — only the fetch function differs.
+- Swept `src/` for any other direct fetch to the inference server: `transcribeSlice.ts` also
+  calls `fetch(url, …)` against `server.info.port`, but it refuses outright before reaching that
+  call whenever `activeEngine(get) === "hipfire"` (transcription is llama-only — fact carried
+  over from the 2026-07-14 pass). So chat is confirmed the only path that can actually hit the
+  hipfire port through `fetch`, matching the assumption this fix started from.
+
+**Restart required.** The plugin is wired into the Rust binary, not the frontend bundle — vite
+HMR alone cannot pick it up. After pulling this change, the Tauri dev process (`npm run
+tauri:dev`) must be fully stopped and restarted (a Rust rebuild) before hipfire chat works; a
+hot-reloaded webview still calling into the old binary will keep hitting the same "Failed to
+fetch".
