@@ -481,6 +481,40 @@ pub async fn list_hipfire_models(explicit: Option<String>) -> Result<Vec<Hipfire
     Ok(parse_hipfire_list(&stdout))
 }
 
+/// Delete a locally-registered hipfire model (`hipfire rm <tag>`). One-shot,
+/// no streaming — a delete is fast (unlink on disk + registry update), unlike
+/// pull/convert/bench. `async fn` for the same reason as `list_hipfire_models`:
+/// a sync command would block the main (STA) thread for the spawn.
+///
+/// DESTRUCTIVE. The frontend (Models screen) confirms via its existing
+/// `useConfirm` before calling this, and separately refuses to call it at all
+/// when the tag is currently served (checked against `activeModelLabel`) —
+/// this command itself does NOT re-check that, so it stays a thin wrapper
+/// mirroring `list_hipfire_models`'s resolution/spawn shape exactly.
+#[tauri::command]
+pub async fn hipfire_rm(tag: String, explicit: Option<String>) -> Result<(), String> {
+    if tag.trim().is_empty() {
+        return Err("a tag to delete is required".into());
+    }
+    let bin = resolve_hipfire_bin(explicit.as_deref().unwrap_or(""))?;
+    let work_dir = bin
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let output = quiet_command(&bin)
+        .args(["rm", &tag])
+        .current_dir(&work_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("spawn hipfire rm: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("hipfire rm failed: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn start_server(
     app: AppHandle,

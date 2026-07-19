@@ -4,7 +4,9 @@ mod catalog;
 mod chats;
 mod engines;
 mod gguf;
+mod hipfire_bench;
 mod hipfire_convert;
+mod hipfire_diag;
 mod hipfire_pull;
 mod hw;
 mod mcp;
@@ -34,15 +36,17 @@ use crate::engines::{
     list_installed_engines, EngineState,
 };
 use crate::gguf::inspect_gguf;
+use crate::hipfire_bench::{cancel_hipfire_bench, run_hipfire_bench, HipfireBenchState};
 use crate::hipfire_convert::{cancel_hipfire_convert, hipfire_convert, HipfireConvertState};
+use crate::hipfire_diag::hipfire_diag;
 use crate::hipfire_pull::{
     cancel_hipfire_pull, hipfire_pull, list_hipfire_available, HipfirePullState,
 };
 use crate::hw::{hw_snapshot, HwState};
 use crate::mcp::{McpRegistry, McpStatus, McpTool};
 use crate::server::{
-    list_hipfire_models, resolve_hipfire_bin_cmd, server_status, start_server, stop_server,
-    ServerState,
+    hipfire_rm, list_hipfire_models, resolve_hipfire_bin_cmd, server_status, start_server,
+    stop_server, ServerState,
 };
 use crate::settings::{load_settings, save_settings, Settings};
 use crate::transcribe::{read_audio_base64, read_image_base64, save_recording};
@@ -172,6 +176,7 @@ pub fn run() {
         .manage(CatalogState::default())
         .manage(HipfireConvertState::default())
         .manage(HipfirePullState::default())
+        .manage(HipfireBenchState::default())
         .manage(HwState {
             sys: Mutex::new(System::new_all()),
             #[cfg(feature = "nvml")]
@@ -224,6 +229,10 @@ pub fn run() {
             list_hipfire_available,
             hipfire_pull,
             cancel_hipfire_pull,
+            hipfire_rm,
+            run_hipfire_bench,
+            cancel_hipfire_bench,
+            hipfire_diag,
             crate::workspace::workspace_list,
             crate::workspace::workspace_read,
             crate::workspace::workspace_write,
@@ -254,6 +263,13 @@ pub fn run() {
                     }
                 }
                 if let Some(state) = window.try_state::<HipfirePullState>() {
+                    let mut child = lock_or_poisoned(&state.child);
+                    if let Some(mut c) = child.take() {
+                        // Always hipfire (the .cmd shim) — see kill_child_tree.
+                        crate::server::kill_child_tree(&mut c, true);
+                    }
+                }
+                if let Some(state) = window.try_state::<HipfireBenchState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
                         // Always hipfire (the .cmd shim) — see kill_child_tree.
