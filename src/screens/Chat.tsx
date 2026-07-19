@@ -365,7 +365,12 @@ export function ChatScreen() {
               />
               <span className="model-name">{modelName}</span>
             </span>
-            {flags.spec_type === "draft-mtp" && (
+            {/* spec_type is a llama-server-only flag (draft-mtp/draft-dflash) that
+                persists in settings across an engine switch — gate on the active
+                engine so a leftover llama spec_type can't imply MTP/DFlash
+                speculative decoding applies to a hipfire tag (hipfire's DFlash
+                speculation is server-side and always-on, not flag-driven). */}
+            {!isHipfireActive && flags.spec_type === "draft-mtp" && (
               <span
                 className="badge ghost"
                 title="Speculative decoding: multi-token-prediction draft model"
@@ -373,7 +378,7 @@ export function ChatScreen() {
                 <I.Spark size={11} /> MTP
               </span>
             )}
-            {flags.spec_type === "draft-dflash" && (
+            {!isHipfireActive && flags.spec_type === "draft-dflash" && (
               <span className="badge ghost" title="Speculative decoding: DFlash draft model">
                 <I.Spark size={11} /> DFlash
               </span>
