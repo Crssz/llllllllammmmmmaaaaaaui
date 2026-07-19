@@ -170,6 +170,13 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // hipfire's daemon has no CORS support (no OPTIONS route, no
+        // Access-Control-* headers) so the webview's window.fetch can never
+        // reach it — a JSON POST always triggers a preflight. This plugin's
+        // JS fetch runs through reqwest in this Rust process instead, so CORS
+        // never applies. llama chat keeps using window.fetch (llama-server
+        // does implement CORS) — see chatSlice.ts runChatRound.
+        .plugin(tauri_plugin_http::init())
         .manage(ServerState::default())
         .manage(BenchState::default())
         .manage(EngineState::default())

@@ -30,6 +30,7 @@ ureq = { version = "2", features = ["json"] }
 # deflate, so we trim the default feature set (bzip2/zstd/lzma/aes) to keep the
 # build light.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri-plugin-http = "2.5.9"
 
 [target.'cfg(windows)'.dependencies]
 wmi = "0.14"
