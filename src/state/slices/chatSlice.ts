@@ -1,4 +1,5 @@
 import type { StateCreator } from "zustand";
+import { fetch as hipfireFetch } from "@tauri-apps/plugin-http";
 import {
   api,
   defaultSessionConfig,
@@ -325,7 +326,16 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     });
 
     try {
-      const res = await fetch(url, {
+      // hipfire's daemon has no CORS support (no OPTIONS route, no
+      // Access-Control-* headers — see live-verification-checklist.md), so
+      // the webview's global fetch always fails its preflight. Route hipfire
+      // requests through the plugin fetch instead: its JS surface is
+      // fetch/Response-identical (streaming body, AbortSignal) but the
+      // request actually executes via reqwest in the Rust process, where
+      // CORS doesn't apply. llama-server implements CORS, so llama rounds
+      // keep using the global fetch exactly as before.
+      const doFetch = engine === "hipfire" ? hipfireFetch : fetch;
+      const res = await doFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

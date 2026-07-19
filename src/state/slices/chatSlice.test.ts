@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { fetch as hipfireFetchMock } from "@tauri-apps/plugin-http";
 import { api, defaultSessionConfig } from "../../lib/api";
 import { log } from "../../lib/logger";
 import { freshStore, makeChat, makeSettings, stubApi, useAppStore } from "../testUtils";
@@ -1109,7 +1110,10 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
       makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }),
     );
     const notify = vi.spyOn(log, "notify");
-    fetchMock.mockResolvedValueOnce(
+    // hipfire has no CORS support, so a hipfire round goes through the
+    // plugin fetch (chatSlice.ts), not the global one — see the dedicated
+    // "routes through the http plugin" describe block below.
+    vi.mocked(hipfireFetchMock).mockResolvedValueOnce(
       sseResponse([
         `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
         `data: [DONE]\n`,
@@ -1119,7 +1123,10 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
     // an empty content string and poison every later send in the chat.
     await useAppStore.getState().sendChat("", null, { path: "/tmp/a.png", format: "png" });
 
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const body = JSON.parse(
+      (vi.mocked(hipfireFetchMock).mock.calls[0][1] as RequestInit).body as string,
+    );
     expect(body.model).toBe("qwen3.6:27b");
     expect(body.tools).toBeUndefined();
     expect(body.messages.at(-1).content).toBe("[attached media unavailable]");
@@ -1139,7 +1146,7 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
     useAppStore
       .getState()
       .setSettings(makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }));
-    fetchMock.mockResolvedValueOnce(
+    vi.mocked(hipfireFetchMock).mockResolvedValueOnce(
       sseResponse([
         `data: ${JSON.stringify({ choices: [{ delta: { content: "Hel" } }] })}\n`,
         `data: ${JSON.stringify({ choices: [{ delta: { content: "lo " } }] })}\n`,
@@ -1152,12 +1159,70 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
     );
     await useAppStore.getState().sendChat("hi");
 
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const body = JSON.parse(
+      (vi.mocked(hipfireFetchMock).mock.calls[0][1] as RequestInit).body as string,
+    );
     expect(body.stream_options).toEqual({ include_usage: true });
     const last = useAppStore.getState().chats[0].messages.at(-1)!;
     expect(last.content).toBe("Hello there");
     expect(last.tokens).toBe(160);
     expect(last.tokens).not.toBe(3);
+  });
+});
+
+// hipfire's daemon has no CORS support (no OPTIONS route, no
+// Access-Control-* headers), so its round must go through the
+// @tauri-apps/plugin-http fetch (reqwest in the Rust process) instead of the
+// webview's global fetch, which would fail every preflight. llama-server
+// implements CORS, so llama stays on the global fetch unchanged.
+describe("chat slice — hipfire routes through the http plugin, not window.fetch", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    readyServer();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a hipfire-engine round calls the plugin fetch and never the global fetch", async () => {
+    useAppStore.setState({ loadedEngine: "hipfire" });
+    useAppStore
+      .getState()
+      .setSettings(makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }));
+    vi.mocked(hipfireFetchMock).mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+
+    await useAppStore.getState().sendChat("hi");
+
+    expect(hipfireFetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a llama-engine round calls the global fetch and never the plugin fetch", async () => {
+    // readyServer()'s loadedEngine stays null (adopted) and settings default
+    // to engine_kind "llama" — activeEngine resolves to llama either way.
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+
+    await useAppStore.getState().sendChat("hi");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(hipfireFetchMock).not.toHaveBeenCalled();
   });
 });
 

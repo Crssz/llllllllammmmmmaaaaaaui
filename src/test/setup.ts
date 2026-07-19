@@ -13,3 +13,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => null),
 }));
+
+// hipfire chat routes through this plugin's fetch instead of the global one
+// (see chatSlice.ts runChatRound) — stub it so tests run without Tauri.
+// Individual suites override the implementation via vi.spyOn/vi.mocked.
+vi.mock("@tauri-apps/plugin-http", () => ({
+  fetch: vi.fn(async () => new Response(null, { status: 200 })),
+}));
