@@ -185,6 +185,20 @@ export function stubApi() {
   vi.spyOn(api, "listHipfireAvailable").mockResolvedValue([]);
   vi.spyOn(api, "hipfirePull").mockResolvedValue(1);
   vi.spyOn(api, "cancelHipfirePull").mockResolvedValue(undefined);
+  vi.spyOn(api, "hipfireRm").mockResolvedValue(undefined);
+  vi.spyOn(api, "runHipfireBench").mockResolvedValue(1);
+  vi.spyOn(api, "cancelHipfireBench").mockResolvedValue(undefined);
+  vi.spyOn(api, "hipfireDiag").mockResolvedValue({
+    output: "",
+    diag: {
+      daemon_found: null,
+      local_models: [],
+      kernels: [],
+      gpu: null,
+      config_path: null,
+      config: [],
+    },
+  });
 }
 
 // Drain microtasks so fire-and-forget persistence promises settle before the

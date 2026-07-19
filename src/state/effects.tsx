@@ -7,6 +7,8 @@ import {
   type CatalogProgress,
   type EngineDone,
   type EngineProgress,
+  type HipfireBenchDoneEvent,
+  type HipfireBenchProgressEvent,
   type HipfirePullDoneEvent,
   type HipfirePullProgressEvent,
 } from "../lib/api";
@@ -338,6 +340,40 @@ export function useAppEffects(initialFlags: FlagValues) {
     track(
       listen<HipfirePullDoneEvent>("hipfire-pull-done", (event) => {
         useAppStore.getState().hipfirePullOnDone(event.payload);
+      }),
+    );
+    return () => {
+      cancelled = true;
+      for (const u of unlisteners) u();
+    };
+  }, []);
+
+  // Subscribe to hipfire-bench progress + terminal result events. Lifted here
+  // (rather than a listen() effect inside BenchScreen) so a run — which can
+  // take a while across a prefill sweep and multiple runs — keeps updating
+  // the store and its done event still gets handled even while Bench isn't
+  // the active tab.
+  useEffect(() => {
+    let cancelled = false;
+    const unlisteners: UnlistenFn[] = [];
+    const track = (p: Promise<UnlistenFn>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlisteners.push(u);
+        })
+        .catch((e) =>
+          log.warn("hipfire", "failed to subscribe to hipfire-bench events", { error: String(e) }),
+        );
+
+    track(
+      listen<HipfireBenchProgressEvent>("hipfire-bench-progress", (event) => {
+        useAppStore.getState().hipfireBenchOnProgress(event.payload.line);
+      }),
+    );
+    track(
+      listen<HipfireBenchDoneEvent>("hipfire-bench-done", (event) => {
+        useAppStore.getState().hipfireBenchOnDone(event.payload);
       }),
     );
     return () => {

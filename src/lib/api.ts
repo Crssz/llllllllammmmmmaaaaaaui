@@ -513,6 +513,90 @@ export type BenchDoneEvent = {
   rows: BenchRow[];
 };
 
+// ── hipfire bench (mirror Rust hipfire_bench.rs) ────────────────────────────
+
+/** Header key/value fields from `hipfire bench`'s pre-run block (mirrors Rust
+ *  `HipfireBenchHeader`). Every field is free text — hipfire has no `--help`
+ *  and no JSON output mode for bench, so these are text-scraped. */
+export type HipfireBenchHeader = {
+  model: string | null;
+  arch: string | null;
+  gpu: string | null;
+  kv_cache: string | null;
+  max_seq: string | null;
+  vram: string | null;
+  runs: string | null;
+  mode: string | null;
+};
+
+/** One stats row: a `pp<N>` prefill-sweep row (`ms` set) or a named
+ *  Prefill/TTFT/Decode/Wall summary row (`ms` null). Mirrors Rust
+ *  `HipfireBenchStatRow`. */
+export type HipfireBenchStatRow = {
+  label: string;
+  mean: number;
+  min: number;
+  max: number;
+  stdev: number;
+  ms: number | null;
+};
+
+/** Parsed `hipfire bench` result (mirrors Rust `HipfireBenchSummary`). */
+export type HipfireBenchSummary = {
+  header: HipfireBenchHeader;
+  prefill: HipfireBenchStatRow[];
+  summary: HipfireBenchStatRow[];
+  decode_ms_per_tok: number | null;
+};
+
+/** `hipfire-bench-progress` event payload. */
+export type HipfireBenchProgressEvent = { generation: number; line: string };
+
+/** `hipfire-bench-done` event payload. */
+export type HipfireBenchDoneEvent = {
+  generation: number;
+  ok: boolean;
+  cancelled: boolean;
+  error: string | null;
+  tag: string;
+  output: string;
+  summary: HipfireBenchSummary | null;
+};
+
+// ── hipfire diag (mirror Rust hipfire_diag.rs) ──────────────────────────────
+
+export type HipfireDiagLocalModel = { name: string; size: string };
+
+export type HipfireDiagKernelArch = { arch: string; blobs: number; hashes: number };
+
+export type HipfireDiagGpu = {
+  arch: string | null;
+  hip_version: string | null;
+  vram_free_mb: number | null;
+  vram_total_mb: number | null;
+  kv_default: string | null;
+  wmma: string | null;
+};
+
+/** Parsed `hipfire diag` page (mirrors Rust `HipfireDiag`). */
+export type HipfireDiag = {
+  daemon_found: boolean | null;
+  local_models: HipfireDiagLocalModel[];
+  /** Only non-zero-blob arches — see the Rust doc comment. */
+  kernels: HipfireDiagKernelArch[];
+  /** Null when the GPU probe section is missing from the output entirely. */
+  gpu: HipfireDiagGpu | null;
+  config_path: string | null;
+  /** `[key, value]` pairs, in the order they appeared. */
+  config: [string, string][];
+};
+
+/** Result of the `hipfire_diag` command: raw stdout plus the parsed page. */
+export type HipfireDiagResult = {
+  output: string;
+  diag: HipfireDiag;
+};
+
 export type GpuInfo = {
   name: string;
   vram_total_gb: number;
@@ -760,6 +844,26 @@ export const api = {
   hipfirePull: (hipfirePath: string, tag: string) =>
     invoke<number>("hipfire_pull", { hipfirePath, tag }),
   cancelHipfirePull: () => invoke<void>("cancel_hipfire_pull"),
+
+  // Delete a locally-registered hipfire model (`hipfire rm <tag>`). One-shot,
+  // no streaming. DESTRUCTIVE — callers must confirm and guard against
+  // deleting a currently-served tag themselves (see Models.tsx).
+  hipfireRm: (tag: string, explicit?: string | null) =>
+    invoke<void>("hipfire_rm", { tag, explicit: explicit ?? null }),
+
+  // Run hipfire's own throughput benchmark. Mirrors hipfirePull's
+  // event-streaming contract: resolves with the run's generation id, raw
+  // lines arrive via `hipfire-bench-progress`, and the terminal
+  // `hipfire-bench-done` carries both the full captured output and a parsed
+  // summary.
+  runHipfireBench: (hipfirePath: string, tag: string, runs: number) =>
+    invoke<number>("run_hipfire_bench", { hipfirePath, tag, runs }),
+  cancelHipfireBench: () => invoke<void>("cancel_hipfire_bench"),
+
+  // One-shot hipfire health/diagnostics page (~10s — a live HIP GPU probe).
+  // Returns the raw stdout plus a parsed HipfireDiag.
+  hipfireDiag: (explicit?: string | null) =>
+    invoke<HipfireDiagResult>("hipfire_diag", { explicit: explicit ?? null }),
 
   pickFolder: (title = "Select a directory") =>
     open({ directory: true, multiple: false, title }) as Promise<string | null>,
