@@ -174,6 +174,14 @@ describe("screen smoke render", () => {
   it("renders McpScreen", async () => {
     const { container } = await renderScreen(<McpScreen />);
     expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).not.toContain("does not support tool calls yet");
+  });
+
+  it("renders McpScreen with a passive tool-call banner under the hipfire engine toggle", async () => {
+    await switchToHipfire();
+    const { container } = await renderScreen(<McpScreen />);
+    expect(container.firstChild).not.toBeNull();
+    expect(container.textContent).toContain("does not support tool calls yet");
   });
 
   it("renders ModelsScreen", async () => {

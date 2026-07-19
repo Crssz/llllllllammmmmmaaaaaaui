@@ -187,7 +187,14 @@ function Sidebar({
   tab,
   onTab,
   onEditWorkspace,
-}: Readonly<{ tab: Tab; onTab: (t: Tab) => void; onEditWorkspace: (id: string) => void }>) {
+  nav,
+}: Readonly<{
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  onEditWorkspace: (id: string) => void;
+  /** Filtered NAV — Audio dropped while hipfire is the active engine (see App). */
+  nav: CommandPaletteNavItem[];
+}>) {
   const {
     server,
     settings,
@@ -369,7 +376,7 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="nav-label">Navigate</div>
-      {NAV.map((n) => {
+      {nav.map((n) => {
         const IconCmp = I[n.icon];
         return (
           <button
@@ -713,6 +720,28 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
 
+  useAppStore(
+    useShallow((s) => ({
+      // Subscribed only so this re-renders when activeEngine() (below) would
+      // resolve differently — read fresh via useAppStore.getState() further
+      // down, not consumed by name here (same pattern TopBar/Sidebar/
+      // StatusBar already use).
+      server: s.server,
+      loadedEngine: s.loadedEngine,
+      engineKind: s.settings.engine_kind,
+    })),
+  );
+  // Transcription (Audio) is llama-only by design (llama-server's audio
+  // endpoint; hipfire has none — fact 7). Hide its nav entry + Ctrl+8
+  // shortcut only when hipfire is the engine actually driving requests right
+  // now — keyed off activeEngine (a running server wins over the raw
+  // Configure toggle), so a running llama server keeps Audio available even
+  // if the toggle was flipped without a restart. NAV's "key" values are
+  // never renumbered — Audio's entry is just dropped from this filtered
+  // list, so every other shortcut keeps binding to the same digit it shows.
+  const audioAvailable = activeEngine(useAppStore.getState) !== "hipfire";
+  const nav = audioAvailable ? NAV : NAV.filter((n) => n.id !== "audio");
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -721,8 +750,9 @@ export function App() {
         setPaletteOpen((o) => !o);
       } else if (mod && /^[0-9]$/.test(e.key)) {
         e.preventDefault();
-        // NAV binds "1"…"9" to the first nine tabs and "0" to the tenth.
-        const item = NAV.find((n) => n.key === e.key);
+        // `nav` (not the static NAV) so a hidden Audio's "8" doesn't route
+        // anywhere while hipfire is active.
+        const item = nav.find((n) => n.key === e.key);
         if (item) setTab(item.id as Tab);
       } else if (mod && e.key === "`") {
         e.preventDefault();
@@ -731,11 +761,21 @@ export function App() {
     };
     globalThis.addEventListener("keydown", onKey);
     return () => globalThis.removeEventListener("keydown", onKey);
-  }, []);
+  }, [nav]);
 
   useEffect(() => {
     log.debug("nav", `tab → ${tab}`);
   }, [tab]);
+
+  // If Audio becomes unavailable (engine flips to hipfire) while the user is
+  // actually on that tab, route them to Chat rather than stranding them on a
+  // screen its own nav entry no longer points to.
+  useEffect(() => {
+    if (!audioAvailable && tab === "audio") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setTab("chat");
+    }
+  }, [audioAvailable, tab]);
 
   return (
     <ContextMenuProvider>
@@ -752,7 +792,7 @@ export function App() {
           setPickerOpen={setPickerOpen}
         />
         <div className="layout">
-          <Sidebar tab={tab} onTab={setTab} onEditWorkspace={setEditingWorkspaceId} />
+          <Sidebar tab={tab} onTab={setTab} onEditWorkspace={setEditingWorkspaceId} nav={nav} />
           <main className="main" data-screen-label={tab}>
             {tab === "chat" && <ChatScreen />}
             {tab === "models" && <ModelsScreen />}
@@ -785,7 +825,7 @@ export function App() {
         {paletteOpen && (
           <CommandPalette
             onClose={() => setPaletteOpen(false)}
-            nav={NAV}
+            nav={nav}
             onNavigate={(id) => setTab(id as Tab)}
             onToggleLogs={() => setLogsOpen((o) => !o)}
           />

@@ -6,6 +6,7 @@ import type { McpServerConfig, McpStatus, McpTool, McpTransport } from "../lib/a
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useTextPrompt } from "../components/TextPromptDialog";
 import { useConfirm } from "../components/ConfirmDialog";
+import { activeEngine } from "../state/slices/serverSlice";
 
 function emptyServer(): McpServerConfig {
   return {
@@ -294,8 +295,22 @@ export function McpScreen() {
       mcpConnect: s.mcpConnect,
       mcpDisconnect: s.mcpDisconnect,
       mcpRefreshStatus: s.mcpRefreshStatus,
+      // Subscribed only so this re-renders when activeEngine() (below) would
+      // resolve differently — read fresh via useAppStore.getState() further
+      // down, not consumed by name here (same pattern App/TopBar/Sidebar use).
+      server: s.server,
+      loadedEngine: s.loadedEngine,
+      engineKind: s.settings.engine_kind,
     })),
   );
+  // hipfire force-EOSes at "<tool_call>" and never emits structured
+  // tool_calls (live-probed, 2026-07-19) — chat requests already strip
+  // tools for it (chatHelpers.ts), so config here is passive: it stays fully
+  // functional, this just tells the user it isn't reaching hipfire chats
+  // right now. Keyed off activeEngine (a running server wins over the raw
+  // Configure toggle) so this can't wrongly warn while a llama server is
+  // actually serving.
+  const isHipfireActive = activeEngine(useAppStore.getState) === "hipfire";
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<McpServerConfig | null>(null);
@@ -522,6 +537,16 @@ export function McpScreen() {
           </button>
         </div>
       </div>
+
+      {isHipfireActive && (
+        <div className="panel" style={{ margin: "0 28px 14px" }}>
+          <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
+            <I.Info size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+            MCP servers configured here are not offered to hipfire chats because the hipfire
+            engine does not support tool calls yet. Configuration below stays fully functional.
+          </div>
+        </div>
+      )}
 
       <div className="mcp-layout">
         <aside className="mcp-sidebar">
