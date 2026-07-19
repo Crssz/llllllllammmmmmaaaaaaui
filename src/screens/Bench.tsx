@@ -860,7 +860,13 @@ function HipfireBenchScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.hipfire_path, hipfireModelsVersion]);
 
-  const runsN = Math.max(1, Number(runs) || 1);
+  // Floor + clamp to u32 range so a decimal (or out-of-range) Runs value can
+  // never reach the backend's `runs: u32` param — serde rejects a
+  // non-integer float (or a value above u32::MAX) outright, which would
+  // otherwise surface as a cryptic deserialize error instead of ever
+  // starting the benchmark.
+  const U32_MAX = 4294967295;
+  const runsN = Math.min(U32_MAX, Math.max(1, Math.floor(Number(runs)) || 1));
   const canRun = !hipfireBench.running && Boolean(tag);
   const runDisabledReason = hipfireBench.running
     ? "A benchmark is already running"
@@ -905,7 +911,13 @@ function HipfireBenchScreen() {
           <div className="panel">
             <div
               className="panel-body"
-              style={{ fontSize: 12.5, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+              style={{
+                fontSize: 12.5,
+                color: "var(--red)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
             >
               <I.X size={12} style={{ flexShrink: 0 }} />
               <span style={{ flex: 1 }}>Couldn&apos;t list local models: {modelsError}</span>
@@ -995,7 +1007,7 @@ function HipfireBenchScreen() {
               />
               Running hipfire bench…
               <span className="meta" style={{ marginLeft: "auto" }}>
-                {tag}
+                {hipfireBench.tag}
               </span>
             </div>
             <div className="panel-body">

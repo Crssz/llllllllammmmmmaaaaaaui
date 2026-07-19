@@ -48,6 +48,24 @@ describe("hipfire bench slice", () => {
     expect(api.runHipfireBench).toHaveBeenCalledWith("/hipfire", "qwen3.6:27b", 3);
   });
 
+  // Regression: the "Running…" panel's label must read the tag captured at
+  // start, not the model dropdown's live value — the dropdown stays editable
+  // while a run is in flight and can drift to a different tag mid-run.
+  it("hipfireBenchStart records the tag synchronously, before the backend call resolves", () => {
+    vi.spyOn(api, "runHipfireBench").mockReturnValue(new Promise(() => {})); // never resolves
+    useAppStore
+      .getState()
+      .hipfireBenchStart("/hipfire", "qwen3.6:27b", 3)
+      .catch(() => {});
+    expect(useAppStore.getState().hipfireBench.tag).toBe("qwen3.6:27b");
+  });
+
+  it("hipfireBenchStart failure clears the tag along with running", async () => {
+    vi.spyOn(api, "runHipfireBench").mockRejectedValueOnce(new Error("boom"));
+    await useAppStore.getState().hipfireBenchStart("/hipfire", "qwen3.6:27b", 1);
+    expect(useAppStore.getState().hipfireBench.tag).toBeNull();
+  });
+
   it("hipfireBenchStart is a no-op while a run is already running", async () => {
     vi.spyOn(api, "runHipfireBench").mockResolvedValue(1);
     await useAppStore.getState().hipfireBenchStart("/hipfire", "a", 1);

@@ -14,6 +14,13 @@ export type HipfireBenchUi = {
   running: boolean;
   /** Generation id of the in-flight run, used to ignore a stale `hipfire-bench-done`. */
   generation: number | null;
+  /** Tag the in-flight run is benchmarking, null when idle. Set synchronously
+   *  at start so the "Running…" panel's label can't drift from the tag
+   *  actually being measured if the model dropdown is changed (or the screen
+   *  remounts) while the run is still in flight — see HipfireResultCard,
+   *  which sources its label the same way (from the done event's tag) rather
+   *  than live component state. */
+  tag: string | null;
   /** Recent raw stdout/stderr lines from `hipfire bench` (capped). */
   lines: string[];
   /** Outcome of the most recently finished run, null until one lands. */
@@ -38,6 +45,7 @@ export type HipfireBenchSlice = {
 const IDLE: HipfireBenchUi = {
   running: false,
   generation: null,
+  tag: null,
   lines: [],
   result: null,
 };
@@ -53,7 +61,7 @@ export const createHipfireBenchSlice: StateCreator<AppStore, [], [], HipfireBenc
       log.warn("hipfire", "bench start ignored: a benchmark is already running");
       return;
     }
-    set({ hipfireBench: { ...IDLE, running: true } });
+    set({ hipfireBench: { ...IDLE, running: true, tag } });
     log.info("hipfire", `benchmarking ${tag} (${runs} run${runs === 1 ? "" : "s"})`);
     try {
       const generation = await api.runHipfireBench(hipfirePath, tag, runs);
