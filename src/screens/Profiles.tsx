@@ -6,7 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useTextPrompt } from "../components/TextPromptDialog";
 import { useConfirm } from "../components/ConfirmDialog";
-import type { SavedProfile } from "../lib/api";
+import type { SavedProfile, Settings } from "../lib/api";
 
 // Flag-key → human description, reused from the Configure flag catalog so the
 // profile mini-stat tooltips stay in sync with the canonical flag docs.
@@ -119,7 +119,7 @@ export function ProfilesScreen() {
   );
 
   const handleSave = async () => {
-    const trimmed = name.trim() || defaultProfileName(flags);
+    const trimmed = name.trim() || defaultProfileName(flags, settings);
     await saveProfile(trimmed);
     setName("");
     setCreating(false);
@@ -137,7 +137,7 @@ export function ProfilesScreen() {
             className="btn primary"
             onClick={() => {
               setCreating(true);
-              setName(defaultProfileName(flags));
+              setName(defaultProfileName(flags, settings));
             }}
           >
             <I.Plus size={12} /> Save current as profile
@@ -331,7 +331,16 @@ export function ProfilesScreen() {
   );
 }
 
-function defaultProfileName(flags: Record<string, unknown>): string {
+// hipfire identifies its model by a served tag (settings.hipfire_flags.tag),
+// not a --model GGUF path — `flags.model` is always empty under hipfire, so
+// deriving the default name from it (the llama path below) fell through to
+// the bare "untitled" fallback for every hipfire profile. Derive from the
+// tag instead when hipfire is the active engine.
+export function defaultProfileName(flags: Record<string, unknown>, settings: Settings): string {
+  if (settings.engine_kind === "hipfire") {
+    const tag = String((settings.hipfire_flags as Record<string, unknown> | undefined)?.tag ?? "").trim();
+    return tag || "untitled";
+  }
   const model = flags.model ? basename(flags.model as string).replace(".gguf", "") : "untitled";
   return model;
 }
