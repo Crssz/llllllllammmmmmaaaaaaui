@@ -13,6 +13,7 @@ import {
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { useConfirm } from "../components/ConfirmDialog";
 import { quantDescription } from "../lib/quant";
+import { hipfireLoadedTag } from "../lib/buildHipfireArgs";
 import { log } from "../lib/logger";
 
 type SortBy = "recent" | "size" | "name";
@@ -581,20 +582,28 @@ function LlamaModelsPanel() {
 // useConfirm and refused with a toast while the tag is the one actually being
 // served).
 function HipfireModelsPanel() {
-  const { settings, server, loadedEngine, setHipfireFlag, reloadServer, hipfireModelsVersion } =
-    useAppStore(
-      useShallow((s) => ({
-        settings: s.settings,
-        server: s.server,
-        loadedEngine: s.loadedEngine,
-        setHipfireFlag: s.setHipfireFlag,
-        reloadServer: s.reloadServer,
-        // Bumped store-side after a successful pull (Catalog's hipfire mode /
-        // Configure's HipfirePullPanel) — re-fetching on it means a model
-        // pulled elsewhere shows up here without a manual refresh click.
-        hipfireModelsVersion: s.hipfirePull.modelsVersion,
-      })),
-    );
+  const {
+    settings,
+    server,
+    loadedEngine,
+    loadedArgs,
+    setHipfireFlag,
+    reloadServer,
+    hipfireModelsVersion,
+  } = useAppStore(
+    useShallow((s) => ({
+      settings: s.settings,
+      server: s.server,
+      loadedEngine: s.loadedEngine,
+      loadedArgs: s.loadedArgs,
+      setHipfireFlag: s.setHipfireFlag,
+      reloadServer: s.reloadServer,
+      // Bumped store-side after a successful pull (Catalog's hipfire mode /
+      // Configure's HipfirePullPanel) — re-fetching on it means a model
+      // pulled elsewhere shows up here without a manual refresh click.
+      hipfireModelsVersion: s.hipfirePull.modelsVersion,
+    })),
+  );
 
   const { confirmElement, confirm } = useConfirm();
   const [models, setModels] = useState<HipfireLocalModel[]>([]);
@@ -643,10 +652,16 @@ function HipfireModelsPanel() {
   };
 
   // "Serving" means the running server is actually hipfire serving this exact
-  // tag — not merely that this tag is the configured selection (mirrors
-  // ModelLibraryOverlay's isServing / Models's isLoaded+server.running check).
+  // tag — derived from loadedArgs (the argv the running server was actually
+  // launched with), NOT hipfireTag (settings.hipfire_flags.tag, the mutable
+  // NEXT-launch selection). Those two diverge the instant the model picker
+  // is changed without reloading (e.g. from Configure), so comparing against
+  // hipfireTag would let a currently-served tag's guard silently stop firing
+  // — see hipfireLoadedTag's doc comment. This delete guard has no OS
+  // file-lock backstop (unlike llama's memory-mapped GGUF), so it must be
+  // right.
   const isServing = (tag: string) =>
-    tag === hipfireTag && server.running && loadedEngine === "hipfire";
+    server.running && loadedEngine === "hipfire" && tag === hipfireLoadedTag(loadedArgs);
 
   const doDelete = async (m: HipfireLocalModel) => {
     if (isServing(m.tag)) {
@@ -748,7 +763,10 @@ function HipfireModelsPanel() {
 
       <div className="page-body">
         {error && (
-          <div className="badge red" style={{ alignSelf: "flex-start", fontSize: 11, marginBottom: 12 }}>
+          <div
+            className="badge red"
+            style={{ alignSelf: "flex-start", fontSize: 11, marginBottom: 12 }}
+          >
             Couldn&apos;t list local models: {error}
           </div>
         )}
@@ -861,7 +879,11 @@ function HipfireModelsPanel() {
                     className="iconbtn"
                     onClick={() => doDelete(m).catch(() => {})}
                     disabled={serving}
-                    title={serving ? "Currently being served — stop the server first" : "Delete from hipfire's store"}
+                    title={
+                      serving
+                        ? "Currently being served — stop the server first"
+                        : "Delete from hipfire's store"
+                    }
                   >
                     <I.Trash size={13} />
                   </button>

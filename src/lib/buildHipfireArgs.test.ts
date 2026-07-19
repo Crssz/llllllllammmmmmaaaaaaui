@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildHipfireArgs } from "./buildHipfireArgs";
+import { buildHipfireArgs, hipfireLoadedTag } from "./buildHipfireArgs";
 
 describe("buildHipfireArgs", () => {
   it("omits the model positional entirely when no tag is set, rather than pushing an empty string", () => {
@@ -85,5 +85,39 @@ describe("buildHipfireArgs", () => {
     const args = buildHipfireArgs({ tag: "t" });
     expect(args).not.toContain("-m");
     expect(args).not.toContain("--model");
+  });
+});
+
+describe("hipfireLoadedTag", () => {
+  it("recovers the tag from a launch that included one", () => {
+    const args = buildHipfireArgs({ tag: "qwen3.6:27b" });
+    expect(hipfireLoadedTag(args)).toBe("qwen3.6:27b");
+  });
+
+  it("returns null when the launch pre-warmed the default model (no tag positional)", () => {
+    const args = buildHipfireArgs({});
+    expect(hipfireLoadedTag(args)).toBeNull();
+  });
+
+  it("still recovers the tag with --kv-mode and --tp also set", () => {
+    const args = buildHipfireArgs({ tag: "t", kv_mode: "q8", tp: 2 });
+    expect(hipfireLoadedTag(args)).toBe("t");
+  });
+
+  it("returns null for null loadedArgs (no launch recorded — e.g. an adopted server)", () => {
+    expect(hipfireLoadedTag(null)).toBeNull();
+  });
+
+  it("returns null for a non-hipfire (llama) argv", () => {
+    expect(hipfireLoadedTag(["-m", "model.gguf", "--port", "8080"])).toBeNull();
+  });
+
+  // Regression: the guard this feeds (blocking `hipfire rm` on a served tag)
+  // must key off what's ACTUALLY running, not the mutable next-launch
+  // hipfire_flags.tag selection — those two diverge the moment the model
+  // picker is edited without reloading.
+  it("recovers the exact tag that was launched even if it looks like a host:port", () => {
+    const args = buildHipfireArgs({ tag: "9:9090", host: "0.0.0.0", port: 1234 });
+    expect(hipfireLoadedTag(args)).toBe("9:9090");
   });
 });

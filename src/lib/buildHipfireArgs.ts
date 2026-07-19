@@ -60,3 +60,24 @@ export function buildHipfireArgs(vals: HipfireFlagValues): string[] {
   // here.
   return out;
 }
+
+// The inverse of buildHipfireArgs' tag positional: recover the tag a running
+// `serve` was actually launched with from serverSlice's `loadedArgs` (the
+// exact argv passed to startServer), NOT from the mutable
+// `hipfire_flags.tag` next-launch selection — those two can diverge the
+// moment the user edits the model picker without reloading, and a
+// currently-served-model guard (e.g. blocking `hipfire rm`) must never trust
+// the selection over what's actually resident. The tag positional is
+// optional and shares its slot with the `host:port` positional (see
+// buildHipfireArgs), so counting is the only reliable way to tell them
+// apart: every flag buildHipfireArgs can emit (--kv-mode/--idle-timeout/
+// --tp) is a "--"-prefixed long option, so the run of positionals ends at
+// the first such token (or the end of argv). Two positionals means
+// [tag, host:port]; one means [host:port] only (no tag — the daemon
+// pre-warmed cfg.default_model instead).
+export function hipfireLoadedTag(loadedArgs: string[] | null): string | null {
+  if (!loadedArgs || loadedArgs[0] !== "serve") return null;
+  const flagIdx = loadedArgs.findIndex((t, i) => i > 0 && t.startsWith("--"));
+  const positionals = (flagIdx === -1 ? loadedArgs.length : flagIdx) - 1;
+  return positionals === 2 ? loadedArgs[1] : null;
+}
