@@ -11,11 +11,69 @@ import {
   type HipfireBenchProgressEvent,
   type HipfirePullDoneEvent,
   type HipfirePullProgressEvent,
+  type Settings,
 } from "../lib/api";
 import { log } from "../lib/logger";
 import { useAppStore } from "./store";
 import { activeEngine } from "./slices/serverSlice";
 import type { FlagValues } from "./types";
+
+/**
+ * Marker in the Rust error proving `jsonstore::load_json` got the unreadable
+ * file out of the way (`quarantine_and_explain`, `src-tauri/src/jsonstore.rs`).
+ * Its absence — a rename that lost to an antivirus scanner or a permissions
+ * error, or a rejection from somewhere else entirely such as "no app data dir"
+ * — means the file may still be sitting at its own path.
+ */
+const QUARANTINED = "moved aside to";
+
+/**
+ * Report a persisted store whose on-disk copy we could not read, and block
+ * writes to it when — and only when — writing would still destroy it.
+ *
+ * A settings.json / chats.json that fails to read or parse used to produce only
+ * a console line: the app rendered as a pristine first run and the user's real
+ * settings and conversations were then destroyed by the very next write.
+ *
+ * The rescue now happens in Rust, before this code ever runs: `jsonstore` moves
+ * the unreadable file aside to `<name>.corrupt-N.<ext>` and names that path in
+ * the error arriving here as `reason`, and every write is atomic. So the store
+ * path is already free, and falling back to defaults writes a *new* file that
+ * cannot touch the quarantined one. What is left for the frontend is to say
+ * where the data went — and to keep the old refuse-to-write guard for the one
+ * case where it still prevents data loss: a quarantine that FAILED, leaving the
+ * unreadable file at its own path for the next save to rename over. Blocking
+ * after a successful quarantine would buy nothing and cost the user every save
+ * for the rest of the session, including the settings edits made while
+ * recovering. Positive proof of the rename is required rather than sniffing for
+ * failure, so an error shape we don't recognise fails towards keeping the data.
+ *
+ * Blocking replaces the api method rather than threading a flag through
+ * persist.ts because settings are saved from seven different slices; blocking at
+ * the single choke point means none of them need to know. Every blocked write
+ * rejects, and `persist.ts` already routes those rejections through `logFailure`
+ * → a toast, so a save that didn't happen is never silent.
+ */
+function reportUnreadableStore(kind: "settings" | "chats", reason: string): string {
+  const file = kind === "settings" ? "settings.json" : "chats.json";
+  if (reason.includes(QUARANTINED)) {
+    return (
+      `${file} could not be read (${reason}). Nothing was lost and saving still works — this ` +
+      `session just starts from defaults and writes a fresh ${file}; repair the saved copy and ` +
+      `move it back to recover the old data.`
+    );
+  }
+  const refuse = () =>
+    Promise.reject(
+      new Error(`${file} is unreadable and could not be quarantined — refusing to overwrite it`),
+    );
+  if (kind === "settings") api.saveSettings = refuse;
+  else api.saveChats = refuse;
+  return (
+    `${file} could not be read (${reason}). It has NOT been overwritten. Nothing will be saved ` +
+    `this session: quit the app, then repair or move the file and restart.`
+  );
+}
 
 /**
  * Hook that wires up all long-lived side-effects of the app: settings load,
@@ -34,9 +92,25 @@ export function useAppEffects(initialFlags: FlagValues) {
 
     (async () => {
       log.info("init", "loading settings + chats…");
+      // Settings, chats and the server probe each get their OWN try/catch.
+      // They used to share one, so an unreadable settings.json silently took
+      // the chat list, the bench history and the initial server status down
+      // with it — the app then looked like a clean first run for three reasons
+      // at once.
+      let settings: Settings | null = null;
       try {
-        const s = await api.loadSettings();
-        if (cancelled) return;
+        settings = await api.loadSettings();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // `load_settings` returns Settings::default() when the file is ABSENT,
+        // so a rejection here always means an existing file we could not read
+        // or parse — never a first run. Rust has already moved it aside by
+        // now; what's left is telling the user where it went.
+        log.notify("error", "init", reportUnreadableStore("settings", msg), { error: msg });
+      }
+      if (cancelled) return;
+      if (settings) {
+        const s = settings;
         // Engine axis added after some settings.json files were written (and
         // the first-run Settings::default() leaves engine_kind empty /
         // hipfire_flags null): coerce to valid defaults so the store and arg
@@ -75,29 +149,45 @@ export function useAppEffects(initialFlags: FlagValues) {
           // has no saved slot yet (e.g. first run after upgrading).
           useAppStore.getState().setFlag("model", s.model_path);
         }
-        if (s.build_dir) await useAppStore.getState().scanBuild(s.build_dir);
-        if (s.models_dir) await useAppStore.getState().scanModels(s.models_dir);
+        // Scans are separate from the settings READ: a failing scan says
+        // nothing about settings.json's integrity and must never be mistaken
+        // for a reason to quarantine it.
         try {
-          const loaded = await api.loadChats();
-          if (!cancelled) {
-            const mostRecent = [...loaded].sort((a, b) => b.updated_at - a.updated_at)[0];
-            useAppStore.setState({ chats: loaded, currentChatId: mostRecent?.id ?? null });
-            log.info("init", `chats loaded: ${loaded.length} sessions`);
-          }
+          if (s.build_dir) await useAppStore.getState().scanBuild(s.build_dir);
+          if (s.models_dir) await useAppStore.getState().scanModels(s.models_dir);
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
-          log.warn("init", "chats file not loaded (likely first run)", { error: msg });
+          log.warn("init", "initial build/models scan failed", { error: msg });
         }
+      }
+      if (cancelled) return;
+      try {
+        const loaded = await api.loadChats();
+        if (!cancelled) {
+          const mostRecent = [...loaded].sort((a, b) => b.updated_at - a.updated_at)[0];
+          useAppStore.setState({ chats: loaded, currentChatId: mostRecent?.id ?? null });
+          log.info("init", `chats loaded: ${loaded.length} sessions`);
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // `load_chats` returns an EMPTY list for a missing file, so this was
+        // never "likely first run" as it used to claim — it is always a real
+        // chats.json holding real conversations that we failed to read.
+        log.notify("error", "init", reportUnreadableStore("chats", msg), { error: msg });
+      }
+      if (cancelled) return;
+      try {
         useAppStore.getState().benchLoadRuns();
         const st = await api.serverStatus();
+        if (cancelled) return;
         useAppStore.getState().setServer(st);
         log.info(
           "init",
           `initial server status: ${st.running ? `running pid=${st.info?.pid}` : "stopped"}`,
         );
-      } catch (e) {
+      } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        log.error("init", "initial load failed", { error: msg });
+        log.error("init", "initial server status unavailable", { error: msg });
       }
     })();
     return () => {
@@ -186,35 +276,90 @@ export function useAppEffects(initialFlags: FlagValues) {
     };
   }, []);
 
-  // Subscribe to llama-server stdout / stderr lines.
+  // Subscribe to engine stdout / stderr lines, and to the two events that
+  // report a launch failing AFTER the spawn succeeded: `server-exited` (the
+  // process died on its own) and `server-probe-timeout` (it's alive but never
+  // became ready). All three share one effect so they can share the stderr tail
+  // below through a closure instead of module-level mutable state.
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
     let cancelled = false;
-    listen<{ stream: "stdout" | "stderr"; pid: number; line: string }>("server-log", (event) => {
-      const { stream, line } = event.payload;
-      if (!line) return;
-      const lower = line.toLowerCase();
-      const area = `llama.${stream}`;
-      if (lower.includes("error") || lower.startsWith("err")) {
-        log.error(area, line);
-      } else if (lower.includes("warn")) {
-        log.warn(area, line);
-      } else {
-        log.info(area, line);
-      }
-    })
-      .then((u) => {
-        if (cancelled) u();
-        else unlisten = u;
-      })
-      .catch((e) => {
-        log.warn("server", "failed to subscribe to server-log events", {
-          error: String(e),
+    const unlisteners: UnlistenFn[] = [];
+    const track = (p: Promise<UnlistenFn>) =>
+      p
+        .then((u) => {
+          if (cancelled) u();
+          else unlisteners.push(u);
+        })
+        .catch((e) =>
+          log.warn("server", "failed to subscribe to server events", { error: String(e) }),
+        );
+
+    // Last few stderr lines of the process currently talking, keyed by pid so a
+    // new launch starts clean. This is a dedicated ring on purpose: the lines
+    // are also written to `log`, but that buffer is shared by every area and
+    // capped at 500 entries (logger.ts), so a chatty model load evicts exactly
+    // the lines a crash report needs. An exit code alone is near-useless
+    // (llama-server returns 1 for every load failure), so this tail IS the
+    // error message.
+    const TAIL_MAX = 15;
+    let tailPid: number | null = null;
+    let tail: string[] = [];
+    const tailFor = (pid: number) => (pid === tailPid ? [...tail] : []);
+
+    track(
+      listen<{ stream: "stdout" | "stderr"; pid: number; line: string }>("server-log", (event) => {
+        const { stream, pid, line } = event.payload;
+        if (!line) return;
+        if (stream === "stderr") {
+          if (pid !== tailPid) {
+            tailPid = pid;
+            tail = [];
+          }
+          tail.push(line);
+          if (tail.length > TAIL_MAX) tail = tail.slice(-TAIL_MAX);
+        }
+        const lower = line.toLowerCase();
+        const area = `llama.${stream}`;
+        if (lower.includes("error") || lower.startsWith("err")) {
+          log.error(area, line);
+        } else if (lower.includes("warn")) {
+          log.warn(area, line);
+        } else {
+          log.info(area, line);
+        }
+      }),
+    );
+
+    track(
+      listen<{ pid: number; code: number | null; status: string }>("server-exited", (event) => {
+        const { pid, code, status } = event.payload;
+        useAppStore.getState().handleServerExit({
+          pid,
+          code,
+          status,
+          stderrTail: tailFor(pid),
         });
-      });
+      }),
+    );
+
+    track(
+      listen<{ pid: number; port: number; timeout_secs: number }>(
+        "server-probe-timeout",
+        (event) => {
+          const { pid, port, timeout_secs } = event.payload;
+          useAppStore.getState().handleServerProbeTimeout({
+            pid,
+            port,
+            timeoutSecs: timeout_secs,
+            stderrTail: tailFor(pid),
+          });
+        },
+      ),
+    );
+
     return () => {
       cancelled = true;
-      if (unlisten) unlisten();
+      for (const u of unlisteners) u();
     };
   }, []);
 

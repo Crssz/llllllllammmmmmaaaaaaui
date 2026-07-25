@@ -44,6 +44,7 @@ function FlagRow({
   onBrowse,
   extra,
   maxOverride,
+  idPrefix = "cfg",
 }: Readonly<{
   f: FlagDef;
   value: FlagValue;
@@ -53,7 +54,18 @@ function FlagRow({
   // Per-row cap that replaces the FlagDef's static max (e.g. clamp ctx to the
   // selected model's native context). Undefined leaves f.max in charge.
   maxOverride?: number;
+  // Namespace for the generated control ids. Flag keys are unique within one
+  // engine's groups, but `host`/`port` exist under both llama and hipfire, so
+  // the hipfire rows pass their own prefix rather than relying on the two
+  // engines never rendering together.
+  idPrefix?: string;
 }>) {
+  // Ids are derived from the flag key — not a render index — so they survive
+  // the tab/`only` filtering that reorders these rows. Every control in the
+  // row is named by the visible `.lbl .name` span via aria-labelledby, so the
+  // on-screen text *is* the accessible name and can't drift from it.
+  const id = `${idPrefix}-${f.key}`;
+  const labelId = `${id}-label`;
   let ctl: React.ReactNode = null;
   if (f.type === "slider") {
     const v = value as number;
@@ -96,7 +108,9 @@ function FlagRow({
         <div className="slider" style={isAlias ? { opacity: 0.5 } : undefined}>
           <div className="fill" style={{ width: `calc(${pct}% - 1px)` }} />
           <input
+            id={`${id}-slider`}
             type="range"
+            aria-labelledby={labelId}
             min={min}
             max={max}
             step={f.step}
@@ -105,8 +119,16 @@ function FlagRow({
             disabled={isAlias}
           />
         </div>
+        {/* The slider and the numeric entry drive the same flag, so naming both
+            from the row label alone would announce two identical controls.
+            The entry adds a visually-hidden qualifier to tell them apart. */}
+        <span id={`${id}-entry`} className="sr-only">
+          exact value
+        </span>
         <input
+          id={id}
           className="input num mono"
+          aria-labelledby={`${labelId} ${id}-entry`}
           value={isAlias ? alias.label.toLowerCase() : String(v)}
           onChange={(e) => {
             const n = Number(e.target.value);
@@ -138,7 +160,9 @@ function FlagRow({
   } else if (f.type === "select") {
     ctl = (
       <select
+        id={id}
         className="select mono"
+        aria-labelledby={labelId}
         value={String(value)}
         onChange={(e) => onChange(e.target.value)}
       >
@@ -156,7 +180,9 @@ function FlagRow({
     ctl = (
       <>
         <input
+          id={id}
           className="input mono"
+          aria-labelledby={labelId}
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
           style={{
@@ -196,7 +222,9 @@ function FlagRow({
   return (
     <div className="cfg-row">
       <div className="lbl">
-        <span className="name">{f.label}</span>
+        <span className="name" id={labelId}>
+          {f.label}
+        </span>
         <span className="desc">
           {f.desc}
           {maxOverride != null && ` · native max ${maxOverride.toLocaleString()}`}
@@ -280,21 +308,25 @@ function HipfireConvertPanel({
 
   return (
     <div className="cfg-section">
-      <div className="cfg-section-head" style={{ cursor: "default" }}>
+      <h2 className="cfg-section-head" style={{ cursor: "default", margin: 0 }}>
         <I.Bolt size={14} />
         <span>Convert a GGUF for hipfire</span>
-      </div>
+      </h2>
       <div className="cfg-rows">
         <div className="cfg-row">
           <div className="lbl">
-            <span className="name">Source GGUF</span>
+            <span className="name" id="hipfire-convert-gguf-label">
+              Source GGUF
+            </span>
             <span className="desc">
               Recommend Q6_K/Q8_0 sources — GGUF → hipfire is a lossy double-quantization
             </span>
           </div>
           <div className="ctl">
             <input
+              id="hipfire-convert-gguf"
               className="input mono"
+              aria-labelledby="hipfire-convert-gguf-label"
               value={ggufPath}
               onChange={(e) => setGgufPath(e.target.value)}
               placeholder="(none)"
@@ -308,12 +340,16 @@ function HipfireConvertPanel({
         </div>
         <div className="cfg-row">
           <div className="lbl">
-            <span className="name">Format</span>
+            <span className="name" id="hipfire-convert-format-label">
+              Format
+            </span>
             <span className="desc">hipfire&apos;s on-disk store format</span>
           </div>
           <div className="ctl">
             <select
+              id="hipfire-convert-format"
               className="select mono"
+              aria-labelledby="hipfire-convert-format-label"
               value={format}
               onChange={(e) => setFormat(e.target.value as "hf4" | "mq4")}
             >
@@ -325,12 +361,16 @@ function HipfireConvertPanel({
         </div>
         <div className="cfg-row">
           <div className="lbl">
-            <span className="name">Register as tag</span>
+            <span className="name" id="hipfire-convert-tag-label">
+              Register as tag
+            </span>
             <span className="desc">Name to serve this converted model under</span>
           </div>
           <div className="ctl">
             <input
+              id="hipfire-convert-tag"
               className="input mono"
+              aria-labelledby="hipfire-convert-tag-label"
               value={tag}
               onChange={(e) => setTag(e.target.value)}
               placeholder="e.g. qwen3.6:27b-local"
@@ -460,8 +500,12 @@ function HipfireModelPicker({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {/* Unlike the flag rows, this picker has no visible label of its own —
+            only the placeholder option — so it carries its own aria-label. */}
         <select
+          id="hipfire-local-model"
           className="select mono"
+          aria-label="Pick a local model"
           style={{ flex: 1, minWidth: 0 }}
           value=""
           disabled={models.length === 0}
@@ -569,14 +613,16 @@ function HipfirePullPanel({ hipfirePath }: Readonly<{ hipfirePath: string }>) {
 
   return (
     <div className="cfg-section">
-      <div className="cfg-section-head" style={{ cursor: "default" }}>
+      <h2 className="cfg-section-head" style={{ cursor: "default", margin: 0 }}>
         <I.Download size={14} />
         <span>Pull a model from HuggingFace</span>
-      </div>
+      </h2>
       <div className="cfg-rows">
         <div className="cfg-row">
           <div className="lbl">
-            <span className="name">Catalog</span>
+            <span className="name" id="hipfire-pull-catalog-label">
+              Catalog
+            </span>
             <span className="desc">
               {catalogError
                 ? `Couldn't list the catalog: ${catalogError}`
@@ -585,7 +631,9 @@ function HipfirePullPanel({ hipfirePath }: Readonly<{ hipfirePath: string }>) {
           </div>
           <div className="ctl">
             <select
+              id="hipfire-pull-catalog"
               className="select mono"
+              aria-labelledby="hipfire-pull-catalog-label"
               style={{ flex: 1, minWidth: 0 }}
               value=""
               disabled={catalog.length === 0}
@@ -621,12 +669,16 @@ function HipfirePullPanel({ hipfirePath }: Readonly<{ hipfirePath: string }>) {
         </div>
         <div className="cfg-row">
           <div className="lbl">
-            <span className="name">Tag to pull</span>
+            <span className="name" id="hipfire-pull-tag-label">
+              Tag to pull
+            </span>
             <span className="desc">Downloads from HuggingFace into hipfire&apos;s local store</span>
           </div>
           <div className="ctl">
             <input
+              id="hipfire-pull-tag"
               className="input mono"
+              aria-labelledby="hipfire-pull-tag-label"
               value={tag}
               onChange={(e) => setTag(e.target.value)}
               placeholder="e.g. qwen3.5:4b"
@@ -800,7 +852,15 @@ export function ConfigureScreen({
   // ~/.hipfire/bin); a binary that can't be found surfaces as a launch-time
   // error instead of blocking the button. llama needs a build directory and
   // a model.
-  const startDisabled = busy || (isHipfire ? !hipfireTag : !settings.build_dir || !modelPath);
+  // An out-of-range or empty port has to block Start, not just get flagged
+  // inline by FlagRow: buildArgs emits --port unconditionally, so an empty
+  // value ships a valueless `--port` that swallows the next token, and an
+  // out-of-range one dies at bind time with an error this app reports poorly.
+  // Only gated for llama — buildHipfireArgs substitutes its own 8080 default
+  // for an empty port, so the same rule would block a launch that works.
+  const portValid = isValidPort(String(vals.port ?? ""));
+  const startDisabled =
+    busy || (isHipfire ? !hipfireTag : !settings.build_dir || !modelPath || !portValid);
   const startHint = isHipfire
     ? !hipfireTag
       ? "Set a model tag to serve first"
@@ -811,37 +871,65 @@ export function ConfigureScreen({
       ? "Pick a llama.cpp build directory first"
       : !modelPath
         ? "Pick a model first"
-        : server.running
-          ? "Restart with current flags"
-          : "Start llama-server";
+        : !portValid
+          ? "Set a valid port (1–65535) first"
+          : server.running
+            ? "Restart with current flags"
+            : "Start llama-server";
 
-  const est = useMemo(() => {
-    const ctx = vals.ctx as number;
-    const ctk = vals.ctk as string;
-    const ctv = vals.ctv as string;
-    const kvBytesPerTok = ctk === "f16" ? 2 : ctk === "f32" ? 4 : 1;
-    const vBytesPerTok = ctv === "f16" ? 2 : ctv === "f32" ? 4 : 1;
-    const kv = (ctx * 64 * (kvBytesPerTok + vBytesPerTok)) / (1024 * 1024 * 1024);
+  // The KV cache is
+  //   bytes = n_layers * n_kv_heads * head_dim * ctx * (k_elem_bytes + v_elem_bytes)
+  // K and V are separate tensors, so --cache-type-k and --cache-type-v each
+  // size their own half of that sum rather than one dtype covering both.
+  //
+  // Of those three geometry terms only n_layers is available here
+  // (GgufInfo.block_count). inspect_gguf (src-tauri/src/gguf.rs) doesn't parse
+  // `{arch}.attention.head_count_kv`, `.attention.key_length`/`.value_length`,
+  // or `.embedding_length`, so n_kv_heads * head_dim is unknown and the figure
+  // cannot be computed. Report it as unknown instead of guessing: this used to
+  // substitute a literal 64 for that entire product, which real models put at
+  // ~4096-131072 — a 7B at ctx=32768 with f16/f16 rendered 0.01 GB against a
+  // true ~16 GB, understating it ~1000x. Context length is chosen off this
+  // panel, so that made context look free and fed straight into the
+  // out-of-memory load failures. A blank is honest; 0.01 GB is not.
+  //
+  // Cache dtypes and --no-kv-offload are deliberately not read: they can only
+  // scale or relocate a number we don't have (nkvo moves the cache to host RAM
+  // without changing its size), so neither can rescue the estimate.
+  const est = useMemo<{
+    weights: number | null;
+    kv: number | null;
+    overhead: number;
+    total: number | null;
+    weightsPct: number;
+    kvPct: number;
+    overheadPct: number;
+  }>(() => {
+    // Unknown until the attention geometry above is surfaced by inspect_gguf.
+    const kv: number | null = null;
     const overhead = 0.6;
     // Real weights size comes from the inspected GGUF (modelInfo.size_gb).
     // Unknown when no model is selected or the file size couldn't be read.
     const weights = modelInfo && modelInfo.size_gb > 0 ? modelInfo.size_gb : null;
-    const total = weights != null ? weights + kv + overhead : null;
+    // An unknown KV cache is left out of the total rather than counted as zero
+    // — the panel labels the total as excluding it.
+    const total = weights != null ? weights + (kv ?? 0) + overhead : null;
     // Bar widths are proportional to the actual GB. Scale against the total
-    // when known; otherwise against the KV+overhead sum so those two bars stay
-    // meaningful even before a model is picked.
-    const denom = total ?? kv + overhead;
-    const pct = (v: number) => (denom > 0 ? Math.min(100, (v / denom) * 100) : 0);
+    // when known; otherwise against the known components' sum so those bars
+    // stay meaningful even before a model is picked.
+    const denom = total ?? (kv ?? 0) + overhead;
+    const pct = (v: number) =>
+      denom > 0 && Number.isFinite(v) ? Math.min(100, Math.max(0, (v / denom) * 100)) : 0;
     return {
       weights,
       kv,
       overhead,
       total,
       weightsPct: weights != null ? pct(weights) : 0,
-      kvPct: pct(kv),
+      kvPct: kv != null ? pct(kv) : 0,
       overheadPct: pct(overhead),
     };
-  }, [vals, modelInfo]);
+  }, [modelInfo]);
 
   // Browse for a GGUF and store it under the given flag key. The store's
   // pickModel() is only correct for the main "model" flag.
@@ -1148,7 +1236,7 @@ export function ConfigureScreen({
             {isHipfire && (
               <>
                 <div className="cfg-section">
-                  <div className="cfg-section-head" style={{ cursor: "default" }}>
+                  <h2 className="cfg-section-head" style={{ cursor: "default", margin: 0 }}>
                     <I.Terminal size={14} />
                     <span>hipfire engine</span>
                     {settings.hipfire_path ? (
@@ -1160,13 +1248,14 @@ export function ConfigureScreen({
                         auto (PATH)
                       </span>
                     )}
-                  </div>
+                  </h2>
                   <div className="cfg-rows">
                     <FlagRow
                       f={HIPFIRE_BINARY_FIELD}
                       value={settings.hipfire_path}
                       onChange={(v) => setHipfirePath(String(v))}
                       onBrowse={() => pickHipfireExe().catch(() => {})}
+                      idPrefix="hipfire"
                     />
                   </div>
                 </div>
@@ -1179,25 +1268,33 @@ export function ConfigureScreen({
                   const IconCmp = I[g.icon];
                   return (
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
-                      <button
-                        type="button"
-                        className="cfg-section-head"
-                        onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
-                      >
-                        <IconCmp size={14} />
-                        <span>{g.label}</span>
-                        <span className="sec-count">
-                          {g.flags.length} flag{g.flags.length === 1 ? "" : "s"}
-                        </span>
-                        <I.Chevron size={14} />
-                      </button>
-                      <div className="cfg-rows">
+                      {/* The heading wraps the button (rather than the button
+                          becoming one) because a heading is flow content and
+                          can't live inside a <button>. */}
+                      <h2 style={{ margin: 0 }}>
+                        <button
+                          type="button"
+                          className="cfg-section-head"
+                          aria-expanded={!!open[g.id]}
+                          aria-controls={`cfg-rows-${g.id}`}
+                          onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
+                        >
+                          <IconCmp size={14} />
+                          <span>{g.label}</span>
+                          <span className="sec-count">
+                            {g.flags.length} flag{g.flags.length === 1 ? "" : "s"}
+                          </span>
+                          <I.Chevron size={14} />
+                        </button>
+                      </h2>
+                      <div className="cfg-rows" id={`cfg-rows-${g.id}`}>
                         {g.flags.map((f) => (
                           <FlagRow
                             key={f.key}
                             f={f}
                             value={(settings.hipfire_flags[f.key] as FlagValue) ?? f.value}
                             onChange={(v) => setHipfireFlag(f.key, v)}
+                            idPrefix="hipfire"
                           />
                         ))}
                         {g.id === "hipfire-server" && (
@@ -1235,35 +1332,61 @@ export function ConfigureScreen({
                   // emits no --spec-type and llama-server runs unaccelerated.
                   const dflashMissing =
                     vals.spec_type === "draft-dflash" && !vals.model_draft_dflash;
+                  // Same for draft-simple, which has no in-model fallback at
+                  // all. draft-mtp (heads can live in the model GGUF) and
+                  // draft-eagle3 (no drafter) are exempt.
+                  const simpleDraftMissing =
+                    vals.spec_type === "draft-simple" && !vals.model_draft;
+                  // buildArgs emits nothing for either of these until the
+                  // drafter is set, so the section badge must not claim
+                  // speculative decoding is on.
+                  const specDraftMissing = simpleDraftMissing || dflashMissing;
                   return (
                     <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
-                      <button
-                        type="button"
-                        className="cfg-section-head"
-                        onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
-                      >
-                        <IconCmp size={14} />
-                        <span>{g.label}</span>
-                        {g.id === "spec" &&
-                          vals.spec_type !== "none" &&
-                          vals.spec_type !== "off" && (
-                            <span className="badge accent" style={{ marginLeft: 6, fontSize: 10 }}>
-                              <span className="dot" />
-                              {vals.spec_type === "draft-mtp"
-                                ? "MTP heads"
-                                : vals.spec_type === "draft-simple"
-                                  ? "draft model"
-                                  : vals.spec_type === "draft-dflash"
-                                    ? "DFlash drafter"
-                                    : (vals.spec_type as string)}
-                            </span>
-                          )}
-                        <span className="sec-count">
-                          {flags.length} flag{flags.length === 1 ? "" : "s"}
-                        </span>
-                        <I.Chevron size={14} />
-                      </button>
-                      <div className="cfg-rows">
+                      {/* The heading wraps the button (rather than the button
+                          becoming one) because a heading is flow content and
+                          can't live inside a <button>. */}
+                      <h2 style={{ margin: 0 }}>
+                        <button
+                          type="button"
+                          className="cfg-section-head"
+                          aria-expanded={!!open[g.id]}
+                          aria-controls={`cfg-rows-${g.id}`}
+                          onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
+                        >
+                          <IconCmp size={14} />
+                          <span>{g.label}</span>
+                          {g.id === "spec" &&
+                            vals.spec_type !== "none" &&
+                            vals.spec_type !== "off" && (
+                              <span
+                                className={"badge " + (specDraftMissing ? "yellow" : "accent")}
+                                style={{ marginLeft: 6, fontSize: 10 }}
+                                title={
+                                  specDraftMissing
+                                    ? `${vals.spec_type as string} needs a draft model and none is set — speculative decoding is off.`
+                                    : undefined
+                                }
+                              >
+                                <span className="dot" />
+                                {specDraftMissing
+                                  ? "off — no draft model"
+                                  : vals.spec_type === "draft-mtp"
+                                    ? "MTP heads"
+                                    : vals.spec_type === "draft-simple"
+                                      ? "draft model"
+                                      : vals.spec_type === "draft-dflash"
+                                        ? "DFlash drafter"
+                                        : (vals.spec_type as string)}
+                              </span>
+                            )}
+                          <span className="sec-count">
+                            {flags.length} flag{flags.length === 1 ? "" : "s"}
+                          </span>
+                          <I.Chevron size={14} />
+                        </button>
+                      </h2>
+                      <div className="cfg-rows" id={`cfg-rows-${g.id}`}>
                         {flags.map((f) => {
                           const isModelPath =
                             f.key === "model" ||
@@ -1327,6 +1450,27 @@ export function ConfigureScreen({
                             />
                           );
                         })}
+                        {g.id === "spec" && simpleDraftMissing && (
+                          <div
+                            style={{
+                              padding: "10px 16px",
+                              borderTop: "1px solid var(--border)",
+                              background: "var(--yellow-soft)",
+                              fontSize: 11.5,
+                              color: "var(--yellow)",
+                              display: "flex",
+                              gap: 10,
+                              alignItems: "flex-start",
+                            }}
+                          >
+                            <I.Info size={13} style={{ marginTop: 1, color: "var(--yellow)" }} />
+                            <div>
+                              No <strong>Draft model</strong> set — pick a{" "}
+                              <span className="mono">--model-draft</span> GGUF above, or
+                              draft-simple stays off and llama-server runs without speculation.
+                            </div>
+                          </div>
+                        )}
                         {g.id === "spec" && vals.spec_type === "draft-mtp" && (
                           <div
                             style={{
@@ -1429,9 +1573,14 @@ export function ConfigureScreen({
           <aside>
             <div className="cmd-panel">
               <div className="cmd-head">
-                <span className="title">
+                {/* Heading element, styled by the same .title class so it
+                    keeps the head's own font size and weight. */}
+                <h2
+                  className="title"
+                  style={{ margin: 0, fontSize: "inherit", fontWeight: "inherit" }}
+                >
                   <I.Terminal /> Generated command
-                </span>
+                </h2>
                 <button
                   className="btn ghost copy"
                   title={copied ? "Copied!" : "Copy"}
@@ -1457,8 +1606,11 @@ export function ConfigureScreen({
             {!isHipfire && (
               <div className="panel" style={{ marginTop: 12 }}>
                 <div className="panel-head">
-                  <I.Mem size={14} /> Estimated memory
-                  <span className="meta">est.</span>
+                  <I.Mem size={14} />
+                  <h2 style={{ margin: 0, fontSize: "inherit", fontWeight: "inherit" }}>
+                    Estimated memory
+                  </h2>
+                  <span className="meta">{est.kv != null ? "est." : "est. · excl. KV"}</span>
                 </div>
                 <div
                   className="panel-body"
@@ -1481,10 +1633,23 @@ export function ConfigureScreen({
                   </div>
                   <div className="thr-row">
                     <span className="lbl">KV cache</span>
-                    <div className="bar">
-                      <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
-                    </div>
-                    <span className="val">{est.kv.toFixed(2)} GB</span>
+                    {est.kv != null ? (
+                      <div className="bar">
+                        <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
+                      </div>
+                    ) : (
+                      <span
+                        style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}
+                        title={
+                          modelInfo?.block_count
+                            ? `Known: ${modelInfo.block_count} layers. Missing: KV-head count and head dimension.`
+                            : "Missing: layer count, KV-head count and head dimension."
+                        }
+                      >
+                        needs model metadata
+                      </span>
+                    )}
+                    <span className="val">{est.kv != null ? `${est.kv.toFixed(2)} GB` : "—"}</span>
                   </div>
                   <div className="thr-row">
                     <span className="lbl">Overhead</span>
@@ -1511,6 +1676,14 @@ export function ConfigureScreen({
                       {est.total != null ? `${est.total.toFixed(2)} GB` : "—"}
                     </span>
                   </div>
+                  {est.kv == null && (
+                    <span style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                      Total excludes the KV cache — sizing it needs the model&apos;s attention
+                      geometry (layers × KV heads × head dim), which this app doesn&apos;t read from
+                      the GGUF yet. Real KV usage grows linearly with context size and can exceed
+                      the weights at long contexts, so budget headroom above this figure.
+                    </span>
+                  )}
                 </div>
               </div>
             )}

@@ -8,6 +8,30 @@ import type { AppStore } from "../store";
 
 export type ServerState = { running: boolean; ready: boolean; info: RunningInfo | null };
 
+/** What the backend's `server-exited` event carries (server.rs
+ *  `ServerExitedEvent`), plus the `llama.stderr` tail effects.tsx already
+ *  collected for that pid. The tail — not the code — is the useful part: see
+ *  `describeServerExit`. */
+export type ServerExitReport = {
+  pid: number;
+  /** Process exit code when the OS reported one, else null. */
+  code: number | null;
+  /** Platform description of how it ended ("exit code: 1"), or why we can't tell. */
+  status: string;
+  /** Last few stderr lines from that pid, oldest first. May be empty. */
+  stderrTail: string[];
+};
+
+/** What the backend's `server-probe-timeout` event carries (server.rs
+ *  `ServerProbeTimeoutEvent`), plus the same stderr tail. The process is still
+ *  ALIVE here — it just never answered `/health`. */
+export type ServerProbeTimeoutReport = {
+  pid: number;
+  port: number;
+  timeoutSecs: number;
+  stderrTail: string[];
+};
+
 export type ServerSlice = {
   server: ServerState;
   startError: string | null;
@@ -26,11 +50,78 @@ export type ServerSlice = {
   stopServer: () => Promise<void>;
   reloadServer: () => Promise<void>;
   reloadIfStale: () => Promise<boolean>;
+  /** Handle an engine process that died without anyone asking it to. Driven by
+   *  the backend's `server-exited` event (never by the status poll — see the
+   *  action body). */
+  handleServerExit: (report: ServerExitReport) => void;
+  /** Handle an engine process that spawned, stayed alive, and never became
+   *  ready. Driven by the backend's `server-probe-timeout` event. */
+  handleServerProbeTimeout: (report: ServerProbeTimeoutReport) => void;
 };
 
 const STOPPED: ServerState = { running: false, ready: false, info: null };
 
-function argsEqual(a: string[], b: string[]): boolean {
+/** Longest stderr excerpt to inline in a one-line banner before eliding. */
+const MAX_CAUSE_LEN = 220;
+
+/** Lines worth leading with. Matches the vocabulary llama.cpp / hipfire use
+ *  when a load fails ("error loading model", "failed to allocate", "unable to
+ *  load", "out of memory", …). */
+const EXIT_CAUSE_RE = /error|failed|fatal|unable|cannot|out of memory|abort|insufficient/i;
+
+// Pick the single most useful line out of a stderr tail for a one-line banner.
+// Prefers the EARLIEST error-shaped line: llama.cpp prints the root cause first
+// ("error loading model: unable to allocate buffer of size …") and then
+// cascades into progressively vaguer follow-ups ("failed to load model",
+// "error: unable to load model"), so the newest line is usually the least
+// informative one. Falls back to the newest non-empty line when nothing in the
+// tail looks like an error at all.
+function pickExitCause(tail: string[]): string | null {
+  const lines = tail.map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  const cause = lines.find((l) => EXIT_CAUSE_RE.test(l)) ?? lines[lines.length - 1];
+  return cause.length > MAX_CAUSE_LEN ? `${cause.slice(0, MAX_CAUSE_LEN - 1)}…` : cause;
+}
+
+// "llama-server" / "hipfire" — what the user actually launched, preferring the
+// engine the dead process was launched AS over the Configure toggle (which may
+// already have been flipped to something else).
+function engineLabel(get: () => AppStore): string {
+  const { loadedEngine, settings } = get();
+  return (loadedEngine ?? settings.engine_kind) === "hipfire" ? "hipfire" : "llama-server";
+}
+
+// Compose the user-facing message for a process that died on its own.
+//
+// Leads with the stderr tail because that is the only part naming a real cause:
+// llama-server returns 1 for every "failed to load model", and a VRAM/driver
+// abort on Windows surfaces as a large NTSTATUS, so the code is a footnote, not
+// a headline.
+//
+// The pid is baked into the string on purpose. Configure's banner hides a
+// message it has already had dismissed, comparing by exact string equality and
+// never resetting on a new start — so without a per-attempt discriminator, a
+// user who dismisses "exited (1): failed to load model" and retries the same
+// ctx/ngl would get a byte-identical string and NO banner the second time:
+// precisely the silent retry loop this fix exists to end. Two attempts always
+// have different pids.
+export function describeServerExit(engine: string, e: ServerExitReport): string {
+  const cause = pickExitCause(e.stderrTail);
+  const head = cause
+    ? `${engine} exited unexpectedly: ${cause}`
+    : `${engine} exited unexpectedly before it finished loading (it printed nothing to stderr).`;
+  const footnote = e.code === null ? e.status : `exit code ${e.code}`;
+  return `${head} (pid ${e.pid}, ${footnote}) — see the logs panel for the full output.`;
+}
+
+/** Exact positional comparison of two launch argvs — the single definition of
+ *  "these two launches would be the same launch". `reloadIfStale` below decides
+ *  whether a chat has to restart the server with it, and the Models table and
+ *  the library overlay render their "loaded" vs "differs from running server"
+ *  badges with it, so a badge can never claim a match the reload wouldn't. It
+ *  lives here, next to `loadedArgs`, rather than in lib/buildArgs.ts: this slice
+ *  is what records the argv every comparison is made against. */
+export function argvEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
@@ -274,7 +365,7 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     const { server, loadedArgs } = get();
     if (!server.running || !loadedArgs) return true;
     const args = activeArgs(get);
-    if (argsEqual(args, loadedArgs)) return true;
+    if (argvEqual(args, loadedArgs)) return true;
     // Stale — but validate the active engine's prerequisites BEFORE tearing
     // down the healthy server. After an engine toggle, activeArgs is the NEW
     // engine's argv while loadedArgs is the OLD engine's, so this ALWAYS looks
@@ -292,5 +383,75 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
     log.info("server", "config changed since model load — reloading with latest flags before chat");
     await get().reloadServer();
     return waitForServerReady(get, 180_000);
+  },
+
+  // A server that spawns fine and dies 4 seconds into loading the model used to
+  // revert the UI to "stopped" with no error anywhere: startError is only ever
+  // set at SPAWN time (the prereq guard and the api.startServer catch above),
+  // and the status poll just called setServer(st) on the running→stopped edge.
+  //
+  // The trigger is the backend's `server-exited` event, NOT that poll edge, for
+  // two reasons. (1) Only the backend can tell a crash from a stop WE performed:
+  // stop_server takes the child out of its slot, so the watcher stays silent,
+  // whereas a poll edge can genuinely fire on a user Stop — api.stopServer()
+  // and api.serverStatus() are concurrent IPC calls, so a tick can observe the
+  // backend's running:false before stopServer's `finally` has written STOPPED,
+  // and would then report a crash the user deliberately caused. (2) The exit
+  // must not ride on the server_status RESPONSE: two independent callers poll
+  // it (the effects poller and waitForServerReady, which reloadIfStale uses),
+  // so a one-shot value would be consumed by whichever ticked first and lost
+  // for the other — exactly during a reload-then-send, when a crash is most
+  // likely. The event fans out to every listener and is emitted exactly once.
+  handleServerExit: (report) => {
+    const engine = engineLabel(get);
+    const msg = describeServerExit(engine, report);
+    // notify() logs at error level AND raises a toast, so this is visible with
+    // the logs panel closed (its default) and from every surface that can start
+    // a server, not just Configure's banner. The whole tail rides along as meta
+    // so the console and the logs panel keep the context the headline dropped.
+    log.notify("error", "server", msg, {
+      pid: report.pid,
+      code: report.code,
+      status: report.status,
+      stderr: report.stderrTail,
+    });
+    const currentPid = get().server.info?.pid ?? null;
+    if (currentPid !== null && currentPid !== report.pid) {
+      // The user already relaunched and a DIFFERENT process is live. Still
+      // report the crash (the message names its pid), but never tear down the
+      // state of a healthy server.
+      set({ startError: msg });
+      return;
+    }
+    // loadedArgs/loadedEngine described the now-dead process; only stopServer
+    // used to clear them, so leaving them set here would let reloadIfStale
+    // diff the current flags against a corpse's argv.
+    set({ server: STOPPED, loadedArgs: null, loadedEngine: null, startError: msg });
+  },
+
+  // The adjacent silent failure: a process that spawns, stays alive, and never
+  // reports ready. The backend used to log a warn! and return, leaving the dot
+  // yellow forever with no frontend signal at all.
+  handleServerProbeTimeout: (report) => {
+    const currentPid = get().server.info?.pid ?? null;
+    if (currentPid !== null && currentPid !== report.pid) return;
+    const engine = engineLabel(get);
+    const cause = pickExitCause(report.stderrTail);
+    const waited =
+      report.timeoutSecs >= 60
+        ? `${Math.round(report.timeoutSecs / 60)}m`
+        : `${report.timeoutSecs}s`;
+    const msg =
+      `${engine} (pid ${report.pid}) is still running but hasn't answered /health on port ${report.port} after ${waited} — it may be stuck loading.` +
+      `${cause ? ` Last stderr: ${cause}.` : ""} Stop it, or check the logs panel.`;
+    log.notify("warn", "server", msg, {
+      pid: report.pid,
+      port: report.port,
+      timeout_secs: report.timeoutSecs,
+      stderr: report.stderrTail,
+    });
+    // Deliberately does NOT clear `server`: the process is alive and might
+    // still come up, so the badge must keep reflecting reality.
+    set({ startError: msg });
   },
 });

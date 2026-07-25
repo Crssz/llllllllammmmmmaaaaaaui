@@ -2,12 +2,23 @@ import { useState } from "react";
 import { Streamdown } from "streamdown";
 import { I } from "../../icons";
 import { useContextMenu, type MenuItem } from "../ContextMenu";
+import { useConfirm } from "../ConfirmDialog";
 import type { ChatMessage as ChatMessageType } from "../../state";
 import { STREAMDOWN_COMPONENTS } from "./CodeBlockPre";
 import { MessageAudio } from "./MessageAudio";
 import { MessageImage } from "./MessageImage";
 import { fmtTime, streamingPhase } from "../../lib/chatUi";
 import { shortcut } from "../../lib/platform";
+
+// Short single-line preview of a message's content for the delete-confirm
+// dialog, so the prompt names what's actually being lost instead of a bare
+// "Are you sure?". Collapses newlines (multi-line messages would otherwise
+// blow up the dialog height) and caps length.
+function previewText(text: string, max = 80): string {
+  const flat = text.trim().replace(/\s+/g, " ");
+  if (!flat) return "(empty message)";
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
 
 // Callbacks the message row needs from the screen. All chat-level actions
 // (edit/delete/resend/stop) live in the store or the parent; the message row
@@ -97,6 +108,7 @@ export function ChatMessage({
   actions: MessageActions;
 }>) {
   const openMenu = useContextMenu();
+  const { confirmElement, confirm } = useConfirm();
   const [hidden, setHidden] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState("");
@@ -124,7 +136,18 @@ export function ChatMessage({
     setEditing(false);
     setEditDraft("");
   };
-  const doDelete = () => {
+  // Deleting a message is permanent and irreversible (chatSlice.deleteMessage
+  // just splices it out — it does not also remove any later reply), so guard
+  // it behind the app's shared confirm dialog instead of firing on one click.
+  const doDelete = async () => {
+    const who = m.role === "user" ? "your" : `${modelName}'s`;
+    const ok = await confirm({
+      title: `Delete ${who} message?`,
+      body: `"${previewText(m.content)}" will be permanently deleted. This can't be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     onDelete(i);
     if (editing) cancelEdit();
   };
@@ -567,6 +590,8 @@ export function ChatMessage({
           </button>
         </div>
       )}
+
+      {confirmElement}
     </div>
   );
 }

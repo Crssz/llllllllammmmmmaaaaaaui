@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::build_scan::{quiet_command, resolve_bin_dir};
+use crate::jsonstore;
 use crate::util::lock_or_poisoned;
 
 /// Managed state for the (single) in-flight benchmark.
@@ -375,21 +376,24 @@ fn bench_runs_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("bench_runs.json"))
 }
 
+/// Load the saved run history.
+///
+/// A missing file is a first run and yields an empty history; a file that
+/// exists but will not parse is quarantined by `jsonstore` and reported, so
+/// the next saved run lands in a fresh file instead of burying the old one.
 #[tauri::command]
 pub fn load_bench_runs(app: AppHandle) -> Result<Vec<BenchRun>, String> {
     let p = bench_runs_path(&app)?;
-    if !p.exists() {
-        return Ok(Vec::new());
-    }
-    let s = fs::read_to_string(&p).map_err(|e| format!("read: {e}"))?;
-    serde_json::from_str(&s).map_err(|e| format!("parse: {e}"))
+    Ok(jsonstore::load_json(&p)?.unwrap_or_default())
 }
 
 #[tauri::command]
 pub fn save_bench_runs(app: AppHandle, runs: Vec<BenchRun>) -> Result<(), String> {
     let p = bench_runs_path(&app)?;
     let s = serde_json::to_string(&runs).map_err(|e| format!("encode: {e}"))?;
-    fs::write(&p, s).map_err(|e| format!("write: {e}"))
+    // Atomic: the history is rewritten in full on every run, rename and
+    // delete — a torn write there loses every past benchmark at once.
+    jsonstore::atomic_write(&p, &s)
 }
 
 #[cfg(test)]
@@ -431,6 +435,53 @@ mod tests {
         assert!(!joined.contains("-ub "));
         // JSON output + progress are always last.
         assert!(joined.ends_with("-o json --progress"));
+    }
+
+    /// The run history is rewritten in full on every save, so it carries the
+    /// same torn-write and clobber risk as chats/settings. Covered at the store
+    /// layer (`bench_runs_path` needs an `AppHandle`).
+    #[test]
+    fn corrupt_bench_history_is_quarantined_and_round_trips_after() {
+        let dir = std::env::temp_dir().join(format!("lmst-bench-store-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("bench_runs.json");
+
+        // Missing history is a first run, not corruption.
+        assert!(jsonstore::load_json::<Vec<BenchRun>>(&p).unwrap().is_none());
+        assert!(!dir.join("bench_runs.corrupt-1.json").exists());
+
+        fs::write(&p, r#"[{"id":"r1","label":"qwen q4"#).unwrap();
+        let err = jsonstore::load_json::<Vec<BenchRun>>(&p).unwrap_err();
+        let saved = dir.join("bench_runs.corrupt-1.json");
+        assert!(err.contains(&saved.display().to_string()), "got: {err}");
+        assert!(fs::read_to_string(&saved).unwrap().contains("qwen q4"));
+
+        let runs = vec![BenchRun {
+            id: "r2".into(),
+            created_at: 7,
+            model_path: "C:/models/m.gguf".into(),
+            label: "after".into(),
+            rows: vec![],
+            note: None,
+        }];
+        jsonstore::atomic_write(&p, &serde_json::to_string(&runs).unwrap()).unwrap();
+        let back: Vec<BenchRun> = jsonstore::load_json(&p).unwrap().unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].label, "after");
+        // Saving the new history left the quarantined one alone, and no temp
+        // file behind.
+        let mut entries: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["bench_runs.corrupt-1.json", "bench_runs.json"]
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

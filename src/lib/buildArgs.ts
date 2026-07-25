@@ -80,8 +80,8 @@ export function buildArgs(vals: Values): string[] {
     push("--rope-freq-base", M("rope_base") as string);
   if (truthy(M("rope_scale")) && M("rope_scale") !== "auto")
     push("--rope-freq-scale", M("rope_scale") as string);
-  push("--host", M("host") as string);
-  push("--port", M("port") as string);
+  if (truthy(M("host"))) push("--host", M("host") as string);
+  if (truthy(M("port"))) push("--port", M("port") as string);
   if (truthy(M("api_key"))) push("--api-key", M("api_key") as string);
   if (truthy(M("slots"))) push("--slot-save-path", M("slots") as string);
   return out;

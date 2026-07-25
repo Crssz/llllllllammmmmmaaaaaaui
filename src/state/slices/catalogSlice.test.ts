@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { api, type CatalogFile, type CatalogModel } from "../../lib/api";
 import { log } from "../../lib/logger";
 import { flush, freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
+import { humanizeCatalogError } from "./catalogSlice";
 
 const MODEL: CatalogModel = {
   id: "owner/Foo-GGUF",
@@ -48,12 +49,54 @@ describe("catalog slice", () => {
     expect(s.catalogError).toBeNull();
   });
 
-  it("searchCatalog surfaces errors but still marks searched", async () => {
+  it("searchCatalog surfaces a humanized error but still marks searched", async () => {
     vi.spyOn(api, "searchCatalog").mockRejectedValueOnce(new Error("offline"));
     await useAppStore.getState().searchCatalog("foo");
     const s = useAppStore.getState();
-    expect(s.catalogError).toBe("offline");
+    expect(s.catalogError?.kind).toBe("offline");
+    expect(s.catalogError?.message).toContain("check your internet connection");
+    expect(s.catalogError?.source.op).toBe("search");
     expect(s.catalogSearched).toBe(true);
+  });
+
+  it("searchCatalog reports a rejected token as a token problem, not a search problem", async () => {
+    useAppStore.getState().setSettings(makeSettings({ hf_token: "hf_typo" }));
+    vi.spyOn(api, "searchCatalog").mockRejectedValueOnce(
+      new Error("401 — this model is gated or private."),
+    );
+    await useAppStore.getState().searchCatalog("foo");
+    const err = useAppStore.getState().catalogError;
+    expect(err?.kind).toBe("auth");
+    expect(err?.message).toContain("rejected the access token");
+    expect(err?.message).toContain("huggingface.co/settings/tokens");
+    // Raw backend text never reaches the UI copy.
+    expect(err?.message).not.toContain("401");
+  });
+
+  it("searchCatalog keeps the error until a retry actually succeeds", async () => {
+    const spy = vi
+      .spyOn(api, "searchCatalog")
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce([MODEL]);
+    await useAppStore.getState().searchCatalog("foo");
+    expect(useAppStore.getState().catalogError).not.toBeNull();
+    // Mid-retry the banner must still be up — clearing on the way in makes a
+    // failing retry look like it worked.
+    const inFlight = useAppStore.getState().retryCatalogError();
+    expect(useAppStore.getState().catalogError).not.toBeNull();
+    await inFlight;
+    expect(useAppStore.getState().catalogError).toBeNull();
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("retryCatalogError re-runs the failed download rather than the search", async () => {
+    vi.spyOn(api, "downloadCatalogModel").mockRejectedValueOnce(new Error("disk full"));
+    await useAppStore.getState().startCatalogDownload("owner/Foo-GGUF", FILE);
+    const search = vi.spyOn(api, "searchCatalog");
+    const download = vi.spyOn(api, "downloadCatalogModel").mockResolvedValue(9);
+    await useAppStore.getState().retryCatalogError();
+    expect(search).not.toHaveBeenCalled();
+    expect(download).toHaveBeenCalledWith("owner/Foo-GGUF", FILE, null, null);
   });
 
   it("setCatalogSort updates sort and re-searches with it", async () => {
@@ -87,10 +130,18 @@ describe("catalog slice", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("loadCatalogFiles records an error sentinel on failure", async () => {
-    vi.spyOn(api, "listCatalogFiles").mockRejectedValueOnce(new Error("nope"));
+  it("loadCatalogFiles records a humanized reason on failure, and retries clear it", async () => {
+    const spy = vi
+      .spyOn(api, "listCatalogFiles")
+      .mockRejectedValueOnce(new Error("429 — HuggingFace rate limit reached."))
+      .mockResolvedValueOnce([FILE]);
     await useAppStore.getState().loadCatalogFiles("owner/Foo-GGUF");
-    expect(useAppStore.getState().catalogFiles["owner/Foo-GGUF"]).toBe("error");
+    const failed = useAppStore.getState().catalogFiles["owner/Foo-GGUF"];
+    expect(failed).toEqual({ failed: { kind: "rate-limit", message: expect.any(String) } });
+    // The failed sentinel must not block a retry of that same repo.
+    await useAppStore.getState().loadCatalogFiles("owner/Foo-GGUF");
+    expect(useAppStore.getState().catalogFiles["owner/Foo-GGUF"]).toEqual([FILE]);
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it("startCatalogDownload sets the in-flight UI and forwards the models dir", async () => {
@@ -114,6 +165,7 @@ describe("catalog slice", () => {
         total: 1,
         part: 1,
         parts: 1,
+        file: FILE,
       },
     });
     await useAppStore.getState().startCatalogDownload("owner/Foo-GGUF", FILE);
@@ -143,6 +195,7 @@ describe("catalog slice", () => {
         total: 200,
         part: 1,
         parts: 1,
+        file: FILE,
       },
     });
     useAppStore.getState().catalogOnProgress(ev);
@@ -159,6 +212,7 @@ describe("catalog slice", () => {
         total: 2,
         part: 1,
         parts: 1,
+        file: FILE,
       },
     });
     useAppStore.getState().catalogOnDone({
@@ -175,7 +229,7 @@ describe("catalog slice", () => {
     expect(useAppStore.getState().catalogError).toBeNull();
   });
 
-  it("catalogOnDone (failure) surfaces the error", () => {
+  it("catalogOnDone (failure) surfaces a humanized error naming the file", () => {
     useAppStore.getState().catalogOnDone({
       generation: 1,
       repo_id: "x/y",
@@ -186,7 +240,49 @@ describe("catalog slice", () => {
       dest_root: null,
       model_path: null,
     });
-    expect(useAppStore.getState().catalogError).toBe("disk full");
+    const err = useAppStore.getState().catalogError;
+    expect(err?.kind).toBe("disk");
+    expect(err?.message).toContain("a.gguf");
+    expect(err?.message).toContain("free up disk space");
+    // Nothing to re-run: the terminal event arrived with no in-flight state.
+    expect(err?.source.op).toBe("none");
+  });
+
+  it("catalogOnDone (failure) toasts so the failure is visible off-screen", () => {
+    const notify = vi.spyOn(log, "notify");
+    useAppStore.setState({
+      catalogDownload: {
+        generation: 1,
+        repoId: "owner/Foo-GGUF",
+        filename: "Foo-Q4_K_M.gguf",
+        downloaded: 1,
+        total: 2,
+        part: 1,
+        parts: 1,
+        file: FILE,
+      },
+    });
+    useAppStore.getState().catalogOnDone({
+      generation: 1,
+      repo_id: "owner/Foo-GGUF",
+      filename: "Foo-Q4_K_M.gguf",
+      ok: false,
+      cancelled: false,
+      error: "connection reset",
+      dest_root: null,
+      model_path: null,
+    });
+    expect(notify).toHaveBeenCalledWith(
+      "error",
+      "catalog",
+      expect.stringContaining("Foo-Q4_K_M.gguf"),
+    );
+    // The in-flight entry is remembered so the banner's Retry can re-run it.
+    expect(useAppStore.getState().catalogError?.source).toEqual({
+      op: "download",
+      repoId: "owner/Foo-GGUF",
+      file: FILE,
+    });
   });
 
   it("catalogOnDone (success) rescans when a models dir is already set", () => {
@@ -271,7 +367,13 @@ describe("catalog slice", () => {
     await useAppStore.getState().startCatalogDownload("owner/Foo-GGUF", FILE);
     const s = useAppStore.getState();
     expect(s.catalogDownload).toBeNull();
-    expect(s.catalogError).toBe("disk full");
+    expect(s.catalogError?.kind).toBe("disk");
+    expect(s.catalogError?.message).toContain(FILE.filename);
+    expect(s.catalogError?.source).toEqual({
+      op: "download",
+      repoId: "owner/Foo-GGUF",
+      file: FILE,
+    });
   });
 
   it("catalogOnProgress overwrites identity fields from the event while active", () => {
@@ -284,6 +386,7 @@ describe("catalog slice", () => {
         total: 200,
         part: 1,
         parts: 3,
+        file: FILE,
       },
     });
     useAppStore.getState().catalogOnProgress({
@@ -300,5 +403,44 @@ describe("catalog slice", () => {
     expect(dl?.repoId).toBe("owner/Bar-GGUF");
     expect(dl?.filename).toBe("Bar-00002-of-00003.gguf");
     expect(dl?.part).toBe(2);
+    // …but the Retry payload survives them.
+    expect(dl?.file).toEqual(FILE);
+  });
+
+  it("humanizeCatalogError never returns raw exception text", () => {
+    // The exact string the Catalog screen was caught rendering.
+    const bridge = humanizeCatalogError(
+      new TypeError("Cannot read properties of undefined (reading 'invoke')"),
+    );
+    expect(bridge.kind).toBe("app");
+    expect(bridge.message).toBe(
+      "The app couldn't reach its own backend — restart the app, then try again.",
+    );
+    expect(bridge.raw).toContain("invoke");
+
+    // Every branch ends in a sentence with a remedy, and none echo the input.
+    for (const raw of [
+      "403 — access to this model is restricted",
+      "429 — HuggingFace rate limit reached.",
+      "404 — not found (the repo or file may have moved).",
+      "request failed: https://huggingface.co/api/models: status code 503",
+      "incomplete download: got 12 of 4000 expected bytes",
+      "hipfire not found on PATH",
+      "something nobody predicted",
+    ]) {
+      const f = humanizeCatalogError(raw);
+      expect(f.message).not.toContain(raw);
+      expect(f.message).toMatch(/—/);
+      expect(f.raw).toBe(raw);
+    }
+  });
+
+  it("humanizeCatalogError blames the repo, not the token, when none is saved", () => {
+    expect(humanizeCatalogError("401 — gated", { hasToken: false }).message).toContain(
+      "gated or private",
+    );
+    expect(humanizeCatalogError("401 — gated", { hasToken: true }).message).toContain(
+      "rejected the access token",
+    );
   });
 });

@@ -453,11 +453,12 @@ describe("chat slice — streaming roundtrip", () => {
       });
     });
     const p = useAppStore.getState().sendChat("hi");
-    // Wait until the request is actually in-flight (abort controller installed)
-    // before cancelling — the reload-if-stale reconcile adds async hops before
-    // the fetch, so a single microtask flush isn't enough.
+    // Wait until the request is actually in-flight before cancelling — the
+    // reload-if-stale reconcile adds async hops before the fetch, so a single
+    // microtask flush isn't enough. Poll the transport, not _chatAbort: the
+    // turn arms its controller at commit time now, long before the fetch.
     await vi.waitFor(() => {
-      if (!useAppStore.getState()._chatAbort) throw new Error("request not in-flight yet");
+      if (fetchMock.mock.calls.length === 0) throw new Error("request not in-flight yet");
     });
     useAppStore.getState().cancelChat();
     await p;
@@ -1042,6 +1043,231 @@ describe("chat slice — streaming roundtrip", () => {
   });
 });
 
+// A config change on Configure makes the next send restart the engine first
+// (reloadIfStale). That reconcile used to run BEFORE anything was committed:
+// the composer had already cleared, so the typed message existed nowhere for
+// up to 180s, with no pending state and no armed abort controller to stop it.
+describe("chat slice — pre-turn server reload", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    readyServer();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("commits the user message and arms the abort BEFORE awaiting the reload", async () => {
+    let release: (fresh: boolean) => void = () => {};
+    useAppStore.setState({
+      reloadIfStale: () =>
+        new Promise<boolean>((resolve) => {
+          release = resolve;
+        }),
+    });
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+
+    const p = useAppStore.getState().sendChat("a whole typed paragraph");
+    // Deliberately NOT awaited: everything below must already be true while
+    // the reload is still in flight.
+    const state = useAppStore.getState();
+    expect(state.chats[0].messages.at(-1)!.content).toBe("a whole typed paragraph");
+    expect(state.chatPending).toBe(true);
+    expect(state.chatStreamingId).toBe(state.chats[0].id);
+    expect(state.chatReloadingSince).not.toBeNull();
+    // Stop has something to abort during the restart window.
+    expect(state._chatAbort).not.toBeNull();
+    // No request goes out until the server is back.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    release(true);
+    await p;
+    expect(useAppStore.getState().chatReloadingSince).toBeNull();
+    expect(useAppStore.getState().chats[0].messages.at(-1)!.content).toBe("ok");
+  });
+
+  it("cancelChat during the restart unwinds the turn and keeps the message", async () => {
+    // A reload that never comes back — the 180s wait, in test time.
+    useAppStore.setState({ reloadIfStale: () => new Promise<boolean>(() => {}) });
+
+    const p = useAppStore.getState().sendChat("typed during a restart");
+    useAppStore.getState().cancelChat();
+    await p;
+
+    const state = useAppStore.getState();
+    expect(state.chatPending).toBe(false);
+    expect(state.chatStreamingId).toBeNull();
+    expect(state.chatReloadingSince).toBeNull();
+    expect(state._chatAbort).toBeNull();
+    // Cancelling is not an error, and the message survives it.
+    expect(state.chatError).toBeNull();
+    expect(state.chats[0].messages.at(-1)!.content).toBe("typed during a restart");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the message and names the cause when the server doesn't come back", async () => {
+    useAppStore.setState({
+      reloadIfStale: async () => false,
+      startError: "Pick a llama.cpp build directory first.",
+    });
+
+    await useAppStore.getState().sendChat("do not lose me");
+
+    const state = useAppStore.getState();
+    expect(state.chats[0].messages).toHaveLength(1);
+    expect(state.chats[0].messages[0].content).toBe("do not lose me");
+    expect(state.chatError).toMatch(/Pick a llama\.cpp build directory first/);
+    expect(state.chatError).toMatch(/still in this chat/);
+    expect(state.chatPending).toBe(false);
+    expect(state.chatReloadingSince).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("recovers the turn when a reload throws instead of returning false", async () => {
+    useAppStore.setState({
+      reloadIfStale: async () => {
+        throw new Error("backend went away");
+      },
+    });
+
+    await useAppStore.getState().sendChat("survives a throw");
+
+    const state = useAppStore.getState();
+    expect(state.chatPending).toBe(false);
+    expect(state.chats[0].messages[0].content).toBe("survives a throw");
+    expect(state.chatError).toMatch(/didn't come back/);
+  });
+});
+
+describe("chat slice — turn-end reporting", () => {
+  const fetchMock = vi.fn();
+
+  // Every round answers with the same tool call, so the model never finishes
+  // and the loop runs head-first into its round cap.
+  const toolCallRound = () =>
+    sseResponse([
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_1", function: { name: "s1__echo", arguments: "{}" } },
+              ],
+            },
+          },
+        ],
+      })}\n`,
+      `data: [DONE]\n`,
+    ]);
+
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    readyServer();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("says so in the thread when the tool-call round cap ends the turn", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        mcp_servers: [
+          {
+            id: "s1",
+            name: "Server 1",
+            transport: "stdio",
+            command: "node",
+            args: [],
+            env: {},
+            cwd: null,
+            enabled: true,
+            autostart: false,
+          },
+        ],
+      }),
+    );
+    useAppStore.setState({
+      mcpStatuses: {
+        s1: { id: "s1", connected: true, error: null, tool_count: 1, server_name: null },
+      },
+      mcpTools: { s1: [{ name: "echo", description: null, input_schema: {} }] },
+      chats: [
+        makeChat({
+          id: "c1",
+          config: {
+            system_prompt: null,
+            chat_template: null,
+            mcp_server_ids: ["s1"],
+            tool_permissions: { default: "allow", per_tool: {} },
+            preset_id: null,
+          },
+        }),
+      ],
+      currentChatId: "c1",
+    });
+    vi.spyOn(api, "mcpCallTool").mockResolvedValue("looping");
+    fetchMock.mockImplementation(() => toolCallRound());
+
+    await useAppStore.getState().sendChat("keep calling tools");
+
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    const msgs = useAppStore.getState().chats[0].messages;
+    const last = msgs.at(-1)!;
+    expect(last.role).toBe("assistant");
+    expect(last.content).toMatch(/Stopped after 8 tool-call rounds/);
+    // The regression: the cap used to append a placeholder it never filled,
+    // leaving an assistant bubble with no content and no tool calls.
+    expect(
+      msgs.some((m: StoredChatMessage) => m.role === "assistant" && !m.content && !m.tool_calls),
+    ).toBe(false);
+    expect(useAppStore.getState().chatPending).toBe(false);
+  });
+
+  it("marks a reply whose stream died partway as incomplete", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "half an ans" } }] })}\n`,
+        `data: ${JSON.stringify({ error: "connection reset" })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+
+    await useAppStore.getState().sendChat("hi");
+
+    const last = useAppStore.getState().chats[0].messages.at(-1)!;
+    expect(last.content).toMatch(/half an ans/);
+    expect(last.content).toMatch(/Reply incomplete/);
+    expect(useAppStore.getState().chatError).toMatch(/connection reset/);
+  });
+
+  it("leaves a clean reply unmarked", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "all of it" } }] })}\n`,
+        `data: [DONE]\n`,
+      ]),
+    );
+
+    await useAppStore.getState().sendChat("hi");
+
+    expect(useAppStore.getState().chats[0].messages.at(-1)!.content).toBe("all of it");
+  });
+});
+
 describe("chat slice — shapes requests off the running engine, not the toggle (BUG 2 regression)", () => {
   const fetchMock = vi.fn();
 
@@ -1247,10 +1473,13 @@ describe("chat slice — hipfire routes through the http plugin, not window.fetc
     });
 
     const p = useAppStore.getState().sendChat("hi");
-    // Wait until the request is actually in-flight (abort controller
-    // installed) before cancelling.
+    // Wait until the request is actually in-flight before cancelling. The
+    // abort controller is no longer the tell — it's armed at commit time, well
+    // before the fetch — so poll the transport itself.
     await vi.waitFor(() => {
-      if (!useAppStore.getState()._chatAbort) throw new Error("request not in-flight yet");
+      if (vi.mocked(hipfireFetchMock).mock.calls.length === 0) {
+        throw new Error("request not in-flight yet");
+      }
     });
     useAppStore.getState().cancelChat();
     await p;

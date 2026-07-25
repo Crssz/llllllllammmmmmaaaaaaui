@@ -3,7 +3,13 @@ import { api } from "../../lib/api";
 import { buildArgs } from "../../lib/buildArgs";
 import { log } from "../../lib/logger";
 import { freshStore, makeSettings, stubApi, useAppStore } from "../testUtils";
-import { activeEngine, activeModelLabel, launchPrereqError } from "./serverSlice";
+import {
+  activeEngine,
+  activeModelLabel,
+  argvEqual,
+  describeServerExit,
+  launchPrereqError,
+} from "./serverSlice";
 
 describe("server slice", () => {
   beforeEach(() => {
@@ -169,6 +175,43 @@ describe("server slice", () => {
     useAppStore.getState().setSettings(makeSettings({ build_dir: "/b" }));
     await useAppStore.getState().startServer(["--foo"]);
     expect(useAppStore.getState().loadedEngine).toBe("llama");
+  });
+});
+
+describe("server slice — argvEqual (the shared launch-argv comparison)", () => {
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+  });
+
+  it("matches element for element", () => {
+    expect(argvEqual([], [])).toBe(true);
+    expect(argvEqual(["--model", "/m.gguf"], ["--model", "/m.gguf"])).toBe(true);
+    expect(argvEqual(["--model", "/a.gguf"], ["--model", "/b.gguf"])).toBe(false);
+  });
+
+  it("is order- and length-sensitive — argv position is meaningful", () => {
+    expect(argvEqual(["-c", "4096", "-ngl", "99"], ["-ngl", "99", "-c", "4096"])).toBe(false);
+    expect(argvEqual(["--fa"], ["--fa", "--fa"])).toBe(false);
+  });
+
+  // The Models table and the library overlay render their "loaded" vs "differs
+  // from running server" badges from exactly this expression against
+  // `loadedArgs`. Now that all three share one implementation, a badge saying
+  // "loaded" and reloadIfStale deciding to restart can no longer disagree.
+  it("agrees with reloadIfStale about whether a launch is still current", async () => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/m.gguf");
+    await s.startServer(buildArgs(useAppStore.getState().flags));
+
+    const loaded = useAppStore.getState().loadedArgs!;
+    expect(argvEqual(buildArgs(useAppStore.getState().flags), loaded)).toBe(true);
+    expect(await useAppStore.getState().reloadIfStale()).toBe(true);
+    expect(api.stopServer).not.toHaveBeenCalled();
+
+    useAppStore.getState().setFlag("model", "/models/other.gguf");
+    expect(argvEqual(buildArgs(useAppStore.getState().flags), loaded)).toBe(false);
   });
 });
 
@@ -370,6 +413,190 @@ describe("server slice — hipfire engine dispatch", () => {
     // buildHipfireArgs always appends --idle-timeout (defaulting to "0" —
     // never unload — when the flag bag doesn't set one; see buildHipfireArgs.test.ts).
     expect(args).toEqual(["serve", "qwen3.6:27b", "127.0.0.1:9090", "--idle-timeout", "0"]);
+  });
+});
+
+describe("server slice — unexpected exit (DEFECT A regression)", () => {
+  beforeEach(() => {
+    freshStore();
+    stubApi();
+  });
+
+  // Put the store in the exact state the bug describes: a server that spawned
+  // fine and is still "running, loading the model".
+  const launched = async (pid = 4242) => {
+    const s = useAppStore.getState();
+    s.setSettings(makeSettings({ build_dir: "/b" }));
+    s.setFlag("model", "/models/big.gguf");
+    vi.mocked(api.startServer).mockResolvedValueOnce({
+      pid,
+      port: 8080,
+      started_at: 1,
+      binary: "llama-server",
+    });
+    await useAppStore.getState().startServer(buildArgs(useAppStore.getState().flags));
+    expect(useAppStore.getState().server.running).toBe(true);
+    expect(useAppStore.getState().loadedArgs).not.toBeNull();
+  };
+
+  it("a crash during model load reverts to stopped AND surfaces the stderr cause", async () => {
+    await launched();
+    useAppStore.getState().handleServerExit({
+      pid: 4242,
+      code: 1,
+      status: "exit code: 1",
+      stderrTail: [
+        "llama_model_loader: loaded meta data",
+        "llama_model_load: error loading model: unable to allocate CUDA0 buffer",
+        "llama_load_model_from_file: failed to load model",
+      ],
+    });
+
+    const s = useAppStore.getState();
+    expect(s.server).toEqual({ running: false, ready: false, info: null });
+    // The banner leads with the ROOT cause, not the cascade or the exit code.
+    expect(s.startError).toContain("unable to allocate CUDA0 buffer");
+    expect(s.startError).toContain("4242");
+  });
+
+  it("clears loadedArgs/loadedEngine so reloadIfStale can't diff against a corpse", async () => {
+    await launched();
+    expect(useAppStore.getState().loadedEngine).toBe("llama");
+    useAppStore
+      .getState()
+      .handleServerExit({ pid: 4242, code: 1, status: "exit code: 1", stderrTail: [] });
+    expect(useAppStore.getState().loadedArgs).toBeNull();
+    expect(useAppStore.getState().loadedEngine).toBeNull();
+  });
+
+  it("fires a user-visible toast — the logs panel is closed by default", async () => {
+    await launched();
+    const notify = vi.spyOn(log, "notify");
+    useAppStore.getState().handleServerExit({
+      pid: 4242,
+      code: 1,
+      status: "exit code: 1",
+      stderrTail: ["error: failed to load model"],
+    });
+    expect(notify).toHaveBeenCalledWith(
+      "error",
+      "server",
+      expect.stringContaining("failed to load model"),
+      expect.objectContaining({ pid: 4242, stderr: ["error: failed to load model"] }),
+    );
+  });
+
+  it("produces a DIFFERENT message on a retry, so a dismissed banner reappears", async () => {
+    // Configure's banner hides a message it has had dismissed by exact string
+    // equality and never resets it, so two identical failures must not produce
+    // two identical strings.
+    const tail = ["llama_model_load: error loading model: out of memory"];
+    const first = describeServerExit("llama-server", {
+      pid: 4242,
+      code: 1,
+      status: "exit code: 1",
+      stderrTail: tail,
+    });
+    const second = describeServerExit("llama-server", {
+      pid: 4243,
+      code: 1,
+      status: "exit code: 1",
+      stderrTail: tail,
+    });
+    expect(first).not.toBe(second);
+  });
+
+  it("still reports a cause when the exit code is unavailable", () => {
+    const msg = describeServerExit("llama-server", {
+      pid: 7,
+      code: null,
+      status: "exit status unavailable: handle is invalid",
+      stderrTail: ["ggml_vulkan: device lost"],
+    });
+    expect(msg).toContain("device lost");
+    expect(msg).toContain("exit status unavailable");
+  });
+
+  it("falls back to a plain message when the process printed nothing", () => {
+    const msg = describeServerExit("hipfire", {
+      pid: 7,
+      code: 3221225477,
+      status: "exit code: 3221225477",
+      stderrTail: [],
+    });
+    expect(msg).toContain("hipfire");
+    expect(msg).toContain("3221225477");
+  });
+
+  it("reports but does not tear down a DIFFERENT, live server", async () => {
+    await launched(555);
+    // A late crash event for a process the user already replaced.
+    useAppStore
+      .getState()
+      .handleServerExit({ pid: 111, code: 1, status: "exit code: 1", stderrTail: [] });
+    const s = useAppStore.getState();
+    expect(s.server.running).toBe(true);
+    expect(s.server.info?.pid).toBe(555);
+    expect(s.loadedArgs).not.toBeNull();
+    expect(s.startError).toContain("111");
+  });
+
+  it("a user-initiated stop reports nothing — it never reaches handleServerExit", async () => {
+    await launched();
+    const notify = vi.spyOn(log, "notify");
+    await useAppStore.getState().stopServer();
+    expect(useAppStore.getState().server).toEqual({ running: false, ready: false, info: null });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("probe timeout warns without clearing a server that is still alive", async () => {
+    await launched();
+    const notify = vi.spyOn(log, "notify");
+    useAppStore.getState().handleServerProbeTimeout({
+      pid: 4242,
+      port: 8080,
+      timeoutSecs: 600,
+      stderrTail: ["load_tensors: offloading 80 repeating layers to GPU"],
+    });
+    const s = useAppStore.getState();
+    // Alive, so the badge must keep telling the truth.
+    expect(s.server.running).toBe(true);
+    expect(s.startError).toContain("8080");
+    expect(s.startError).toContain("10m");
+    expect(notify).toHaveBeenCalledWith("warn", "server", expect.any(String), expect.any(Object));
+  });
+
+  it("ignores a probe timeout for a pid that is no longer the running server", async () => {
+    await launched(555);
+    useAppStore
+      .getState()
+      .handleServerProbeTimeout({ pid: 111, port: 8080, timeoutSecs: 600, stderrTail: [] });
+    expect(useAppStore.getState().startError).toBeNull();
+  });
+
+  it("a fresh start clears the previous crash's startError", async () => {
+    await launched();
+    useAppStore
+      .getState()
+      .handleServerExit({ pid: 4242, code: 1, status: "exit code: 1", stderrTail: [] });
+    expect(useAppStore.getState().startError).not.toBeNull();
+    await useAppStore.getState().startServer(["--foo"]);
+    expect(useAppStore.getState().startError).toBeNull();
+  });
+
+  it("labels the engine as hipfire when that's what was launched", async () => {
+    useAppStore.getState().setSettings(
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "C:/hipfire/hipfire.exe",
+        hipfire_flags: { tag: "qwen3.6:27b" },
+      }),
+    );
+    await useAppStore.getState().startServer(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
+    useAppStore
+      .getState()
+      .handleServerExit({ pid: 1, code: 1, status: "exit code: 1", stderrTail: [] });
+    expect(useAppStore.getState().startError).toContain("hipfire");
   });
 });
 

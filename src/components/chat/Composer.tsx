@@ -14,6 +14,8 @@ export function Composer({
   chatId,
   canSend,
   chatPending,
+  otherChatStreaming,
+  restarting,
   server,
   onSend,
   cancelChat,
@@ -27,7 +29,17 @@ export function Composer({
 }: Readonly<{
   chatId: string | undefined;
   canSend: boolean;
+  /** A reply is streaming into THIS chat — scoped by the screen off
+   *  chatStreamingId, never the global chatPending flag. Passing the global
+   *  one showed an idle chat a Stop button that aborted a different chat's
+   *  stream, and made its Enter key a no-op. */
   chatPending: boolean;
+  /** Some OTHER chat owns the in-flight turn. This composer stays fully
+   *  usable (type, attach, review) but a send can't start until it's done —
+   *  the store tracks one turn at a time. */
+  otherChatStreaming: boolean;
+  /** The engine is restarting to apply a config change before a send. */
+  restarting: boolean;
   server: {
     running: boolean;
     ready: boolean;
@@ -63,6 +75,11 @@ export function Composer({
   } | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
 
+  // Why the last send attempt didn't go through. Every refusal in submit()
+  // sets one of these: pressing Enter used to `return` silently, so a send
+  // that couldn't proceed was indistinguishable from a broken key.
+  const [sendHint, setSendHint] = useState<string | null>(null);
+
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Free the playback object URL when it's replaced or the screen unmounts.
@@ -84,6 +101,7 @@ export function Composer({
     setAudioError(null);
     setPendingImage(null);
     setImageError(null);
+    setSendHint(null);
     if (typeof document !== "undefined" && !document.querySelector("dialog[open]")) {
       taRef.current?.focus();
     }
@@ -96,13 +114,51 @@ export function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
   }, [draft]);
 
+  // Explains why the attach buttons are disabled (and why a send was refused),
+  // mirroring their disable conditions. canSend is `server.ready && a model is
+  // loaded`, so a false canSend means the server isn't up, is still loading,
+  // or has no model.
+  const notReadyReason = !server.running
+    ? "Start the server on the Configure tab first"
+    : !server.ready
+      ? "Server is still loading the model"
+      : "Pick a model first";
+
   const submit = () => {
-    if (chatPending || savingAudio) return;
+    // Every refusal below happens BEFORE the draft is cleared, so a send that
+    // can't proceed never eats what the user typed — and each one says why
+    // instead of returning silently.
+    if (chatPending) {
+      setSendHint(
+        restarting
+          ? "Still applying the new config — the message above sends as soon as the server is back. Press Stop to cancel it."
+          : "This chat is still generating a reply — press Stop to interrupt it.",
+      );
+      return;
+    }
+    if (otherChatStreaming) {
+      setSendHint(
+        "Another chat is still generating a reply — wait for it to finish, or stop it there first.",
+      );
+      return;
+    }
+    if (savingAudio) {
+      setSendHint("Hold on — the recording is still being saved.");
+      return;
+    }
     const text = draft.trim();
     const audio = pendingAudio?.attachment ?? null;
     const image = pendingImage?.attachment ?? null;
     // Allow media-only sends — same rule the slice enforces.
-    if (!text && !audio && !image) return;
+    if (!text && !audio && !image) {
+      setSendHint("Type a message, or attach an audio clip or image, first.");
+      return;
+    }
+    if (!canSend) {
+      setSendHint(notReadyReason);
+      return;
+    }
+    setSendHint(null);
     setDraft("");
     setPendingAudio(null);
     setAudioError(null);
@@ -215,15 +271,6 @@ export function Composer({
   // Anything queued to send: text OR an audio/image attachment.
   const hasInput = draft.trim().length > 0 || !!pendingAudio || !!pendingImage;
 
-  // Explains why the attach buttons are disabled, mirroring their disable
-  // conditions. canSend is `server.ready && a model is loaded`, so a false
-  // canSend means the server isn't up, is still loading, or has no model.
-  const notReadyReason = !server.running
-    ? "Start the server on the Configure tab first"
-    : !server.ready
-      ? "Server is still loading the model"
-      : "Pick a model first";
-
   // ── Token usage estimate ─────────────────────────────────────────────────
   const { draftTokens, usedTokens, pctOfCtx } = estimateTokenUsage(messages, draft, ctxMax);
   const tokenColor =
@@ -243,7 +290,10 @@ export function Composer({
                 : "Pick a model first…"
         }
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          if (sendHint) setSendHint(null);
+        }}
         onKeyDown={onKey}
         disabled={!canSend}
       />
@@ -282,6 +332,7 @@ export function Composer({
         {savingAudio && <span className="tr-rec-saving mono">saving recording…</span>}
         {audioError && <span className="tr-rec-err">{audioError}</span>}
         {imageError && <span className="tr-rec-err">{imageError}</span>}
+        {sendHint && <span className="tr-rec-err">{sendHint}</span>}
         {pendingAudio && (
           <div className="tr-rec-chip">
             <I.Mic size={12} />
@@ -341,12 +392,17 @@ export function Composer({
           <I.Brain size={11} /> Reasoning ·{" "}
           {thinkingKnownUnsupported ? "n/a" : reasoningEnabled ? "on" : "off"}
         </button>
-        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-          {!server.running
-            ? "(server stopped)"
-            : !server.ready
-              ? `→ :${server.info?.port} (loading…)`
-              : `→ :${server.info?.port}/v1/chat/completions`}
+        <span style={{ fontSize: 11.5, color: restarting ? "var(--yellow)" : "var(--muted)" }}>
+          {/* A restart in flight wins over server.running: the process is down
+              by design for a moment, and "(server stopped)" reads like a
+              failure the user has to go fix. */}
+          {restarting
+            ? "applying new config…"
+            : !server.running
+              ? "(server stopped)"
+              : !server.ready
+                ? `→ :${server.info?.port} (loading…)`
+                : `→ :${server.info?.port}/v1/chat/completions`}
         </span>
         <span className="spacer" />
         <span
@@ -375,7 +431,11 @@ export function Composer({
         {chatPending ? (
           <button
             className="composer-send"
-            title="Stop generating"
+            title={
+              restarting
+                ? "Cancel this send — the server is restarting to apply the new config"
+                : "Stop generating"
+            }
             onClick={cancelChat}
             style={{
               background: "var(--red)",
@@ -390,17 +450,24 @@ export function Composer({
             <button
               className="composer-send"
               title={
-                !canSend
-                  ? "Server / model not ready"
-                  : savingAudio
-                    ? "Waiting for the recording to save…"
-                    : !hasInput
-                      ? "Type a message or attach audio"
-                      : "Send"
+                otherChatStreaming
+                  ? "Another chat is still generating a reply"
+                  : !canSend
+                    ? "Server / model not ready"
+                    : savingAudio
+                      ? "Waiting for the recording to save…"
+                      : !hasInput
+                        ? "Type a message or attach audio"
+                        : "Send"
               }
               onClick={submit}
+              // NOT disabled while another chat streams: clicking it then has
+              // to explain itself (submit sets sendHint), which a disabled
+              // button can't do.
               disabled={!canSend || savingAudio || !hasInput}
-              style={{ opacity: canSend && hasInput && !savingAudio ? 1 : 0.5 }}
+              style={{
+                opacity: canSend && hasInput && !savingAudio && !otherChatStreaming ? 1 : 0.5,
+              }}
             >
               <I.Send size={13} />
             </button>

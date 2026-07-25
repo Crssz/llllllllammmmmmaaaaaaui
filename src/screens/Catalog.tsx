@@ -7,6 +7,11 @@ import { bitsClass } from "./Models";
 import { useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { quantDescription } from "../lib/quant";
 import { log } from "../lib/logger";
+import {
+  humanizeCatalogError,
+  type CatalogFailureUi,
+  type CatalogFilesState,
+} from "../state/slices/catalogSlice";
 
 type SortBy = "downloads" | "likes" | "trending" | "modified";
 
@@ -52,6 +57,7 @@ function LlamaCatalogScreen() {
     catalogFiles,
     catalogDownload,
     searchCatalog,
+    retryCatalogError,
     setCatalogQuery,
     setCatalogSort,
     setHfToken,
@@ -73,6 +79,7 @@ function LlamaCatalogScreen() {
       catalogFiles: s.catalogFiles,
       catalogDownload: s.catalogDownload,
       searchCatalog: s.searchCatalog,
+      retryCatalogError: s.retryCatalogError,
       setCatalogQuery: s.setCatalogQuery,
       setCatalogSort: s.setCatalogSort,
       setHfToken: s.setHfToken,
@@ -89,6 +96,12 @@ function LlamaCatalogScreen() {
   const [tokenDraft, setTokenDraft] = useState("");
   const hasToken = !!settings.hf_token;
   const openMenu = useContextMenu();
+
+  // The remedy offered on an auth failure: open the token editor, pre-filled.
+  const openTokenPanel = () => {
+    setTokenDraft(settings.hf_token ?? "");
+    setShowToken(true);
+  };
 
   // Run an initial search on first open so the page isn't blank.
   useEffect(() => {
@@ -127,6 +140,9 @@ function LlamaCatalogScreen() {
   };
 
   const downloading = catalogDownload != null;
+  // The banner's Retry re-runs the failed operation, so its busy state follows
+  // THAT operation rather than whichever request happens to be in flight.
+  const retryBusy = catalogError?.source.op === "download" ? downloading : catalogSearching;
   const dlPct =
     catalogDownload && catalogDownload.total > 0
       ? Math.min(100, (catalogDownload.downloaded / catalogDownload.total) * 100)
@@ -343,32 +359,48 @@ function LlamaCatalogScreen() {
               }}
             >
               <I.X size={12} style={{ flexShrink: 0 }} />
-              <span style={{ flex: 1 }}>{catalogError}</span>
-              <button
-                className="btn ghost"
-                style={{ color: "var(--text)" }}
-                onClick={() => searchCatalog().catch(() => {})}
-                disabled={catalogSearching}
-                title="Retry the search"
-              >
-                <I.Refresh
-                  size={12}
-                  style={{ animation: catalogSearching ? "spin 0.9s linear infinite" : "none" }}
-                />{" "}
-                Retry
-              </button>
+              <span style={{ flex: 1 }}>{catalogError.message}</span>
+              {catalogError.kind === "auth" && (
+                <button
+                  className="btn ghost"
+                  style={{ color: "var(--text)" }}
+                  onClick={openTokenPanel}
+                  title="Open the HuggingFace token editor"
+                >
+                  <I.Lock size={12} /> Fix token
+                </button>
+              )}
+              {/* Retry re-runs the operation that failed (search or download),
+                  and the banner stays put until that retry succeeds. */}
+              {catalogError.source.op !== "none" && (
+                <button
+                  className="btn ghost"
+                  style={{ color: "var(--text)" }}
+                  onClick={() => retryCatalogError().catch(() => {})}
+                  disabled={retryBusy}
+                  title={
+                    catalogError.source.op === "download"
+                      ? `Retry downloading ${catalogError.source.file.filename}`
+                      : "Retry the search"
+                  }
+                >
+                  <I.Refresh
+                    size={12}
+                    style={{ animation: retryBusy ? "spin 0.9s linear infinite" : "none" }}
+                  />{" "}
+                  Retry
+                </button>
+              )}
             </div>
           </div>
         )}
 
         {/* ── Results ── */}
+        {/* The empty state is suppressed while an error is showing: a failed
+            request is not "your search matched nothing". */}
         {catalogSearching && catalogResults.length === 0 ? (
           <div className="catalog-empty">Searching HuggingFace…</div>
-        ) : catalogResults.length === 0 ? (
-          <div className="catalog-empty">
-            {catalogSearched ? "No GGUF models match your search." : "Search to browse models."}
-          </div>
-        ) : (
+        ) : catalogResults.length > 0 ? (
           <div className="catalog-list">
             {catalogResults.map((m) => (
               <CatalogCard
@@ -380,12 +412,20 @@ function LlamaCatalogScreen() {
                 downloadBusy={downloading}
                 activeFile={catalogDownload?.repoId === m.id ? catalogDownload.filename : null}
                 onToggle={() => onToggle(m.id)}
+                onRetryFiles={() => loadCatalogFiles(m.id).catch(() => {})}
+                onFixToken={openTokenPanel}
                 onDownload={(f) => startCatalogDownload(m.id, f).catch(() => {})}
                 onLoad={(path) => onLoad(path).catch(() => {})}
                 onSetModel={(path) => loadModelPath(path)}
                 onCancel={() => cancelCatalogDownload().catch(() => {})}
               />
             ))}
+          </div>
+        ) : catalogError ? null : (
+          <div className="catalog-empty">
+            {catalogSearched
+              ? "No GGUF models match your search — try a broader term (e.g. qwen, llama 8b)."
+              : "Nothing loaded yet — search HuggingFace above to browse GGUF quants."}
           </div>
         )}
 
@@ -423,7 +463,7 @@ function HipfireCatalogPanel() {
 
   const [catalog, setCatalog] = useState<HipfireAvailableModel[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<CatalogFailureUi | null>(null);
   const [q, setQ] = useState("");
   // The pulling row's tag lives in hipfirePull.tag (store state, not local) —
   // that's what lets the row UI (Cancel + log vs. a disabled Pull) survive
@@ -438,10 +478,10 @@ function HipfireCatalogPanel() {
       const list = await api.listHipfireAvailable(settings.hipfire_path);
       setCatalog(list);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const f = humanizeCatalogError(e);
       setCatalog([]);
-      setError(msg);
-      log.warn("hipfire", "list_hipfire_available failed", { error: msg });
+      setError({ kind: f.kind, message: f.message });
+      log.warn("hipfire", "list_hipfire_available failed", { error: f.raw });
     } finally {
       setLoading(false);
     }
@@ -518,12 +558,15 @@ function HipfireCatalogPanel() {
               }}
             >
               <I.X size={12} style={{ flexShrink: 0 }} />
-              <span style={{ flex: 1 }}>Couldn&apos;t list the catalog: {error}</span>
+              <span style={{ flex: 1 }}>
+                Couldn&apos;t list hipfire&apos;s catalog. {error.message}
+              </span>
               <button
                 className="btn ghost"
                 style={{ color: "var(--text)" }}
                 onClick={() => refresh().catch(() => {})}
                 disabled={loading}
+                title="Re-fetch the catalog"
               >
                 <I.Refresh size={12} /> Retry
               </button>
@@ -556,11 +599,15 @@ function HipfireCatalogPanel() {
           </div>
         )}
 
+        {/* Same rule as the HuggingFace list: never claim "nothing found" for a
+            request that failed — the error above is the whole story then. */}
         {loading && catalog.length === 0 ? (
           <div className="catalog-empty">Loading hipfire&apos;s pull catalog…</div>
-        ) : rows.length === 0 ? (
+        ) : error && catalog.length === 0 ? null : rows.length === 0 ? (
           <div className="catalog-empty">
-            {catalog.length === 0 ? "No catalog entries found." : "No models match your filter."}
+            {catalog.length === 0
+              ? "hipfire listed no pullable models — check the hipfire binary path in Configure."
+              : "No models match your filter — clear the filter to see all entries."}
           </div>
         ) : (
           <div className="panel">
@@ -640,6 +687,8 @@ function CatalogCard({
   downloadBusy,
   activeFile,
   onToggle,
+  onRetryFiles,
+  onFixToken,
   onDownload,
   onLoad,
   onSetModel,
@@ -647,11 +696,13 @@ function CatalogCard({
 }: Readonly<{
   model: CatalogModel;
   expanded: boolean;
-  files: CatalogFile[] | "loading" | "error" | undefined;
+  files: CatalogFilesState | undefined;
   downloadedByKey: Map<string, string>;
   downloadBusy: boolean;
   activeFile: string | null;
   onToggle: () => void;
+  onRetryFiles: () => void;
+  onFixToken: () => void;
   onDownload: (f: CatalogFile) => void;
   onLoad: (path: string) => void;
   onSetModel: (path: string) => void;
@@ -789,9 +840,33 @@ function CatalogCard({
         <div className="catalog-files">
           {files === "loading" || files === undefined ? (
             <div className="catalog-file-msg">Loading quants…</div>
-          ) : files === "error" ? (
-            <div className="catalog-file-msg" style={{ color: "var(--red)" }}>
-              Couldn&apos;t list files for this repo.
+          ) : !Array.isArray(files) ? (
+            // Why it failed, plus a retry for THIS repo's file list — a generic
+            // "couldn't list files" left the user with nothing to act on.
+            <div
+              className="catalog-file-msg"
+              style={{ color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <I.X size={12} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{files.failed.message}</span>
+              {files.failed.kind === "auth" && (
+                <button
+                  className="btn ghost"
+                  style={{ color: "var(--text)" }}
+                  onClick={onFixToken}
+                  title="Open the HuggingFace token editor"
+                >
+                  <I.Lock size={11} /> Fix token
+                </button>
+              )}
+              <button
+                className="btn ghost"
+                style={{ color: "var(--text)" }}
+                onClick={onRetryFiles}
+                title="List this repo's files again"
+              >
+                <I.Refresh size={11} /> Retry
+              </button>
             </div>
           ) : files.length === 0 ? (
             <div className="catalog-file-msg">No downloadable GGUF quants found.</div>

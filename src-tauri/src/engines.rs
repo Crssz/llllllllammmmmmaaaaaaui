@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::build_scan::{fmt_size, scan_build};
+use crate::jsonstore;
 use crate::settings::load_settings;
 use crate::util::{canonical_dir, chrono_now_millis};
 
@@ -267,14 +268,41 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
+/// Read the install manifest, if there is one and it still parses.
+///
+/// Missing and unparseable deliberately collapse to the same `None`: a dir with
+/// no `engine.json` (a manually-dropped build) and one whose manifest is
+/// damaged want the identical fallback — `read_installed` re-derives
+/// version/commit/backends with a live `scan_build` of the directory. So this
+/// does NOT go through `jsonstore::load_json`: unlike chats or settings the
+/// manifest is *derived* data that the engine dir can regenerate, and
+/// quarantining it would only strand an `engine.corrupt-N.json` inside the
+/// install (counted by `dir_size`) to rescue something we can rebuild. The
+/// damage is still worth a log line, though — silently identical to "never had
+/// a manifest" is how a broken install stays invisible.
 fn read_manifest(dir: &Path) -> Option<EngineManifest> {
-    let s = fs::read_to_string(dir.join(MANIFEST_FILE)).ok()?;
-    serde_json::from_str(&s).ok()
+    let path = dir.join(MANIFEST_FILE);
+    let s = fs::read_to_string(&path).ok()?;
+    match serde_json::from_str(&s) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            warn!(
+                "engines: ignoring unreadable manifest {} ({e}) — falling back to a live scan",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn write_manifest(dir: &Path, m: &EngineManifest) -> Result<(), String> {
     let s = serde_json::to_string_pretty(m).map_err(|e| format!("encode manifest: {e}"))?;
-    fs::write(dir.join(MANIFEST_FILE), s).map_err(|e| format!("write manifest: {e}"))
+    // Atomic: this file IS the record of what was installed. A crash or a full
+    // disk part-way through a bare `fs::write` would leave a truncated manifest
+    // that no longer parses, demoting a good install to an unidentified dir
+    // that has to be re-scanned and sinks to the bottom of the library.
+    jsonstore::atomic_write(&dir.join(MANIFEST_FILE), &s)
+        .map_err(|e| format!("write manifest: {e}"))
 }
 
 /// Canonical form for active-engine comparison, matching how `scan_build`
@@ -803,6 +831,61 @@ mod tests {
             Some("gfx1100")
         );
         assert_eq!(extract_gfx("llama-b1-bin-win-vulkan-x64.zip"), None);
+    }
+
+    /// The manifest is the record of what an install actually is, and it is
+    /// rewritten in full, so it carries the same torn-write risk as the app's
+    /// JSON stores. Covers the two properties `jsonstore::atomic_write` buys:
+    /// the new manifest is published in one step with no temp file left inside
+    /// the install dir, and a replacement lands in place. Also pins the read
+    /// contract this file relies on instead of quarantining — a manifest that
+    /// no longer parses reads as "no manifest", i.e. re-scan the directory.
+    #[test]
+    fn manifest_write_is_atomic_and_a_damaged_manifest_reads_as_absent() {
+        let dir = std::env::temp_dir().join(format!("lmst-engine-manifest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let m = EngineManifest {
+            id: "b6841-vulkan-x64".into(),
+            tag: Some("b6841".into()),
+            variant: Some("vulkan".into()),
+            arch: Some("x64".into()),
+            version: Some("b6841".into()),
+            commit: Some("deadbee".into()),
+            backend_badges: vec!["Vulkan".into()],
+            installed_at: 1234,
+            asset: Some("llama-b6841-bin-win-vulkan-x64.zip".into()),
+        };
+        write_manifest(&dir, &m).unwrap();
+
+        // Exactly one file: a leftover `.tmp` would count towards the install's
+        // reported size and look like a crashed write.
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec![MANIFEST_FILE.to_string()]);
+
+        let back = read_manifest(&dir).expect("manifest round-trips");
+        assert_eq!(back.id, "b6841-vulkan-x64");
+        assert_eq!(back.backend_badges, vec!["Vulkan".to_string()]);
+        assert_eq!(back.installed_at, 1234);
+
+        // Re-installing the same id replaces in place, still without residue.
+        let mut m2 = m.clone();
+        m2.installed_at = 9999;
+        write_manifest(&dir, &m2).unwrap();
+        assert_eq!(read_manifest(&dir).unwrap().installed_at, 9999);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        // A truncated manifest degrades to the live-scan fallback rather than a
+        // half-decoded record — and is left where it is, not quarantined.
+        fs::write(dir.join(MANIFEST_FILE), r#"{"id":"b6841-vulk"#).unwrap();
+        assert!(read_manifest(&dir).is_none());
+        assert!(!dir.join("engine.corrupt-1.json").exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

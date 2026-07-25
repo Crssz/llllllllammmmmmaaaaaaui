@@ -46,6 +46,33 @@ import { activeEngine } from "./serverSlice";
 // content (which hipfire can 400 on, poisoning every later send in that chat).
 const MEDIA_UNAVAILABLE = "[attached media unavailable]";
 
+// Longest chain of tool-call rounds a single turn may run before we stop and
+// hand control back to the user. Hitting it is reported in the thread (see
+// `hitToolCap` in streamReply) — ending the turn silently left an empty
+// assistant bubble that read as "the model returned nothing".
+const MAX_TOOL_ROUNDS = 8;
+
+// Appended to a reply whose stream died partway through. Without it a
+// truncated answer reads exactly like a finished one — the only trace of the
+// failure used to be a tooltip on the error banner.
+function withIncompleteNote(content: string, error: string): string {
+  return `${content}${content ? "\n\n" : ""}⚠️ Reply incomplete — the stream stopped early: ${error}. Use Regenerate to run this turn again.`;
+}
+
+// Await `p`, but stop waiting the moment this turn is aborted (resolves null).
+// The awaited work itself isn't cancellable — a server restart can't be
+// un-started — so it keeps running in the background; we only stop blocking
+// the UI on it.
+function untilAborted<T>(p: Promise<T>, abort: AbortController): Promise<T | null> {
+  return Promise.race([
+    p,
+    new Promise<null>((resolve) => {
+      if (abort.signal.aborted) resolve(null);
+      else abort.signal.addEventListener("abort", () => resolve(null), { once: true });
+    }),
+  ]);
+}
+
 export type ChatSlice = {
   chats: ChatSession[];
   currentChatId: string | null;
@@ -55,6 +82,12 @@ export type ChatSlice = {
    *  switched to another one whose last message is also an assistant's. */
   chatStreamingId: string | null;
   chatError: string | null;
+  /** When the pre-turn server reconcile started (Date.now()), or null when no
+   *  reload is in flight. A config change on Configure makes the next send
+   *  restart the engine, which can take minutes: Chat renders a distinct
+   *  "applying new config" row off this, and keeps the composer usable
+   *  instead of greying it out for a restart the user's own send triggered. */
+  chatReloadingSince: number | null;
   _chatAbort: AbortController | null;
 
   setChats: (chats: ChatSession[]) => void;
@@ -198,6 +231,11 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       type: "function";
       function: { name: string; description?: string; parameters: unknown };
     }>,
+    /** The TURN's controller (armed by streamReply before it awaits anything),
+     *  not a fresh per-round one. A round used to mint its own and publish it
+     *  as _chatAbort, which left Stop dead in every gap between rounds — the
+     *  pre-turn server reload, and the tool-call dispatch. */
+    abort: AbortController,
     chatTemplate?: string | null,
   ): Promise<RoundResult> => {
     const { server, flags, reasoningEnabled, modelInfo, settings } = get();
@@ -210,8 +248,6 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     const engine = activeEngine(get);
     const url = `http://127.0.0.1:${server.info.port}/v1/chat/completions`;
     const t0 = performance.now();
-    const abort = new AbortController();
-    set({ _chatAbort: abort });
 
     let rawContent = "";
     let streamedReasoning = "";
@@ -455,8 +491,6 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
         streamError = msg;
         log.error("chat", "request failed", { error: msg, url });
       }
-    } finally {
-      set({ _chatAbort: null });
     }
 
     const elapsed = (performance.now() - t0) / 1000;
@@ -494,19 +528,84 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
   };
 
   const streamReply = async (session: ChatSession, baseMessages: StoredChatMessage[]) => {
+    // The user's turn lands in the thread BEFORE anything is awaited. The
+    // server reconcile below can restart the engine and block for up to three
+    // minutes; committing after it (as this used to) meant the typed message
+    // was simply gone for that whole window — cleared from the composer,
+    // absent from the thread, no spinner, nothing to cancel. The turn-level
+    // AbortController is armed here for the same reason: cancelChat needs
+    // something to abort long before runChatRound creates its own.
+    const turnAbort = new AbortController();
+    let working: ChatSession = {
+      ...session,
+      title: session.messages.length === 0 ? deriveTitle(baseMessages) : session.title,
+      updated_at: Date.now(),
+      messages: [...baseMessages],
+    };
+    set((s) => ({
+      chats: mutateChats(s, (chats) => [working, ...chats.filter((c) => c.id !== working.id)]),
+      currentChatId: working.id,
+      chatPending: true,
+      chatStreamingId: working.id,
+      chatError: null,
+      chatReloadingSince: Date.now(),
+      _chatAbort: turnAbort,
+    }));
+
+    // Hand the turn back. Every early return below has to call this — the
+    // commit above already flipped chatPending/chatStreamingId on, so bailing
+    // without it would freeze the composer on "Stop" forever. The abort slot
+    // is only released if it's still OURS: runChatRound nulls its own
+    // controller on the way out, and a later turn may already own the slot.
+    const endTurn = () =>
+      set((s) => ({
+        chatPending: false,
+        chatStreamingId: null,
+        chatReloadingSince: null,
+        _chatAbort: s._chatAbort === turnAbort ? null : s._chatAbort,
+      }));
+
     // Reconcile the server with the current config FIRST: if the Configure
     // flags changed since the model was loaded, this restarts llama-server with
     // the latest flags and waits for the reload, so the turn runs on the
     // current config instead of the previously-loaded one. No-op when already
     // current; the guards below still handle a not-running / not-ready server.
-    const serverFresh = await get().reloadIfStale();
-    if (!serverFresh) {
-      set({
-        chatError:
-          "Server didn't come back after applying the new config — check the Configure tab.",
-      });
+    // Raced against the turn's abort signal so Stop unwinds immediately — the
+    // restart itself can't be undone, but the user must never be pinned to it.
+    const serverFresh = await untilAborted(
+      get()
+        .reloadIfStale()
+        .catch((e: unknown) => {
+          log.error("chat", "server reconcile failed", {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          return false;
+        }),
+      turnAbort,
+    );
+    if (serverFresh === null) {
+      // Stop pressed while the restart ran. The restart carries on (the old
+      // process is already down); we just stop waiting on it and leave the
+      // user's message in the thread, ready to resend.
+      log.info("chat", "send cancelled while the server was restarting");
+      endTurn();
       return;
     }
+    if (!serverFresh) {
+      // startError carries the concrete reason (missing tag, no build dir, a
+      // binary that wouldn't resolve) — say it instead of a bare "check
+      // Configure", and point at the message that's still sitting in the chat.
+      const why = get().startError;
+      set({
+        chatError:
+          `Server didn't come back after applying the new config${
+            why ? ` — ${why}` : " — check the Configure tab"
+          }.` + " Your message is still in this chat: fix the config, then press Retry.",
+      });
+      endTurn();
+      return;
+    }
+    set({ chatReloadingSince: null });
     const { server, mcpStatuses, mcpTools, settings, requestApproval, requestUserChoice } = get();
     if (!server.running || !server.info) {
       // No server running — activeEngine falls back to the Configure toggle
@@ -514,13 +613,14 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       // right now would actually launch.
       const engineName = activeEngine(get) === "hipfire" ? "hipfire" : "llama-server";
       set({ chatError: `Start ${engineName} on the Configure tab first.` });
+      endTurn();
       return;
     }
     if (!server.ready) {
       set({ chatError: "Server is still loading the model — give it a moment." });
+      endTurn();
       return;
     }
-    set({ chatError: null });
 
     // Warn ONCE per send, and only when the NEW user turn (the message being
     // sent/resent right now — always the last of baseMessages in both callers)
@@ -608,28 +708,40 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
       toolIndex.set(exposed, { serverId: ASK_SERVER_ID, toolName: t.name });
     }
 
+    // The empty assistant bubble the reply streams into. Appended only now,
+    // once the server is confirmed up: during the reconcile above the thread
+    // ends on the user's message and Chat shows the "applying new config" row
+    // instead, which is a much clearer signal than a bubble that sits blank
+    // for minutes.
     const placeholder: StoredChatMessage = { role: "assistant", content: "", time: Date.now() };
-    let working: ChatSession = {
-      ...session,
-      title: session.messages.length === 0 ? deriveTitle(baseMessages) : session.title,
-      updated_at: Date.now(),
-      messages: [...baseMessages, placeholder],
-    };
     set((s) => ({
-      chats: mutateChats(s, (chats) => [working, ...chats.filter((c) => c.id !== working.id)]),
-      currentChatId: working.id,
-      chatPending: true,
-      chatStreamingId: working.id,
+      chats: mutateChats(s, (chats) =>
+        chats.map((c) => {
+          if (c.id !== working.id) return c;
+          const out = { ...c, messages: [...c.messages, placeholder], updated_at: Date.now() };
+          working = out;
+          return out;
+        }),
+      ),
     }));
 
     let liveMessages: StoredChatMessage[] = [...composedMessages];
+    // Set when the loop runs out of tool-call rounds with the model still
+    // asking for more — reported in the thread after the loop.
+    let hitToolCap = false;
 
     try {
-      for (let round = 0; round < 8; round++) {
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        // Stop pressed in a gap the fetch can't see — while the reload was
+        // still settling, or mid tool-dispatch. Never hand an already-aborted
+        // signal to a fetch: the round would hang waiting for an abort event
+        // that has already fired.
+        if (turnAbort.signal.aborted) break;
         const result = await runChatRound(
           working.id,
           liveMessages,
           tools,
+          turnAbort,
           cfg?.chat_template ?? null,
         );
         if (result.error === "aborted") {
@@ -655,9 +767,16 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           set({ chatError: result.error });
           break;
         }
+        // A stream that died AFTER emitting something was finalised as if it
+        // had completed — the thread showed a normal-looking reply and the
+        // only hint of the failure was a tooltip on the error banner. Mark it
+        // inline, but only when the turn actually ends here: with tool calls
+        // pending the loop runs on, and the marker would land on a message
+        // the model is still building.
+        const truncationError = result.toolCalls.length === 0 ? result.error : null;
         finalizeAssistant(
           working.id,
-          result.content,
+          truncationError ? withIncompleteNote(result.content, truncationError) : result.content,
           result.reasoning,
           result.tokens,
           result.tps,
@@ -806,6 +925,18 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           }
         }
 
+        // Cancelled while the tools ran — stop before adding a placeholder
+        // nothing will ever stream into.
+        if (turnAbort.signal.aborted) break;
+
+        if (round === MAX_TOOL_ROUNDS - 1) {
+          // Out of rounds with the model still calling tools. Appending the
+          // next placeholder here would leave a permanently empty assistant
+          // bubble — the loop is about to exit — so stop and say why instead.
+          hitToolCap = true;
+          break;
+        }
+
         const nextPlaceholder: StoredChatMessage = {
           role: "assistant",
           content: "",
@@ -826,8 +957,22 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
           ),
         }));
       }
+      if (hitToolCap) {
+        log.warn("chat", `tool-call round cap (${MAX_TOOL_ROUNDS}) reached — ending the turn`);
+        // appendToolMessage appends + persists any stored message; the notice
+        // rides in as an assistant turn so it reads as part of the reply
+        // rather than as another tool result.
+        appendToolMessage(working.id, {
+          role: "assistant",
+          content:
+            `⚠️ Stopped after ${MAX_TOOL_ROUNDS} tool-call rounds — the model kept calling tools ` +
+            `without finishing its reply, so this turn ended early. Send another message to ` +
+            `continue, or rephrase the request.`,
+          time: Date.now(),
+        });
+      }
     } finally {
-      set({ chatPending: false, chatStreamingId: null });
+      endTurn();
     }
   };
 
@@ -837,6 +982,7 @@ export const createChatSlice: StateCreator<AppStore, [], [], ChatSlice> = (set, 
     chatPending: false,
     chatStreamingId: null,
     chatError: null,
+    chatReloadingSince: null,
     _chatAbort: null,
 
     setChats: (chats) => set({ chats }),

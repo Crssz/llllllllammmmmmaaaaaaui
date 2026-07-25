@@ -47,7 +47,7 @@ export function BinaryLocator() {
 
   return (
     <div className="cfg-section binary-section">
-      <div className="cfg-section-head" style={{ cursor: "default" }}>
+      <h2 className="cfg-section-head" style={{ cursor: "default", margin: 0 }}>
         <I.Terminal size={14} />
         <span>llama.cpp build</span>
         {empty ? (
@@ -70,7 +70,7 @@ export function BinaryLocator() {
             {build.backend_badges.length ? ` · ${build.backend_badges[0]}` : ""}
           </span>
         )}
-      </div>
+      </h2>
 
       <div className="binary-body">
         <div className="bin-path">

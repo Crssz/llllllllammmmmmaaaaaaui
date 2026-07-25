@@ -160,6 +160,44 @@ a:focus-visible {
   white-space: nowrap;
 }
 
+/* Screen-reader-only utility: visually hides content while keeping it
+   available to assistive tech. Standard clip-rect implementation. */
+.sr-only,
+.sr-only-focusable:not(:focus):not(:focus-visible) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* Reveals a .sr-only-focusable element (e.g. a skip-link) once it receives
+   keyboard focus, instead of staying clipped like plain .sr-only. */
+.sr-only-focusable:focus,
+.sr-only-focusable:focus-visible {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  width: auto;
+  height: auto;
+  padding: 8px 14px;
+  margin: 0;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  z-index: 150;
+}
+
 /* ───────── App shell ───────── */
 .app {
   display: grid;
@@ -1687,6 +1725,12 @@ a:focus-visible {
   cursor: pointer;
   user-select: none;
 }
+/* The head is flush against .cfg-section's clipped (overflow:hidden) edges,
+   so the default outward outline gets cut off on the top/side edges when
+   tabbed to — pull it inward instead so it stays fully visible. */
+.cfg-section-head:focus-visible {
+  outline-offset: -2px;
+}
 .cfg-section-head .sec-icon {
   width: 16px;
   height: 16px;
@@ -1811,6 +1855,15 @@ a:focus-visible {
     0 0 0 1px var(--accent-line),
     0 2px 6px var(--accent-soft);
   cursor: grab;
+}
+/* The range input itself suppresses its outline (see outline: 0 above); ring
+   the thumb instead so keyboard focus stays visible without flashing on a
+   mouse-dragged click. */
+.slider input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 1px var(--accent-line),
+    0 0 0 4px var(--accent-soft),
+    0 2px 6px var(--accent-soft);
 }
 .slider .fill {
   position: absolute;
@@ -2160,6 +2213,12 @@ a:focus-visible {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--muted);
+}
+/* The input suppresses its own outline (outline: 0 below); ring the wrapper
+   on focus instead, mirroring .composer:focus-within. */
+.prof-search:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .prof-search input {
   flex: 1;
@@ -3135,6 +3194,16 @@ a:focus-visible {
   text-align: left;
   width: 100%;
 }
+/* Inner "view this run" control — .bench-run is a plain container so the
+   delete button (.rdel) can sit next to it as a separate tab stop. */
+.bench-run-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
 .bench-run:hover {
   background: var(--surface);
 }
@@ -3169,6 +3238,11 @@ a:focus-visible {
   flex-shrink: 0;
 }
 .bench-run:hover .rdel {
+  opacity: 1;
+}
+/* Reveal the delete control when either child receives keyboard focus, so
+   it's reachable without a mouse hover. */
+.bench-run:has(:focus-visible) .rdel {
   opacity: 1;
 }
 
@@ -3547,6 +3621,12 @@ a:focus-visible {
   gap: 10px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
+}
+/* .cmdk-input suppresses its own outline (outline: 0 below); give the row a
+   visible focused-element treatment instead, since the input is autofocused
+   the instant the palette opens. */
+.cmdk-input-row:focus-within {
+  border-bottom-color: var(--accent-line);
 }
 .cmdk-input-row svg {
   width: 16px;

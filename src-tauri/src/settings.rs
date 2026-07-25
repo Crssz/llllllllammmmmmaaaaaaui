@@ -5,6 +5,7 @@ use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::jsonstore;
 use crate::mcp::McpServerConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,24 +208,29 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
+/// Load persisted settings.
+///
+/// A missing file is a first run: log it and hand back `Settings::default()`.
+/// A file that exists but cannot be read or parsed is *not* — `jsonstore`
+/// renames it aside and the error names the quarantine path, so returning
+/// defaults here (which the next save would write over the top of) is exactly
+/// what must not happen.
 #[tauri::command]
 pub fn load_settings(app: AppHandle) -> Result<Settings, String> {
     let p = settings_path(&app)?;
-    if !p.exists() {
-        info!("settings: no existing file at {}", p.display());
-        return Ok(Settings::default());
-    }
-    let s = fs::read_to_string(&p).map_err(|e| {
-        error!("settings read failed: {e}");
-        format!("read: {e}")
-    })?;
-    let parsed: Settings = serde_json::from_str(&s).map_err(|e| {
-        error!("settings parse failed: {e}");
-        format!("parse: {e}")
-    })?;
+    let parsed: Settings = match jsonstore::load_json(&p) {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) => {
+            info!("settings: no existing file at {}", p.display());
+            return Ok(Settings::default());
+        }
+        Err(e) => {
+            error!("settings load failed: {e}");
+            return Err(e);
+        }
+    };
     info!(
-        "settings loaded ({} bytes, {} profiles, {} recent build dirs, {} recent models dirs)",
-        s.len(),
+        "settings loaded ({} profiles, {} recent build dirs, {} recent models dirs)",
         parsed.profiles.len(),
         parsed.recent_dirs.len(),
         parsed.models_recent.len(),
@@ -239,9 +245,11 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
         error!("settings encode failed: {e}");
         format!("encode: {e}")
     })?;
-    fs::write(&p, &s).map_err(|e| {
+    // Atomic: a crash mid-save must not leave a truncated settings.json, which
+    // would come back as corruption on the next launch.
+    jsonstore::atomic_write(&p, &s).map_err(|e| {
         error!("settings write failed: {e}");
-        format!("write: {e}")
+        e
     })?;
     debug!("settings saved ({} bytes)", s.len());
     Ok(())
@@ -290,6 +298,55 @@ mod tests {
         assert_eq!(decoded.hipfire_path, "C:/hipfire/hipfire.exe");
         assert_eq!(decoded.hipfire_flags["tag"], "qwen3.6:27b");
         assert_eq!(decoded.hipfire_flags["port"], 8090);
+    }
+
+    /// End-to-end over a real `settings.json`, at the store layer the commands
+    /// use (an `AppHandle` is unavailable in a unit test, so `settings_path`
+    /// is the only part not covered here).
+    #[test]
+    fn corrupt_settings_file_is_quarantined_and_missing_one_stays_silent() {
+        let dir = std::env::temp_dir().join(format!("lmst-settings-store-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+
+        // No file at all is a legitimate first run: no error, no quarantine.
+        assert!(jsonstore::load_json::<Settings>(&p).unwrap().is_none());
+        assert!(!dir.join("settings.corrupt-1.json").exists());
+
+        fs::write(&p, r#"{"build_dir": "C:/builds", "recent_"#).unwrap();
+        let err = jsonstore::load_json::<Settings>(&p).unwrap_err();
+        let saved = dir.join("settings.corrupt-1.json");
+        assert!(err.contains(&saved.display().to_string()), "got: {err}");
+        assert!(fs::read_to_string(&saved).unwrap().contains("C:/builds"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_survive_an_atomic_write_read_round_trip() {
+        let dir = std::env::temp_dir().join(format!("lmst-settings-rt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+
+        let s = Settings {
+            build_dir: Some("C:/builds".into()),
+            engine_kind: "hipfire".into(),
+            ..Settings::default()
+        };
+        jsonstore::atomic_write(&p, &serde_json::to_string_pretty(&s).unwrap()).unwrap();
+
+        let back: Settings = jsonstore::load_json(&p).unwrap().unwrap();
+        assert_eq!(back.build_dir.as_deref(), Some("C:/builds"));
+        assert_eq!(back.engine_kind, "hipfire");
+        let entries: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["settings.json".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

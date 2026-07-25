@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,8 +14,15 @@ use crate::build_scan::{quiet_command, resolve_bin_dir};
 use crate::util::{chrono_now_millis, lock_or_poisoned};
 
 pub struct ServerState {
-    pub child: Mutex<Option<Child>>,
-    pub info: Mutex<Option<RunningInfo>>,
+    /// The running engine child, if any. `Arc` so the per-spawn exit watcher
+    /// thread (see `start_server`) can hold the same slot the commands do: it
+    /// is the observer that distinguishes "the process died on its own" from
+    /// "we killed it", because `stop_server` takes the child OUT of this slot
+    /// while a crash leaves it in place for `try_wait` to reap.
+    pub child: Arc<Mutex<Option<Child>>>,
+    /// Metadata for whatever is in `child`. Shared with the exit watcher for
+    /// the same reason; always cleared in lockstep with `child`.
+    pub info: Arc<Mutex<Option<RunningInfo>>>,
     /// Flips to true once GET /health on the spawned server returns 200.
     pub ready: Arc<AtomicBool>,
     /// Bumped on every start_server / stop_server so an in-flight probe
@@ -36,8 +43,8 @@ pub struct ServerState {
 impl ServerState {
     pub fn new() -> Self {
         Self {
-            child: Mutex::new(None),
-            info: Mutex::new(None),
+            child: Arc::new(Mutex::new(None)),
+            info: Arc::new(Mutex::new(None)),
             ready: Arc::new(AtomicBool::new(false)),
             probe_gen: Arc::new(AtomicU64::new(0)),
             tree_kill: AtomicBool::new(false),
@@ -71,6 +78,76 @@ struct ServerLogEvent {
     stream: &'static str,
     pid: u32,
     line: String,
+}
+
+/// `server-exited` payload: the engine child we spawned ended without anyone
+/// asking it to (a model that doesn't fit, a driver abort, a bad flag). Emitted
+/// exactly once per spawned child — see `clear_after_exit` for how the two
+/// possible observers are serialised.
+///
+/// `code` is deliberately NOT the headline: llama-server returns 1 for every
+/// `failed to load model`, and a VRAM/driver abort on Windows surfaces as a
+/// large NTSTATUS, so neither number tells the user anything actionable. The
+/// frontend leads with the stderr tail it already collected from `server-log`
+/// and treats these two fields as a footnote.
+#[derive(Debug, Clone, Serialize)]
+struct ServerExitedEvent {
+    pid: u32,
+    code: Option<i32>,
+    /// Platform description of how the process ended ("exit code: 1",
+    /// "signal: 9 (SIGKILL)"), or why we couldn't tell.
+    status: String,
+}
+
+/// `server-probe-timeout` payload: the child is still ALIVE but never answered
+/// `/health` before `probe_timeout`'s deadline. Without this the readiness dot
+/// stays yellow forever and the only trace is a `warn!` in the backend log.
+#[derive(Debug, Clone, Serialize)]
+struct ServerProbeTimeoutEvent {
+    pid: u32,
+    port: u16,
+    timeout_secs: u64,
+}
+
+/// Reduce an observed exit outcome to the `(code, description)` pair
+/// `server-exited` carries. The `Err` case is a `try_wait` failure: the child
+/// is untrackable from here on, so we report it as gone but can't say how it
+/// ended.
+fn exit_summary(observed: &Result<ExitStatus, std::io::Error>) -> (Option<i32>, String) {
+    match observed {
+        Ok(status) => (status.code(), status.to_string()),
+        Err(e) => (None, format!("exit status unavailable: {e}")),
+    }
+}
+
+/// Clear every trace of a child that is gone.
+///
+/// MUST be called while holding the `state.child` guard (handed in as
+/// `child_slot`). Bumping `probe_gen` before that guard is released is what
+/// makes the Some → None transition observable exactly once: both possible
+/// observers (the per-spawn exit watcher and `server_status`'s safety net)
+/// re-check the generation under this same lock, so the loser finds an empty
+/// slot / a moved generation and backs off silently instead of announcing a
+/// second exit for the same child.
+fn clear_after_exit(
+    child_slot: &mut Option<Child>,
+    info_slot: &mut Option<RunningInfo>,
+    ready: &AtomicBool,
+    probe_gen: &AtomicU64,
+) {
+    *child_slot = None;
+    *info_slot = None;
+    ready.store(false, Ordering::SeqCst);
+    probe_gen.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Announce an unexpected child exit to the frontend. Call AFTER releasing the
+/// state locks, and only from the observer that actually cleared the slots via
+/// `clear_after_exit`.
+fn announce_child_exit(app: &AppHandle, pid: u32, observed: Result<ExitStatus, std::io::Error>) {
+    let (code, status) = exit_summary(&observed);
+    warn!("server-exited: pid {pid} ended on its own ({status})");
+    let _ = app.emit("server-exited", ServerExitedEvent { pid, code, status });
 }
 
 /// Single-shot probe: TCP connect + raw GET /health, read the full response
@@ -165,7 +242,9 @@ fn health_response_indicates_ready(buf: &[u8]) -> bool {
         return true;
     }
     match serde_json::from_slice::<serde_json::Value>(&body[s..=e]) {
-        Ok(serde_json::Value::Object(map)) => !matches!(map.get("model"), Some(serde_json::Value::Null)),
+        Ok(serde_json::Value::Object(map)) => {
+            !matches!(map.get("model"), Some(serde_json::Value::Null))
+        }
         _ => true, // unparseable — keep today's semantics
     }
 }
@@ -345,7 +424,11 @@ fn resolve_hipfire_bin_with_env(
     // (c) fall back to hipfire's own canonical install location, in case the
     // installer didn't (or couldn't) put it on PATH.
     if let Some(home) = home_var {
-        let fallback_name = if cfg!(windows) { "hipfire.cmd" } else { "hipfire" };
+        let fallback_name = if cfg!(windows) {
+            "hipfire.cmd"
+        } else {
+            "hipfire"
+        };
         let fallback = PathBuf::from(home)
             .join(".hipfire")
             .join("bin")
@@ -404,7 +487,9 @@ fn parse_local_model_line(line: &str) -> Option<HipfireLocalModel> {
     if !line.starts_with(' ') {
         return None;
     }
-    let mut parts = line.trim().split_whitespace();
+    // `split_whitespace` already skips the leading indent this function just
+    // asserted on, so no `trim()` first (clippy::trim_split_whitespace).
+    let mut parts = line.split_whitespace();
     let file = parts.next()?.to_string();
     let size = parts.next()?.to_string();
     let rest: String = parts.collect::<Vec<_>>().join(" ");
@@ -460,7 +545,9 @@ pub fn parse_hipfire_list(output: &str) -> Vec<HipfireLocalModel> {
 /// settings-persistence write and the server-status poll among them — for
 /// each keystroke's ~100ms process spawn.
 #[tauri::command]
-pub async fn list_hipfire_models(explicit: Option<String>) -> Result<Vec<HipfireLocalModel>, String> {
+pub async fn list_hipfire_models(
+    explicit: Option<String>,
+) -> Result<Vec<HipfireLocalModel>, String> {
     let bin = resolve_hipfire_bin(explicit.as_deref().unwrap_or(""))?;
     let work_dir = bin
         .parent()
@@ -692,16 +779,36 @@ pub fn start_server(
     let ready = state.ready.clone();
     let probe_gen = state.probe_gen.clone();
     let probe_port = server_info.port;
+    let probe_pid = server_info.pid;
+    let probe_app = app.clone();
     let hipfire_probe = exe_path.is_some();
     std::thread::spawn(move || {
-        let deadline = probe_timeout(hipfire_probe).map(|d| std::time::Instant::now() + d);
+        let timeout = probe_timeout(hipfire_probe);
+        let deadline = timeout.map(|d| std::time::Instant::now() + d);
         loop {
             if probe_gen.load(Ordering::SeqCst) != gen {
                 debug!("health-probe: generation changed, exiting");
                 return;
             }
             if deadline.is_some_and(|d| std::time::Instant::now() > d) {
-                warn!("health-probe: timed out after 10m without 200 OK");
+                // A process that spawned, stayed alive, and never became ready
+                // used to end here with nothing but this warn! — leaving the
+                // readiness dot yellow forever. Tell the frontend so it can
+                // surface the same banner/toast a crash gets. The child is NOT
+                // killed: a slow load is still a plausible explanation, so the
+                // user decides.
+                let timeout_secs = timeout.map_or(0, |d| d.as_secs());
+                warn!(
+                    "health-probe: pid {probe_pid} never reported ready on port {probe_port} within {timeout_secs}s"
+                );
+                let _ = probe_app.emit(
+                    "server-probe-timeout",
+                    ServerProbeTimeoutEvent {
+                        pid: probe_pid,
+                        port: probe_port,
+                        timeout_secs,
+                    },
+                );
                 return;
             }
             if probe_health(probe_port) {
@@ -714,6 +821,62 @@ pub fn start_server(
             std::thread::sleep(Duration::from_millis(300));
         }
     });
+
+    // Watch for an exit nobody asked for. Sits here (rather than beside the log
+    // pumps) only because it reuses the probe generation computed just above.
+    //
+    // This thread — not the status poll — is the authority on "the engine died
+    // on its own", because it is the only observer that can tell that apart
+    // from a stop WE performed: `stop_server` and the window-close handler take
+    // the child OUT of the slot, so this thread finds `None` and stays silent,
+    // while a crash leaves the child in place for `try_wait` to reap. That is
+    // also why the exit does NOT ride on the `server_status` response: two
+    // independent frontend callers poll that command (the status poller and
+    // `waitForServerReady`), and a one-shot field would be consumed by
+    // whichever ticked first and lost for the other — exactly during a
+    // reload-then-send, when a crash is most likely. As a bonus, detection
+    // latency drops from up to 2s (the status poll's idle interval) to 200ms.
+    {
+        let watch_app = app.clone();
+        let watch_child = state.child.clone();
+        let watch_info = state.info.clone();
+        let watch_ready = state.ready.clone();
+        let watch_gen = state.probe_gen.clone();
+        let watch_pid = server_info.pid;
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(200));
+                if watch_gen.load(Ordering::SeqCst) != gen {
+                    debug!("exit-watch (pid {watch_pid}): generation changed, exiting");
+                    return;
+                }
+                let mut child_slot = lock_or_poisoned(&watch_child);
+                // Re-check under the lock. Every transition of this slot
+                // (stop_server, a fresh start_server, server_status reaping a
+                // dead child) bumps `probe_gen` before releasing this guard, so
+                // a generation that still matches here proves the child in the
+                // slot is ours and that nobody else has reaped it.
+                if watch_gen.load(Ordering::SeqCst) != gen {
+                    return;
+                }
+                let Some(child) = child_slot.as_mut() else {
+                    debug!("exit-watch (pid {watch_pid}): child was taken — a stop we asked for");
+                    return;
+                };
+                let observed = match child.try_wait() {
+                    Ok(None) => continue,
+                    Ok(Some(status)) => Ok(status),
+                    Err(e) => Err(e),
+                };
+                let mut info_slot = lock_or_poisoned(&watch_info);
+                clear_after_exit(&mut child_slot, &mut info_slot, &watch_ready, &watch_gen);
+                drop(info_slot);
+                drop(child_slot);
+                announce_child_exit(&watch_app, watch_pid, observed);
+                return;
+            }
+        });
+    }
 
     Ok(server_info)
 }
@@ -738,37 +901,50 @@ pub fn stop_server(state: State<'_, ServerState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Plain status query. Its RESPONSE shape is unchanged and carries no exit
+/// information on purpose — two independent frontend callers poll this command
+/// (the background status poller and `waitForServerReady`), so a one-shot exit
+/// field would be consumed by whichever ticked first and lost for the other.
+/// Unexpected exits travel on the `server-exited` event instead.
+///
+/// The `try_wait` reap below is now only a safety net behind the per-spawn exit
+/// watcher `start_server` starts. Whichever of the two wins the `child` lock
+/// performs the whole transition (clear + bump generation + announce) and the
+/// loser finds an empty slot, so the frontend still sees exactly one
+/// `server-exited` per child.
 #[tauri::command]
-pub fn server_status(state: State<'_, ServerState>) -> ServerStatus {
+pub fn server_status(app: AppHandle, state: State<'_, ServerState>) -> ServerStatus {
     let mut child_slot = lock_or_poisoned(&state.child);
     let mut info_slot = lock_or_poisoned(&state.info);
-    if let Some(child) = child_slot.as_mut() {
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                *child_slot = None;
-                *info_slot = None;
-                state.ready.store(false, Ordering::SeqCst);
-                state.probe_gen.fetch_add(1, Ordering::SeqCst);
-                return ServerStatus {
-                    running: false,
-                    ready: false,
-                    info: None,
-                };
-            }
-            Ok(None) => {}
-            Err(_) => {
-                *child_slot = None;
-                *info_slot = None;
-                state.ready.store(false, Ordering::SeqCst);
-                state.probe_gen.fetch_add(1, Ordering::SeqCst);
-                return ServerStatus {
-                    running: false,
-                    ready: false,
-                    info: None,
-                };
-            }
+    let observed = match child_slot.as_mut() {
+        None => {
+            return ServerStatus {
+                running: false,
+                ready: false,
+                info: None,
+            };
         }
-    } else {
+        Some(child) => match child.try_wait() {
+            Ok(None) => None,
+            Ok(Some(status)) => Some(Ok(status)),
+            // try_wait itself failed: we can no longer track this child, so
+            // treat it as gone rather than reporting a server that will never
+            // answer again. This branch used to clear the slots silently — it
+            // now announces like any other unexpected exit.
+            Err(e) => Some(Err(e)),
+        },
+    };
+    if let Some(observed) = observed {
+        let pid = info_slot.as_ref().map_or(0, |i| i.pid);
+        clear_after_exit(
+            &mut child_slot,
+            &mut info_slot,
+            &state.ready,
+            &state.probe_gen,
+        );
+        drop(info_slot);
+        drop(child_slot);
+        announce_child_exit(&app, pid, observed);
         return ServerStatus {
             running: false,
             ready: false,
@@ -933,7 +1109,11 @@ mod tests {
         // stays deterministic regardless of the host machine.
         let dir = std::env::temp_dir().join("lm-st-test-hipfire-path-dir");
         std::fs::create_dir_all(&dir).expect("mkdir temp path dir");
-        let shim_name = if cfg!(windows) { "hipfire.cmd" } else { "hipfire" };
+        let shim_name = if cfg!(windows) {
+            "hipfire.cmd"
+        } else {
+            "hipfire"
+        };
         let shim = dir.join(shim_name);
         std::fs::write(&shim, b"stub").expect("write fake shim");
 
@@ -952,7 +1132,11 @@ mod tests {
         let home = std::env::temp_dir().join("lm-st-test-hipfire-home");
         let bin_dir = home.join(".hipfire").join("bin");
         std::fs::create_dir_all(&bin_dir).expect("mkdir synthetic home bin dir");
-        let shim_name = if cfg!(windows) { "hipfire.cmd" } else { "hipfire" };
+        let shim_name = if cfg!(windows) {
+            "hipfire.cmd"
+        } else {
+            "hipfire"
+        };
         let shim = bin_dir.join(shim_name);
         std::fs::write(&shim, b"stub").expect("write fake shim");
 
@@ -1080,5 +1264,85 @@ mod tests {
         assert!(needs_tree_kill(&Some(
             "C:/Users/pay20/.hipfire/bin/hipfire.cmd".to_string()
         )));
+    }
+
+    // ── unexpected-exit plumbing ─────────────────────────────────────────
+
+    #[test]
+    fn exit_summary_reports_the_code_and_a_description_for_a_real_exit() {
+        let mut cmd = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "exit 3"]);
+            c
+        } else {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "exit 3"]);
+            c
+        };
+        let status = cmd.status().expect("spawn a trivial process");
+        let (code, description) = exit_summary(&Ok(status));
+        assert_eq!(code, Some(3));
+        assert!(
+            !description.is_empty(),
+            "the description is the banner's footnote — never blank"
+        );
+    }
+
+    #[test]
+    fn exit_summary_has_no_code_when_the_status_could_not_be_read() {
+        // The `try_wait` Err branch: the child is gone as far as we're
+        // concerned, but the OS wouldn't say how it ended.
+        let (code, description) = exit_summary(&Err(std::io::Error::other("boom")));
+        assert_eq!(code, None);
+        assert!(description.contains("boom"));
+    }
+
+    #[test]
+    fn clear_after_exit_empties_both_slots_and_bumps_the_probe_generation() {
+        let state = ServerState::default();
+        *lock_or_poisoned(&state.info) = Some(RunningInfo {
+            pid: 7,
+            port: 8080,
+            started_at: 1,
+            binary: "llama-server".into(),
+        });
+        state.ready.store(true, Ordering::SeqCst);
+        let before = state.probe_gen.load(Ordering::SeqCst);
+
+        let mut child_slot = lock_or_poisoned(&state.child);
+        let mut info_slot = lock_or_poisoned(&state.info);
+        clear_after_exit(
+            &mut child_slot,
+            &mut info_slot,
+            &state.ready,
+            &state.probe_gen,
+        );
+
+        assert!(child_slot.is_none());
+        assert!(info_slot.is_none());
+        assert!(!state.ready.load(Ordering::SeqCst));
+        // The generation bump is what makes the losing observer back off
+        // instead of announcing a second exit for the same child.
+        assert_eq!(state.probe_gen.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn server_state_child_and_info_are_shareable_with_the_exit_watcher() {
+        // The watcher thread holds the same slots the commands do; a plain
+        // `Mutex` field could not be handed to it.
+        let state = ServerState::default();
+        let child = state.child.clone();
+        let info = state.info.clone();
+        *lock_or_poisoned(&info) = Some(RunningInfo {
+            pid: 11,
+            port: 9090,
+            started_at: 2,
+            binary: "x".into(),
+        });
+        assert!(lock_or_poisoned(&child).is_none());
+        assert_eq!(
+            lock_or_poisoned(&state.info).as_ref().map(|i| i.pid),
+            Some(11)
+        );
     }
 }

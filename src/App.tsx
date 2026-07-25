@@ -80,11 +80,17 @@ function TopBar({
   pickerOpen: boolean;
   setPickerOpen: (v: boolean) => void;
 }>) {
-  const { server, flags, stopServer } = useAppStore(
+  const { server, flags, stopServer, chatPending, chatStreamingId } = useAppStore(
     useShallow((s) => ({
       server: s.server,
       flags: s.flags,
       stopServer: s.stopServer,
+      // Stopping the server tears down the process a reply streams through —
+      // these two are read only to warn first, the same pair (and the same
+      // reason) ModelLibraryOverlay's load buttons read. pending covers the
+      // pre-first-token window, streamingId the reply already arriving.
+      chatPending: s.chatPending,
+      chatStreamingId: s.chatStreamingId,
       // Subscribed only so this re-renders when activeEngine()/
       // activeModelLabel() (below) would resolve differently — read fresh
       // via useAppStore.getState() further down, not consumed by name here.
@@ -92,6 +98,7 @@ function TopBar({
       loadedEngine: s.loadedEngine,
     })),
   );
+  const { confirmElement, confirm } = useConfirm();
   // A RUNNING server wins over the Configure toggle (activeEngine falls back
   // to the toggle only while nothing's up) — this top bar always names/
   // identifies what's actually serving, not just what would launch next.
@@ -102,6 +109,25 @@ function TopBar({
   // Three states: stopped (muted), running-but-loading (yellow), ready (green).
   let dotColor = "var(--muted)";
   if (server.running) dotColor = server.ready ? "var(--green)" : "var(--yellow)";
+
+  // The same defect the library overlay's loads were fixed for: killing the
+  // server aborts whatever reply is streaming, and that reached the user as a
+  // bare chat error with nothing tying it to the button they had just pressed.
+  // Warn before anything is stopped, so declining leaves the stream running.
+  // Wording deliberately mirrors ModelLibraryOverlay's confirmStreamInterrupt —
+  // one concept, one phrasing.
+  const onStopServer = async () => {
+    if (chatPending || chatStreamingId) {
+      const ok = await confirm({
+        title: "A reply is still streaming",
+        body: "Stopping the server will stop that reply where it is.",
+        confirmLabel: "Stop anyway",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    await stopServer();
+  };
 
   return (
     <div className="topbar">
@@ -170,7 +196,7 @@ function TopBar({
           className="iconbtn"
           title={server.running ? `Stop ${engineName}` : "Server stopped"}
           disabled={!server.running}
-          onClick={() => stopServer().catch(() => {})}
+          onClick={() => onStopServer().catch(() => {})}
           style={{ opacity: server.running ? 1 : 0.4 }}
         >
           <I.Eject />
@@ -179,6 +205,7 @@ function TopBar({
           <I.Settings />
         </button>
       </div>
+      {confirmElement}
     </div>
   );
 }

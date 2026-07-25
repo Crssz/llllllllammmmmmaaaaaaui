@@ -63,6 +63,23 @@ describe("buildArgs", () => {
     expect(args[args.indexOf("--port") + 1]).toBe("8080");
   });
 
+  it("omits --port entirely when the port is blank", () => {
+    const args = buildArgs(baseVals({ port: "" }));
+    expect(args).not.toContain("--port");
+  });
+
+  it("emits --port with its value adjacent when set", () => {
+    const args = buildArgs(baseVals({ port: "8081" }));
+    const i = args.indexOf("--port");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe("8081");
+  });
+
+  it("omits --host entirely when the host is blank", () => {
+    const args = buildArgs(baseVals({ host: "" }));
+    expect(args).not.toContain("--host");
+  });
+
   it("includes --model when set", () => {
     const args = buildArgs(baseVals({ model: "/path/to/model.gguf" }));
     const idx = args.indexOf("--model");

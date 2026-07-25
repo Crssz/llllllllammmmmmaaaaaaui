@@ -68,7 +68,18 @@ export const createBenchSlice: StateCreator<AppStore, [], [], BenchSlice> = (set
       log.info("bench", `loaded ${runs.length} saved run${runs.length === 1 ? "" : "s"}`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      log.warn("bench", "bench runs not loaded (likely first run)", { error: msg });
+      // `load_bench_runs` returns an EMPTY history for a missing file, so this
+      // is never "likely first run" as it used to claim — it is always a real
+      // bench_runs.json we failed to read. `jsonstore` has moved it aside by
+      // now and the error names where it went, so the history survives even
+      // though this session starts empty; the user still has to be told.
+      log.notify(
+        "error",
+        "bench",
+        `bench_runs.json could not be read (${msg}). Your saved benchmark history is not ` +
+          `shown this session.`,
+        { error: msg },
+      );
     }
   },
 

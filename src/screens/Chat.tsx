@@ -29,6 +29,7 @@ export function ChatScreen() {
   const {
     chatPending,
     chatStreamingId,
+    chatReloadingSince,
     chatError,
     sendChat,
     cancelChat,
@@ -56,6 +57,7 @@ export function ChatScreen() {
     useShallow((s) => ({
       chatPending: s.chatPending,
       chatStreamingId: s.chatStreamingId,
+      chatReloadingSince: s.chatReloadingSince,
       chatError: s.chatError,
       sendChat: s.sendChat,
       cancelChat: s.cancelChat,
@@ -295,7 +297,28 @@ export function ChatScreen() {
   // llama identifies itself by GGUF path (basenamed for display); hipfire has
   // no --model flag — its identity IS the configured tag, shown as-is.
   const modelName = modelLabel == null ? "no model" : isHipfireActive ? modelLabel : basename(modelLabel);
-  const canSend = server.ready && modelLabel != null;
+
+  // Whose turn is in flight. chatPending alone can't answer that — it's a
+  // single global flag — so every per-chat control keys off chatStreamingId
+  // instead: the composer of a chat that ISN'T streaming must show Send and
+  // take input, not a Stop button wired to some other chat's stream.
+  const streamingHere = chatPending && chatStreamingId === (currentChat?.id ?? null);
+  const otherChatStreaming = chatPending && !streamingHere;
+  // A pre-turn server restart (the config changed on Configure since the model
+  // was loaded, so the next send reloads the engine first). Can run for
+  // minutes — see chatReloadingSince in chatSlice.
+  const restarting = chatReloadingSince != null;
+  const restartingHere = restarting && streamingHere;
+  // Clamped: nowTick only starts ticking once chatPending flips on, so its
+  // first value can predate the restart by however long the app sat idle.
+  const restartElapsedS =
+    chatReloadingSince == null ? 0 : Math.max(0, (nowTick - chatReloadingSince) / 1000);
+
+  // `restarting` keeps the composer alive through a reload the user's own send
+  // kicked off: server.ready is false for its whole duration, which used to
+  // grey the textarea out and swap in "Start the server on Configure first…"
+  // — while the server was mid-restart precisely because they pressed Enter.
+  const canSend = (server.ready && modelLabel != null) || restarting;
 
   // Fold the status-dot meaning into the model badge's tooltip so the colored
   // dot has a legend: ready (green) / loading (yellow) / stopped (muted).
@@ -488,14 +511,10 @@ export function ChatScreen() {
               return <SystemMessage key={key} m={m} i={i} menuItems={rawMessageMenuItems} />;
             }
             const isLast = i === chatMessages.length - 1;
-            // Guard on chatStreamingId, not just chatPending: another chat
-            // may be the one streaming while this one's last message is also
-            // an assistant reply.
-            const streaming =
-              chatPending &&
-              chatStreamingId === currentChat?.id &&
-              isLast &&
-              m.role === "assistant";
+            // streamingHere guards on chatStreamingId, not just chatPending:
+            // another chat may be the one streaming while this one's last
+            // message is also an assistant reply.
+            const streaming = streamingHere && isLast && m.role === "assistant";
             const elapsedS = streaming ? (nowTick - m.time) / 1000 : 0;
             return (
               <ChatMessage
@@ -520,6 +539,44 @@ export function ChatScreen() {
             );
           })}
 
+          {/* The send is committed but the engine is restarting to pick up the
+              new config. Deliberately unlike the streaming indicator (yellow,
+              its own row, an explicit Cancel): this can last minutes, and it
+              is NOT the model working on an answer. */}
+          {restartingHere && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 12px",
+                background: "var(--yellow-soft)",
+                border: "1px solid oklch(0.62 0.13 85 / 0.45)",
+                borderRadius: "var(--radius)",
+                color: "var(--yellow)",
+                fontSize: 12.5,
+              }}
+            >
+              <span className="phase-dot" style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                Applying new config — restarting {isHipfireActive ? "hipfire" : "llama-server"}…{" "}
+                <span className="mono">{restartElapsedS.toFixed(1)}s</span>
+                <span style={{ color: "var(--muted)" }}>
+                  {" "}
+                  · your message is saved above and sends as soon as it&apos;s back
+                </span>
+              </span>
+              <button
+                className="btn ghost"
+                style={{ padding: "3px 8px", color: "var(--yellow)", flexShrink: 0 }}
+                onClick={cancelChat}
+                title="Stop waiting for the restart and cancel this send"
+              >
+                <I.Stop size={11} /> Cancel
+              </button>
+            </div>
+          )}
+
           {!atBottom && (
             <button
               className="btn"
@@ -540,7 +597,7 @@ export function ChatScreen() {
             <div
               style={{
                 display: "flex",
-                alignItems: "center",
+                alignItems: "flex-start",
                 gap: 8,
                 padding: "8px 12px",
                 background: "var(--red-soft)",
@@ -550,16 +607,26 @@ export function ChatScreen() {
                 fontSize: 12.5,
               }}
             >
-              <I.Info size={13} style={{ flexShrink: 0 }} />
-              {/* Concise on-screen label — the detailed error stays in the
-                  assistant bubble (chatSlice writes "⚠️ <error>") so it isn't
-                  read twice; the full string is still available on hover. */}
-              <span style={{ flex: 1, cursor: "help" }} title={chatError}>
-                The last response ran into an error.
+              <I.Info size={13} style={{ flexShrink: 0, marginTop: 2 }} />
+              {/* The error text itself, on screen. It used to be reachable
+                  only by hovering a generic "ran into an error" line — which
+                  hid the one thing that says what to do next, and said nothing
+                  at all for failures with no assistant bubble to fall back on
+                  (a restart that never came back, a stream that died partway). */}
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  lineHeight: 1.5,
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {chatError}
               </span>
               <button
                 className="btn ghost"
-                style={{ padding: "3px 8px", color: "var(--red)" }}
+                style={{ padding: "3px 8px", color: "var(--red)", flexShrink: 0 }}
                 onClick={retryLastTurn}
                 disabled={chatPending || precedingUserIdx(chatMessages, chatMessages.length) < 0}
                 title="Retry the last turn"
@@ -568,7 +635,7 @@ export function ChatScreen() {
               </button>
               <button
                 className="btn ghost"
-                style={{ padding: "3px 6px", color: "var(--red)" }}
+                style={{ padding: "3px 6px", color: "var(--red)", flexShrink: 0 }}
                 onClick={() => setChatError(null)}
                 title="Dismiss"
               >
@@ -581,7 +648,9 @@ export function ChatScreen() {
         <Composer
           chatId={currentChat?.id}
           canSend={canSend}
-          chatPending={chatPending}
+          chatPending={streamingHere}
+          otherChatStreaming={otherChatStreaming}
+          restarting={restarting}
           server={server}
           onSend={(text, audio, image) => {
             sendChat(text, audio, image).catch(() => {});

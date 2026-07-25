@@ -2,10 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { I } from "../icons";
 import { useAppStore } from "../state";
 import { useShallow } from "zustand/react/shallow";
+import { argvEqual } from "../state/slices/serverSlice";
 import { api, type GgufInfo, type HipfireLocalModel } from "../lib/api";
-import { ExpandedRow, bitsClass, flatten, type FlatRow } from "../screens/Models";
+import {
+  ExpandedRow,
+  bitsClass,
+  flatten,
+  llamaLoadedModel,
+  rowAction,
+  type FlatRow,
+  type RowAction,
+} from "../screens/Models";
 import { useContextMenu, type MenuItem } from "./ContextMenu";
+import { useConfirm } from "./ConfirmDialog";
 import { quantDescription } from "../lib/quant";
+import { buildArgs } from "../lib/buildArgs";
 
 type SortBy = "recent" | "size" | "name";
 
@@ -46,6 +57,9 @@ export function ModelLibraryOverlay({
     setEngineKind,
     setHipfireFlag,
     loadedEngine,
+    loadedArgs,
+    chatPending,
+    chatStreamingId,
     hipfireModelsVersion,
   } = useAppStore(
     useShallow((s) => ({
@@ -69,6 +83,15 @@ export function ModelLibraryOverlay({
       // vice versa isn't needed: the llama branch's own `server.running`
       // check stays untouched to keep the llama path byte-identical).
       loadedEngine: s.loadedEngine,
+      // The exact argv the running server was launched with — the only honest
+      // source for "this row is the one that's live" and for whether the flags
+      // on screen have drifted since. Same pair Models.tsx reads.
+      loadedArgs: s.loadedArgs,
+      // A load restarts the server, which aborts an in-flight reply — these two
+      // are read only to warn first (defect: the abort surfaced as a bare
+      // error with no hint the user's own click caused it).
+      chatPending: s.chatPending,
+      chatStreamingId: s.chatStreamingId,
       // Bumped store-side after a successful pull elsewhere (e.g. Configure's
       // HipfirePullPanel) — re-fetching on it means a model pulled while this
       // overlay isn't even open shows up without a manual refresh click.
@@ -80,6 +103,7 @@ export function ModelLibraryOverlay({
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const openMenu = useContextMenu();
+  const { confirmElement, confirm } = useConfirm();
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortBy>("recent");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -134,17 +158,20 @@ export function ModelLibraryOverlay({
   useEffect(() => {
     if (!open) return;
     const onDocMouseDown = (e: MouseEvent) => {
-      // Ignore clicks inside a context menu spawned from this overlay — the
-      // menu is rendered at the app root, outside panelRef. (`Element`, not
-      // `HTMLElement`: the click target may be an SVG icon inside the menu.)
-      if (e.target instanceof Element && e.target.closest(".ctx-menu")) return;
+      // Ignore clicks inside a context menu spawned from this overlay, or
+      // inside the confirm dialog — both render outside panelRef (the menu at
+      // the app root, the <dialog> in the top layer), and closing the overlay
+      // under the dialog would unmount it with its promise still pending.
+      // (`Element`, not `HTMLElement`: the target may be an SVG icon inside.)
+      if (e.target instanceof Element && e.target.closest(".ctx-menu, .confirm-card")) return;
       if (panelRef.current && e.target instanceof Node && !panelRef.current.contains(e.target)) {
         onClose();
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      // While a context menu is open, Escape should close only the menu.
-      if (e.key === "Escape" && !document.querySelector(".ctx-menu")) onClose();
+      // While a context menu or the confirm dialog is open, Escape should
+      // close only that layer.
+      if (e.key === "Escape" && !document.querySelector(".ctx-menu, .confirm-card")) onClose();
     };
     globalThis.addEventListener("mousedown", onDocMouseDown);
     globalThis.addEventListener("keydown", onKey);
@@ -193,6 +220,19 @@ export function ModelLibraryOverlay({
     return list;
   }, [hipfireModels, q, sort]);
 
+  // What the server is genuinely running, as opposed to what's merely selected
+  // (same derivation as the Models tab). Null unless a llama server we launched
+  // ourselves is up: an adopted server (loadedEngine/loadedArgs null) or a
+  // running hipfire daemon says nothing about which GGUF is resident, so no row
+  // may claim to be it.
+  const runningModel =
+    server.running && loadedEngine === "llama" ? llamaLoadedModel(loadedArgs) : null;
+  // Whether restarting right now would relaunch the running server unchanged —
+  // the same argv diff reloadIfStale performs, so "loaded" means exactly "a
+  // chat would not force a reload".
+  const pendingArgs = useMemo(() => buildArgs(flags), [flags]);
+  const configMatchesRunning = !!loadedArgs && argvEqual(pendingArgs, loadedArgs);
+
   if (!open) return null;
 
   // Loaded/selected identity — llama keys off the GGUF path (flags.model);
@@ -218,35 +258,58 @@ export function ModelLibraryOverlay({
     });
   };
 
-  const doLoad = (p: string, andClose = true) => {
+  // Every load below restarts the server, and that restart aborts whatever
+  // reply is streaming at that moment — which reached the user as a bare chat
+  // error, with nothing tying it to the button they had just pressed. Warn
+  // before the stream is destroyed, and warn before anything else is touched,
+  // so declining leaves the selection AND the stream exactly as they were.
+  // Both chatPending and chatStreamingId are checked: pending covers the
+  // pre-first-token window, streamingId the reply already arriving.
+  const confirmStreamInterrupt = async (): Promise<boolean> => {
+    if (!chatPending && !chatStreamingId) return true;
+    return confirm({
+      title: "A reply is still streaming",
+      body: "Loading a different model restarts the server, which will stop that reply where it is.",
+      confirmLabel: "Load anyway",
+      danger: true,
+    });
+  };
+
+  const doLoad = async (p: string, andClose = true) => {
+    if (!(await confirmStreamInterrupt())) return;
     loadModelPath(p);
     if (andClose) onClose();
     // Switch to the picked model and restart the server so it's live
     // immediately — stops a running server first, then starts with the new
     // model (or just starts it if it was stopped).
-    reloadServer().catch(() => {});
+    await reloadServer();
   };
 
   // hipfire equivalent of doLoad: writes hipfire_flags.tag (the same update
   // path Configure's HipfireModelPicker uses) instead of flags.model, then
   // reloads exactly like the llama pick does.
-  const doLoadHipfire = (tag: string, andClose = true) => {
+  const doLoadHipfire = async (tag: string, andClose = true) => {
+    if (!(await confirmStreamInterrupt())) return;
     setHipfireFlag("tag", tag);
     if (andClose) onClose();
-    reloadServer().catch(() => {});
+    await reloadServer();
   };
 
-  const rowMenuItems = (r: FlatRow, isLoaded: boolean): MenuItem[] => [
+  // Same split as the row button: what the menu offers comes from `act` (which
+  // knows what the server is actually running), while "set as model" is the
+  // only entry the mere selection can disable. Keying the load entry off the
+  // selection is what left it greyed out with the server stopped.
+  const rowMenuItems = (r: FlatRow, act: RowAction, isSelected: boolean): MenuItem[] => [
     {
-      label: "Load & restart server",
+      label: act.verb === "Start" ? "Start server with this model" : "Load & restart server",
       icon: "Play",
-      disabled: isLoaded,
-      onClick: () => doLoad(r.quant.path, true),
+      disabled: act.disabled,
+      onClick: () => doLoad(r.quant.path, true).catch(() => {}),
     },
     {
       label: "Set as model (no restart)",
       icon: "Check",
-      disabled: isLoaded,
+      disabled: isSelected,
       onClick: () => loadModelPath(r.quant.path),
     },
     {
@@ -271,6 +334,7 @@ export function ModelLibraryOverlay({
 
   return (
     <>
+      {confirmElement}
       {/* dim backdrop */}
       <div
         style={{
@@ -590,7 +654,7 @@ export function ModelLibraryOverlay({
                       <button
                         className="btn"
                         style={{ padding: "3px 9px" }}
-                        onClick={() => doLoadHipfire(m.tag, true)}
+                        onClick={() => doLoadHipfire(m.tag, true).catch(() => {})}
                         disabled={isServing}
                         title={isServing ? "Already selected" : "Serve this tag & restart the server"}
                       >
@@ -630,7 +694,19 @@ export function ModelLibraryOverlay({
             <div className="model-table" style={{ border: 0, borderRadius: 0 }}>
               {rows.map((r) => {
                 const key = r.quant.path;
-                const isLoaded = key === loadedKey;
+                const isSelected = key === loadedKey;
+                // "Running this" is what the server is actually serving;
+                // "selected" is only what the next launch would use. Keeping
+                // them apart is what lets the button below offer Start on a
+                // stopped server instead of a dead disabled "Loaded".
+                const isRunningThis = key === runningModel;
+                const configMatches = isRunningThis && configMatchesRunning;
+                const act = rowAction({
+                  isSelected,
+                  isRunningThis,
+                  configMatches,
+                  serverRunning: server.running,
+                });
                 const isExpanded = expandedKey === key;
                 const info = rowInfo[key];
                 const archLabel =
@@ -642,10 +718,10 @@ export function ModelLibraryOverlay({
                     <div
                       className={
                         "model-row" +
-                        (isLoaded ? " loaded-row" : "") +
+                        (isSelected ? " loaded-row" : "") +
                         (isExpanded ? " active" : "")
                       }
-                      onContextMenu={(e) => openMenu(e, rowMenuItems(r, isLoaded))}
+                      onContextMenu={(e) => openMenu(e, rowMenuItems(r, act, isSelected))}
                     >
                       <div className="model-row-name">
                         <span
@@ -679,24 +755,46 @@ export function ModelLibraryOverlay({
                             VL
                           </span>
                         )}
-                        {isLoaded &&
-                          (server.running ? (
+                        {/* Only the row the server was actually launched with
+                            may claim "loaded", and only while the flags on
+                            screen still match the argv it was launched with —
+                            otherwise say so instead of asserting a match that
+                            isn't there. */}
+                        {isRunningThis ? (
+                          configMatches ? (
                             <span
                               className="badge green"
                               style={{ fontSize: 9.5, padding: "1px 5px" }}
-                              title="The server is running this model"
+                              title="The server is running this model with the flags shown here"
                             >
                               <span className="dot" /> loaded
                             </span>
                           ) : (
                             <span
+                              className="badge yellow"
+                              style={{ fontSize: 9.5, padding: "1px 5px", whiteSpace: "nowrap" }}
+                              title="The server is running this model, but the model/flags on screen have changed since it was launched — load or reload to apply them"
+                            >
+                              differs from running server
+                            </span>
+                          )
+                        ) : (
+                          isSelected && (
+                            <span
                               className="badge ghost"
                               style={{ fontSize: 9.5, padding: "1px 5px" }}
-                              title="Set as --model — start the server to load it"
+                              title={
+                                !server.running
+                                  ? "Set as --model — start the server to load it"
+                                  : runningModel
+                                    ? "Set as --model, but the running server is serving something else — load it to switch"
+                                    : "Set as --model — the running server wasn't started by this app, so what it has loaded is unknown"
+                              }
                             >
                               selected
                             </span>
-                          ))}
+                          )
+                        )}
                       </div>
                       <div className="model-row-owner" title={r.owner}>
                         {r.owner}
@@ -720,17 +818,17 @@ export function ModelLibraryOverlay({
                       <button
                         className="btn"
                         style={{ padding: "3px 9px" }}
-                        onClick={() => doLoad(r.quant.path, true)}
-                        disabled={isLoaded}
-                        title={isLoaded ? "Already loaded" : "Load this model & restart the server"}
+                        onClick={() => doLoad(r.quant.path, true).catch(() => {})}
+                        title={act.title}
+                        disabled={act.disabled}
                       >
-                        {isLoaded ? (
+                        {act.disabled ? (
                           <>
-                            <I.Check size={11} /> Loaded
+                            <I.Check size={11} /> {act.verb}
                           </>
                         ) : (
                           <>
-                            <I.Play size={11} /> Load
+                            <I.Play size={11} /> {act.verb}
                           </>
                         )}
                       </button>
@@ -749,8 +847,8 @@ export function ModelLibraryOverlay({
                         info={info}
                         flags={flags as Record<string, string | number | boolean>}
                         setFlag={setFlag}
-                        onLoad={() => doLoad(r.quant.path, true)}
-                        isLoaded={isLoaded}
+                        onLoad={() => doLoad(r.quant.path, true).catch(() => {})}
+                        isLoaded={isSelected}
                       />
                     )}
                   </div>
@@ -800,11 +898,15 @@ export function ModelLibraryOverlay({
                   // Match row-Load: after a file is chosen, restart the server so it
                   // actually loads (setting --model alone doesn't), then close. On
                   // cancel, keep the overlay open. Start failures surface via toast.
+                  // The stream warning comes after the picker rather than before it,
+                  // so cancelling the file dialog never costs a prompt — the restart
+                  // below is the thing that would kill the reply.
                   pickModel()
-                    .then((picked) => {
+                    .then(async (picked) => {
                       if (!picked) return;
+                      if (!(await confirmStreamInterrupt())) return;
                       onClose();
-                      reloadServer().catch(() => {});
+                      await reloadServer();
                     })
                     .catch(() => {});
                 }}

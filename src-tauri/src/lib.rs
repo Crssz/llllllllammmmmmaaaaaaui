@@ -9,6 +9,7 @@ mod hipfire_convert;
 mod hipfire_diag;
 mod hipfire_pull;
 mod hw;
+mod jsonstore;
 mod mcp;
 mod models_scan;
 mod server;
@@ -253,7 +254,10 @@ pub fn run() {
                 if let Some(state) = window.try_state::<ServerState>() {
                     let mut child = lock_or_poisoned(&state.child);
                     if let Some(mut c) = child.take() {
-                        crate::server::kill_child_tree(&mut c, state.tree_kill.load(Ordering::SeqCst));
+                        crate::server::kill_child_tree(
+                            &mut c,
+                            state.tree_kill.load(Ordering::SeqCst),
+                        );
                     }
                 }
                 if let Some(state) = window.try_state::<BenchState>() {

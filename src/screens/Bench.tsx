@@ -37,6 +37,37 @@ function benchFromConfig(f: FlagValues) {
   };
 }
 
+/** Every field of the llama-bench form, in one object so it can be cached
+ *  wholesale across unmounts (see `formCache`). All values are strings because
+ *  each numeric field also accepts a comma-separated sweep. */
+type BenchForm = {
+  model: string;
+  nPrompt: string;
+  nGen: string;
+  ngl: string;
+  threads: string;
+  batch: string;
+  ubatch: string;
+  ctk: string;
+  ctv: string;
+  fa: string;
+  reps: string;
+  label: string;
+};
+
+function initialForm(f: FlagValues): BenchForm {
+  return { ...benchFromConfig(f), nPrompt: "512", nGen: "128", reps: "3", label: "" };
+}
+
+// App.tsx is a single-component router (`{tab === "bench" && <Bench/>}`), so
+// switching tabs unmounts this screen and destroys every local useState — a
+// user who stepped away mid-run came back to a wiped form. The draft is cached
+// in module scope rather than in benchSlice because it is transient UI state:
+// benchSlice's other fields are all persisted to bench_runs.json, and a
+// half-typed form has no business landing on disk. See the report for the
+// slice-owned alternative if this should outlive a reload.
+let formCache: BenchForm | null = null;
+
 function basename(p: string): string {
   if (!p) return "";
   const sep = p.includes("\\") ? "\\" : "/";
@@ -51,6 +82,65 @@ function rowLabel(r: BenchRow): string {
   else if (r.n_gen > 0 && r.n_prompt === 0) base = `tg${r.n_gen}`;
   else base = `pp${r.n_prompt}+tg${r.n_gen}`;
   return r.n_depth > 0 ? `${base} @ d${r.n_depth}` : base;
+}
+
+// llama-bench measures two different things and reports both under a bare
+// "t/s": prompt processing (pp — prefill, massively parallel) and token
+// generation (tg — decode, memory-bandwidth bound). They differ by an order of
+// magnitude on identical hardware, so a pp number and a tg number must never be
+// ranked or scaled against each other — the winner of a mixed comparison is
+// always just the pp row. Every row is classified here and only ever compared
+// within its own metric. `pg` is llama-bench's combined -pg mode (prefill and
+// decode measured in one row), which is a third quantity again.
+const METRICS = ["pp", "tg", "pg"] as const;
+type BenchMetric = (typeof METRICS)[number];
+
+const METRIC_LABEL: Record<
+  BenchMetric,
+  { cell: string; heading: string; badge: string; hint: string }
+> = {
+  pp: {
+    cell: "prefill",
+    heading: "Prefill · prompt processing (tokens/s)",
+    badge: "pp",
+    hint: "Best prefill (prompt processing) throughput, tokens/s",
+  },
+  tg: {
+    cell: "decode",
+    heading: "Decode · token generation (tokens/s)",
+    badge: "tg",
+    hint: "Best decode (token generation) throughput, tokens/s",
+  },
+  pg: {
+    cell: "prefill+decode",
+    heading: "Prefill + decode · combined (tokens/s)",
+    badge: "pp+tg",
+    hint: "Best combined prefill+decode throughput, tokens/s",
+  },
+};
+
+// Mirrors rowLabel's branching — the two must agree on what a row measures.
+function rowMetric(r: BenchRow): BenchMetric {
+  if (r.n_prompt > 0 && r.n_gen === 0) return "pp";
+  if (r.n_gen > 0 && r.n_prompt === 0) return "tg";
+  return "pg";
+}
+
+type MetricGroup = { metric: BenchMetric; rows: BenchRow[]; top: number };
+
+/** Rows split by metric, each group carrying its own maximum. Bar widths scale
+ *  against `top`; "best" is decided by isGroupBest. */
+function groupByMetric(rows: BenchRow[]): MetricGroup[] {
+  return METRICS.map((metric) => {
+    const g = rows.filter((r) => rowMetric(r) === metric);
+    return { metric, rows: g, top: g.reduce((mx, r) => Math.max(mx, r.avg_ts), 0) };
+  }).filter((g) => g.rows.length > 0);
+}
+
+/** A group of one has nothing to beat, so it gets no winner — otherwise the
+ *  default one-pp-row/one-tg-row pair would light up as two "best" results. */
+function isGroupBest(g: MetricGroup, r: BenchRow): boolean {
+  return g.rows.length > 1 && g.top > 0 && r.avg_ts === g.top;
 }
 
 function faLabel(v: number): string {
@@ -71,8 +161,19 @@ function relTime(ms: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function bestTs(rows: BenchRow[]): number {
-  return rows.reduce((mx, r) => Math.max(mx, r.avg_ts), 0);
+// A history row's delete control is hidden until the row is hovered, which
+// leaves it unreachable for keyboard users. `.bench-run` has no focus-reveal
+// rule (styles.css is owned elsewhere — see the report), so the row tracks
+// keyboard focus itself and overrides `.rdel { opacity: 0 }` inline.
+// `:focus-visible` rather than `:focus` so a mouse click, already covered by
+// `:hover`, doesn't latch the control open after the pointer leaves.
+function isKeyboardFocus(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  try {
+    return target.matches(":focus-visible");
+  } catch {
+    return true; // engine without :focus-visible — reveal on any focus
+  }
 }
 
 function kvLabel(r: BenchRow): string {
@@ -83,15 +184,16 @@ function kvLabel(r: BenchRow): string {
 function runToMarkdown(r: BenchRun): string {
   const lines = r.rows.map(
     (row) =>
-      `| ${rowLabel(row)} | ${nglLabel(row.n_gpu_layers)} | ${row.n_batch || "—"} | ` +
+      `| ${METRIC_LABEL[rowMetric(row)].cell} | ${rowLabel(row)} | ` +
+      `${nglLabel(row.n_gpu_layers)} | ${row.n_batch || "—"} | ` +
       `${faLabel(row.flash_attn)} | ${kvLabel(row)} | ${row.avg_ts.toFixed(2)} | ` +
       `${row.stddev_ts > 0 ? row.stddev_ts.toFixed(2) : "—"} |`,
   );
   return [
     `### ${r.label} — ${basename(r.model_path)}`,
     "",
-    "| test | ngl | batch | fa | kv | t/s | ± stddev |",
-    "| --- | ---: | ---: | --- | --- | ---: | ---: |",
+    "| metric | test | ngl | batch | fa | kv | t/s | ± stddev |",
+    "| --- | --- | ---: | ---: | --- | --- | ---: | ---: |",
     ...lines,
   ].join("\n");
 }
@@ -99,6 +201,7 @@ function runToMarkdown(r: BenchRun): string {
 function runToCsv(r: BenchRun): string {
   const lines = r.rows.map((row) =>
     [
+      METRIC_LABEL[rowMetric(row)].cell,
       rowLabel(row),
       nglLabel(row.n_gpu_layers),
       row.n_batch,
@@ -109,11 +212,32 @@ function runToCsv(r: BenchRun): string {
       row.avg_ns,
     ].join(","),
   );
-  return ["test,ngl,batch,fa,kv,avg_ts,stddev_ts,avg_ns", ...lines].join("\n");
+  return ["metric,test,ngl,batch,fa,kv,avg_ts,stddev_ts,avg_ns", ...lines].join("\n");
 }
 
+// Panel and group titles are real headings so the screen has a document
+// outline under its <h1>, but they must look exactly like the styled text they
+// replace. `.panel-head` already fixes the size and weight of its own text, so
+// a heading inside it only has to drop the UA margin and inherit the rest;
+// group titles inside a panel body carry the same declarations the plain <div>
+// used to, plus an explicit weight so the UA's bold doesn't leak in.
+const PANEL_TITLE: React.CSSProperties = {
+  margin: 0,
+  fontSize: "inherit",
+  fontWeight: "inherit",
+};
+const GROUP_TITLE: React.CSSProperties = {
+  margin: "0 0 6px",
+  fontSize: 11,
+  fontWeight: "inherit",
+  color: "var(--subtle)",
+};
+
 // A numeric/text field that accepts a single value or a comma-separated sweep.
+// `id` is required: it ties the visible <label> to the input, so the label text
+// on screen is also the control's accessible name.
 function Field({
+  id,
   label,
   value,
   onChange,
@@ -121,6 +245,7 @@ function Field({
   hint,
   width,
 }: Readonly<{
+  id: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
@@ -130,11 +255,12 @@ function Field({
 }>) {
   return (
     <div className="bench-field" style={width ? { maxWidth: width } : undefined}>
-      <label>
+      <label htmlFor={id}>
         <span>{label}</span>
         {hint && <span className="hint">{hint}</span>}
       </label>
       <input
+        id={id}
         className="input"
         value={value}
         placeholder={placeholder}
@@ -146,11 +272,15 @@ function Field({
 }
 
 function ResultsTable({ rows }: Readonly<{ rows: BenchRow[] }>) {
-  const top = bestTs(rows);
+  const groups = groupByMetric(rows);
+  const groupOf = new Map(groups.map((g) => [g.metric, g]));
   return (
     <table className="bench-table">
       <thead>
         <tr>
+          <th title="What the row measures — prefill and decode throughput are not comparable">
+            metric
+          </th>
           <th>test</th>
           <th className="num" title="GPU layers">
             ngl
@@ -158,7 +288,10 @@ function ResultsTable({ rows }: Readonly<{ rows: BenchRow[] }>) {
           <th className="num">batch</th>
           <th title="Flash attention">fa</th>
           <th title="KV cache type">kv</th>
-          <th className="num" title="Tokens per second">
+          <th
+            className="num"
+            title="Tokens per second, ranked against rows of the same metric only"
+          >
             t/s
           </th>
           <th className="num">± stddev</th>
@@ -167,10 +300,13 @@ function ResultsTable({ rows }: Readonly<{ rows: BenchRow[] }>) {
       </thead>
       <tbody>
         {rows.map((r, i) => {
-          const isBest = r.avg_ts === top && top > 0;
+          const metric = rowMetric(r);
+          const group = groupOf.get(metric);
+          const isBest = group != null && isGroupBest(group, r);
           const ms = r.avg_ns > 0 ? r.avg_ns / 1e6 : 0;
           return (
             <tr key={i} className={isBest ? "best" : undefined}>
+              <td>{METRIC_LABEL[metric].cell}</td>
               <td>{rowLabel(r)}</td>
               <td className="num">{nglLabel(r.n_gpu_layers)}</td>
               <td className="num">{r.n_batch || "—"}</td>
@@ -187,26 +323,36 @@ function ResultsTable({ rows }: Readonly<{ rows: BenchRow[] }>) {
   );
 }
 
+// One bar group per metric, each scaled against its own group maximum. Scaling
+// prefill and decode on a shared axis would squash every decode bar to a sliver
+// of the prefill winner and imply the two are the same measurement.
 function CompareBars({ rows }: Readonly<{ rows: BenchRow[] }>) {
-  const top = bestTs(rows);
-  if (top <= 0) return null;
+  const groups = groupByMetric(rows).filter((g) => g.top > 0);
+  if (groups.length === 0) return null;
   return (
-    <div className="bench-bars">
-      {rows.map((r, i) => {
-        const pct = (r.avg_ts / top) * 100;
-        const isBest = r.avg_ts === top;
-        return (
-          <div key={i} className={"bench-bar" + (isBest ? " best" : "")}>
-            <span className="blabel" title={rowLabel(r)}>
-              {rowLabel(r)}
-            </span>
-            <div className="btrack">
-              <div className="bfill" style={{ width: `${Math.max(2, pct)}%` }} />
-            </div>
-            <span className="bval">{r.avg_ts.toFixed(1)} t/s</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {groups.map((g) => (
+        <div key={g.metric}>
+          <h3 style={GROUP_TITLE}>{METRIC_LABEL[g.metric].heading}</h3>
+          <div className="bench-bars">
+            {g.rows.map((r, i) => {
+              const pct = (r.avg_ts / g.top) * 100;
+              const isBest = isGroupBest(g, r);
+              return (
+                <div key={i} className={"bench-bar" + (isBest ? " best" : "")}>
+                  <span className="blabel" title={rowLabel(r)}>
+                    {rowLabel(r)}
+                  </span>
+                  <div className="btrack">
+                    <div className="bfill" style={{ width: `${Math.max(2, pct)}%` }} />
+                  </div>
+                  <span className="bval">{r.avg_ts.toFixed(1)} t/s</span>
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -226,6 +372,7 @@ function LlamaBenchScreen() {
     buildDir,
     benchBinary,
     bench,
+    benchPending,
     benchRuns,
     benchViewingId,
     benchStart,
@@ -238,6 +385,7 @@ function LlamaBenchScreen() {
       buildDir: s.settings.build_dir,
       benchBinary: s.build?.binaries?.find((b) => b.name === "llama-bench") ?? null,
       bench: s.bench,
+      benchPending: s.benchPending,
       benchRuns: s.benchRuns,
       benchViewingId: s.benchViewingId,
       benchStart: s.benchStart,
@@ -320,25 +468,24 @@ function LlamaBenchScreen() {
     },
   ];
 
+  // Which history row is showing its delete control because keyboard focus is
+  // inside it (`:hover` covers the mouse; styles.css can't express this yet).
+  const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
+
   // Seed the form from the current server config so the benchmark reflects how
-  // the user actually runs the model. These are local copies — running a
+  // the user actually runs the model — but only the first time, since a cached
+  // draft is what the user last typed. These are local copies: running a
   // benchmark never mutates the Configure flags.
-  const [seed] = useState(() => benchFromConfig(useAppStore.getState().flags));
-  const [model, setModel] = useState(seed.model);
-  const [nPrompt, setNPrompt] = useState("512");
-  const [nGen, setNGen] = useState("128");
-  const [ngl, setNgl] = useState(seed.ngl);
-  const [threads, setThreads] = useState(seed.threads);
-  const [batch, setBatch] = useState(seed.batch);
-  const [ubatch, setUbatch] = useState(seed.ubatch);
-  const [ctk, setCtk] = useState(seed.ctk);
-  const [ctv, setCtv] = useState(seed.ctv);
-  const [fa, setFa] = useState(seed.fa);
-  const [reps, setReps] = useState("3");
-  const [label, setLabel] = useState("");
+  const [form, setForm] = useState<BenchForm>(
+    () => formCache ?? initialForm(useAppStore.getState().flags),
+  );
+  useEffect(() => {
+    formCache = form;
+  }, [form]);
+  const setField = (k: keyof BenchForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const benchMissing = Boolean(buildDir) && benchBinary != null && !benchBinary.ok;
-  const canRun = !bench.running && Boolean(model) && Boolean(buildDir) && !benchMissing;
+  const canRun = !bench.running && Boolean(form.model) && Boolean(buildDir) && !benchMissing;
   // First missing prerequisite, surfaced as the disabled button's tooltip so
   // the user isn't left guessing why "Run benchmark" won't click.
   const runDisabledReason = bench.running
@@ -347,47 +494,40 @@ function LlamaBenchScreen() {
       ? "Pick a llama.cpp build directory first"
       : benchMissing
         ? "llama-bench isn't in this build"
-        : !model
+        : !form.model
           ? "Pick a model first"
           : null;
 
   const onRun = () => {
     if (!buildDir) return;
     const req: BenchRequest = {
-      model,
-      n_prompt: nPrompt,
-      n_gen: nGen,
-      n_gpu_layers: ngl,
-      threads,
-      batch,
-      ubatch,
-      cache_type_k: ctk,
-      cache_type_v: ctv,
-      flash_attn: fa,
-      reps: Number(reps) || 0,
+      model: form.model,
+      n_prompt: form.nPrompt,
+      n_gen: form.nGen,
+      n_gpu_layers: form.ngl,
+      threads: form.threads,
+      batch: form.batch,
+      ubatch: form.ubatch,
+      cache_type_k: form.ctk,
+      cache_type_v: form.ctv,
+      flash_attn: form.fa,
+      reps: Number(form.reps) || 0,
       extra: [],
     };
-    benchStart(buildDir, req, label).catch(() => {});
+    benchStart(buildDir, req, form.label).catch(() => {});
   };
 
   const onBrowse = async () => {
     const picked = await api.pickFile();
     if (picked) {
-      setModel(picked);
-      if (!label) setLabel(basename(picked));
+      setForm((f) => ({ ...f, model: picked, label: f.label || basename(picked) }));
     }
   };
 
   const syncFromConfig = () => {
     const c = benchFromConfig(useAppStore.getState().flags);
-    if (c.model) setModel(c.model); // keep a hand-picked model if config has none
-    setNgl(c.ngl);
-    setThreads(c.threads);
-    setBatch(c.batch);
-    setUbatch(c.ubatch);
-    setCtk(c.ctk);
-    setCtv(c.ctv);
-    setFa(c.fa);
+    // keep a hand-picked model if config has none
+    setForm((f) => ({ ...f, ...c, model: c.model || f.model }));
   };
 
   const viewingRun = benchViewingId ? benchRuns.find((r) => r.id === benchViewingId) : null;
@@ -457,7 +597,8 @@ function LlamaBenchScreen() {
         {/* ── Config ── */}
         <div className="panel">
           <div className="panel-head">
-            <I.Sliders size={14} /> Configuration
+            <I.Sliders size={14} />
+            <h2 style={PANEL_TITLE}>Configuration</h2>
             <span className="meta" style={{ marginLeft: "auto" }}>
               <button
                 className="btn ghost"
@@ -470,16 +611,17 @@ function LlamaBenchScreen() {
           </div>
           <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div className="bench-field bench-model">
-              <label>
+              <label htmlFor="bench-model">
                 <span>Model</span>
-                {model && <span className="hint mono">{basename(model)}</span>}
+                {form.model && <span className="hint mono">{basename(form.model)}</span>}
               </label>
               <div className="bench-model-row">
                 <input
+                  id="bench-model"
                   className="input"
-                  value={model}
+                  value={form.model}
                   placeholder="path to a .gguf file"
-                  onChange={(e) => setModel(e.target.value)}
+                  onChange={(e) => setField("model", e.target.value)}
                   spellCheck={false}
                 />
                 <button className="btn" onClick={() => onBrowse().catch(() => {})}>
@@ -490,66 +632,99 @@ function LlamaBenchScreen() {
 
             <div className="bench-form">
               <Field
+                id="bench-n-prompt"
                 label="Prompt tokens"
                 hint="-p"
-                value={nPrompt}
-                onChange={setNPrompt}
+                value={form.nPrompt}
+                onChange={(v) => setField("nPrompt", v)}
                 placeholder="512"
               />
               <Field
+                id="bench-n-gen"
                 label="Gen tokens"
                 hint="-n"
-                value={nGen}
-                onChange={setNGen}
+                value={form.nGen}
+                onChange={(v) => setField("nGen", v)}
                 placeholder="128"
               />
               <Field
+                id="bench-ngl"
                 label="GPU layers"
                 hint="-ngl"
-                value={ngl}
-                onChange={setNgl}
+                value={form.ngl}
+                onChange={(v) => setField("ngl", v)}
                 placeholder="999"
               />
               <Field
+                id="bench-threads"
                 label="Threads"
                 hint="-t"
-                value={threads}
-                onChange={setThreads}
+                value={form.threads}
+                onChange={(v) => setField("threads", v)}
                 placeholder="auto"
               />
-              <Field label="Batch" hint="-b" value={batch} onChange={setBatch} placeholder="2048" />
               <Field
+                id="bench-batch"
+                label="Batch"
+                hint="-b"
+                value={form.batch}
+                onChange={(v) => setField("batch", v)}
+                placeholder="2048"
+              />
+              <Field
+                id="bench-ubatch"
                 label="Micro-batch"
                 hint="-ub"
-                value={ubatch}
-                onChange={setUbatch}
+                value={form.ubatch}
+                onChange={(v) => setField("ubatch", v)}
                 placeholder="512"
               />
-              <Field label="K cache" hint="-ctk" value={ctk} onChange={setCtk} placeholder="f16" />
-              <Field label="V cache" hint="-ctv" value={ctv} onChange={setCtv} placeholder="f16" />
+              <Field
+                id="bench-ctk"
+                label="K cache"
+                hint="-ctk"
+                value={form.ctk}
+                onChange={(v) => setField("ctk", v)}
+                placeholder="f16"
+              />
+              <Field
+                id="bench-ctv"
+                label="V cache"
+                hint="-ctv"
+                value={form.ctv}
+                onChange={(v) => setField("ctv", v)}
+                placeholder="f16"
+              />
               <div className="bench-field">
-                <label>
+                <label htmlFor="bench-fa">
                   <span>Flash attn</span>
                   <span className="hint">-fa</span>
                 </label>
-                <select className="select" value={fa} onChange={(e) => setFa(e.target.value)}>
+                <select
+                  id="bench-fa"
+                  className="select"
+                  value={form.fa}
+                  onChange={(e) => setField("fa", e.target.value)}
+                >
                   <option value="auto">auto</option>
                   <option value="on">on</option>
                   <option value="off">off</option>
                 </select>
               </div>
               <Field
+                id="bench-reps"
                 label="Repetitions"
                 hint="-r"
-                value={reps}
-                onChange={setReps}
+                value={form.reps}
+                onChange={(v) => setField("reps", v)}
                 placeholder="3"
               />
               <Field
+                id="bench-label"
                 label="Save as"
                 hint="label"
-                value={label}
-                onChange={setLabel}
+                value={form.label}
+                onChange={(v) => setField("label", v)}
                 placeholder="(auto)"
               />
             </div>
@@ -570,9 +745,17 @@ function LlamaBenchScreen() {
                 className="pulse"
                 style={{ background: "var(--yellow)", boxShadow: "0 0 8px var(--yellow)" }}
               />
-              Running llama-bench…
-              <span className="meta" style={{ marginLeft: "auto" }}>
-                {basename(model)}
+              <h2 style={PANEL_TITLE}>Running llama-bench…</h2>
+              {/* Identify the run from the slice's captured start context, not
+                  from the form — the form is editable (and re-seeded on
+                  remount) while the run is in flight, so reading it here
+                  attributed the run to whatever model is currently typed. */}
+              <span
+                className="meta"
+                style={{ marginLeft: "auto" }}
+                title={benchPending?.model || undefined}
+              >
+                {benchPending ? basename(benchPending.model) : "…"}
               </span>
             </div>
             <div className="panel-body">
@@ -587,7 +770,8 @@ function LlamaBenchScreen() {
         {rows && rows.length > 0 && (
           <div className="panel">
             <div className="panel-head">
-              <I.Bolt size={14} /> Results
+              <I.Bolt size={14} />
+              <h2 style={PANEL_TITLE}>Results</h2>
               <span className="meta" style={{ marginLeft: "auto" }}>
                 {sourceLabel}
                 {viewingRun && (
@@ -611,7 +795,10 @@ function LlamaBenchScreen() {
                 <ResultsTable rows={rows} />
               </div>
               <div style={{ fontSize: 11, color: "var(--subtle)", fontStyle: "italic" }}>
-                pp = prompt processing · tg = token generation · d = context depth
+                pp = prefill / prompt processing · tg = decode / token generation · d = context
+                depth. Prefill and decode are different measurements — prefill is massively
+                parallel, decode is memory-bandwidth bound — so each is ranked and scaled only
+                against its own kind.
               </div>
             </div>
           </div>
@@ -629,21 +816,44 @@ function LlamaBenchScreen() {
         {benchRuns.length > 0 && (
           <div className="panel">
             <div className="panel-head">
-              <I.History size={14} /> History
+              <I.History size={14} />
+              <h2 style={PANEL_TITLE}>History</h2>
               <span className="meta" style={{ marginLeft: "auto" }}>
                 {benchRuns.length} run{benchRuns.length === 1 ? "" : "s"}
               </span>
             </div>
             <div className="panel-body">
               <div className="bench-runs">
-                {benchRuns.map((r) => {
-                  const top = bestTs(r.rows);
-                  return (
+                {benchRuns.map((r) => (
+                  // The row is a plain container: the "view" control and the
+                  // "delete" control are sibling buttons, not a button nested
+                  // inside a button (which is invalid HTML — the inner control
+                  // isn't independently focusable and its activation may never
+                  // be delivered).
+                  <div
+                    key={r.id}
+                    className={"bench-run" + (benchViewingId === r.id ? " active" : "")}
+                    onContextMenu={(e) => openMenu(e, runMenuItems(r))}
+                    onFocus={(e) => {
+                      if (isKeyboardFocus(e.target)) setFocusedRunId(r.id);
+                    }}
+                    onBlur={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget)) {
+                        setFocusedRunId((cur) => (cur === r.id ? null : cur));
+                      }
+                    }}
+                  >
                     <button
-                      key={r.id}
-                      className={"bench-run" + (benchViewingId === r.id ? " active" : "")}
+                      className="bench-run-open"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        flex: 1,
+                        minWidth: 0,
+                        textAlign: "left",
+                      }}
                       onClick={() => benchSelectRun(r.id)}
-                      onContextMenu={(e) => openMenu(e, runMenuItems(r))}
                     >
                       <I.Bolt size={13} style={{ color: "var(--muted)", flexShrink: 0 }} />
                       <span className="rname">
@@ -653,22 +863,33 @@ function LlamaBenchScreen() {
                           {r.rows.length === 1 ? "" : "s"} · {relTime(r.created_at)}
                         </span>
                       </span>
-                      <span className="badge ghost mono">{top.toFixed(1)} t/s</span>
-                      <span
-                        className="iconbtn rdel"
-                        role="button"
-                        tabIndex={0}
-                        title="Delete run"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          requestDeleteRun(r);
-                        }}
-                      >
-                        <I.X size={12} />
-                      </span>
+                      {/* One badge per metric present: a single "best t/s"
+                          number was always the prefill figure wearing a
+                          neutral label. */}
+                      {groupByMetric(r.rows).map((g) => (
+                        <span
+                          key={g.metric}
+                          className="badge ghost mono"
+                          title={METRIC_LABEL[g.metric].hint}
+                          style={{ flexShrink: 0 }}
+                        >
+                          {METRIC_LABEL[g.metric].badge} {g.top.toFixed(1)} t/s
+                        </span>
+                      ))}
                     </button>
-                  );
-                })}
+                    <button
+                      className="iconbtn rdel"
+                      title="Delete run"
+                      aria-label={`Delete run "${r.label}"`}
+                      style={focusedRunId === r.id ? { opacity: 1 } : undefined}
+                      onClick={() => {
+                        requestDeleteRun(r);
+                      }}
+                    >
+                      <I.X size={12} />
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -710,7 +931,8 @@ function HipfireResultCard({
   return (
     <div className="panel">
       <div className="panel-head">
-        <I.Bolt size={14} /> Results
+        <I.Bolt size={14} />
+        <h2 style={PANEL_TITLE}>Results</h2>
         <span className="meta" style={{ marginLeft: "auto" }}>
           {tag}
         </span>
@@ -725,9 +947,7 @@ function HipfireResultCard({
             )}
             {summary.prefill.length > 0 && (
               <div>
-                <div style={{ fontSize: 11, color: "var(--subtle)", marginBottom: 6 }}>
-                  Prefill sweep
-                </div>
+                <h3 style={GROUP_TITLE}>Prefill sweep</h3>
                 <table className="bench-table">
                   <thead>
                     <tr>
@@ -752,9 +972,7 @@ function HipfireResultCard({
             )}
             {summary.summary.length > 0 && (
               <div>
-                <div style={{ fontSize: 11, color: "var(--subtle)", marginBottom: 6 }}>
-                  Decode / TTFT / Wall
-                </div>
+                <h3 style={GROUP_TITLE}>Decode / TTFT / Wall</h3>
                 <table className="bench-table">
                   <thead>
                     <tr>
@@ -792,7 +1010,12 @@ function HipfireResultCard({
           </div>
         )}
         <div>
-          <button className="btn ghost" onClick={() => setShowRaw((v) => !v)}>
+          <button
+            className="btn ghost"
+            aria-expanded={showRaw}
+            aria-controls="bench-hipfire-raw"
+            onClick={() => setShowRaw((v) => !v)}
+          >
             <I.ChevR
               size={11}
               style={{
@@ -803,7 +1026,7 @@ function HipfireResultCard({
             {showRaw ? "Hide" : "Show"} raw output
           </button>
           {showRaw && (
-            <div className="bench-progress" style={{ marginTop: 8 }}>
+            <div id="bench-hipfire-raw" className="bench-progress" style={{ marginTop: 8 }}>
               {output || "(empty)"}
             </div>
           )}
@@ -950,7 +1173,8 @@ function HipfireBenchScreen() {
 
         <div className="panel">
           <div className="panel-head">
-            <I.Sliders size={14} /> Configuration
+            <I.Sliders size={14} />
+            <h2 style={PANEL_TITLE}>Configuration</h2>
             <span className="meta" style={{ marginLeft: "auto" }}>
               <button
                 className="btn ghost"
@@ -967,10 +1191,11 @@ function HipfireBenchScreen() {
           </div>
           <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div className="bench-field bench-model">
-              <label>
+              <label htmlFor="bench-hipfire-tag">
                 <span>Model tag</span>
               </label>
               <select
+                id="bench-hipfire-tag"
                 className="select mono"
                 value={tag}
                 onChange={(e) => setTag(e.target.value)}
@@ -988,6 +1213,7 @@ function HipfireBenchScreen() {
               </select>
             </div>
             <Field
+              id="bench-hipfire-runs"
               label="Runs"
               hint="--runs"
               value={runs}
@@ -1005,7 +1231,7 @@ function HipfireBenchScreen() {
                 className="pulse"
                 style={{ background: "var(--yellow)", boxShadow: "0 0 8px var(--yellow)" }}
               />
-              Running hipfire bench…
+              <h2 style={PANEL_TITLE}>Running hipfire bench…</h2>
               <span className="meta" style={{ marginLeft: "auto" }}>
                 {hipfireBench.tag}
               </span>

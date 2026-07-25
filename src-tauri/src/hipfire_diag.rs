@@ -71,7 +71,11 @@ pub struct HipfireDiagResult {
 }
 
 fn parse_leading_u64(s: &str) -> Option<u64> {
-    let digits: String = s.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = s
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     if digits.is_empty() {
         None
     } else {
@@ -183,7 +187,8 @@ pub fn parse_hipfire_diag(output: &str) -> HipfireDiag {
         if in_config {
             if line.starts_with(' ') && trimmed.contains('=') {
                 if let Some((k, v)) = trimmed.split_once('=') {
-                    diag.config.push((k.trim().to_string(), v.trim().to_string()));
+                    diag.config
+                        .push((k.trim().to_string(), v.trim().to_string()));
                 }
                 continue;
             } else if !trimmed.is_empty() {
