@@ -103,12 +103,20 @@ export function Toasts() {
           already exist in the DOM before its content changes, or assistive
           tech never picks up the announcement. Errors get their own
           assertive region so they interrupt; everything else is polite. */}
-      <div role="alert" aria-live="assertive" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        role="alert"
+        aria-live="assertive"
+        style={{ display: "flex", flexDirection: "column", gap: 8 }}
+      >
         {errorToasts.map((t) => (
           <ToastCard key={t.id} toast={t} onDismiss={dismiss} />
         ))}
       </div>
-      <div role="status" aria-live="polite" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ display: "flex", flexDirection: "column", gap: 8 }}
+      >
         {otherToasts.map((t) => (
           <ToastCard key={t.id} toast={t} onDismiss={dismiss} />
         ))}

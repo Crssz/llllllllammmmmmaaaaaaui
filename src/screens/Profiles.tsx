@@ -103,7 +103,13 @@ export function ProfilesScreen() {
       icon: "Trash",
       danger: true,
       onClick: async () => {
-        if (await confirm({ title: `Delete profile "${p.name}"?`, danger: true, confirmLabel: "Delete" }))
+        if (
+          await confirm({
+            title: `Delete profile "${p.name}"?`,
+            danger: true,
+            confirmLabel: "Delete",
+          })
+        )
           deleteProfile(p.id).catch(() => {});
       },
     },
@@ -338,7 +344,9 @@ export function ProfilesScreen() {
 // tag instead when hipfire is the active engine.
 export function defaultProfileName(flags: Record<string, unknown>, settings: Settings): string {
   if (settings.engine_kind === "hipfire") {
-    const tag = String((settings.hipfire_flags as Record<string, unknown> | undefined)?.tag ?? "").trim();
+    const tag = String(
+      (settings.hipfire_flags as Record<string, unknown> | undefined)?.tag ?? "",
+    ).trim();
     return tag || "untitled";
   }
   const model = flags.model ? basename(flags.model as string).replace(".gguf", "") : "untitled";

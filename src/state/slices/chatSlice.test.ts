@@ -1332,9 +1332,9 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
 
   it("(b) running hipfire server (loadedEngine=hipfire) ⇒ hipfire-shaped even if the toggle now reads llama", async () => {
     useAppStore.setState({ loadedEngine: "hipfire" });
-    useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }),
-    );
+    useAppStore
+      .getState()
+      .setSettings(makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }));
     const notify = vi.spyOn(log, "notify");
     // hipfire has no CORS support, so a hipfire round goes through the
     // plugin fetch (chatSlice.ts), not the global one — see the dedicated
@@ -1357,11 +1357,7 @@ describe("chat slice — shapes requests off the running engine, not the toggle 
     expect(body.tools).toBeUndefined();
     expect(body.messages.at(-1).content).toBe("[attached media unavailable]");
     expect(api.readImageBase64).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
-      "warn",
-      "chat",
-      expect.stringContaining("text-only"),
-    );
+    expect(notify).toHaveBeenCalledWith("warn", "chat", expect.stringContaining("text-only"));
   });
 
   // Regression: hipfire DOES emit a real closing usage frame (confirmed live

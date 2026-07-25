@@ -105,7 +105,8 @@ function TopBar({
   const engine = activeEngine(useAppStore.getState);
   const modelLabel = activeModelLabel(useAppStore.getState);
   const engineName = engineBinaryName(engine);
-  const modelName = modelLabel == null ? "no model" : engine === "hipfire" ? modelLabel : basename(modelLabel);
+  const modelName =
+    modelLabel == null ? "no model" : engine === "hipfire" ? modelLabel : basename(modelLabel);
   // Three states: stopped (muted), running-but-loading (yellow), ready (green).
   let dotColor = "var(--muted)";
   if (server.running) dotColor = server.ready ? "var(--green)" : "var(--yellow)";

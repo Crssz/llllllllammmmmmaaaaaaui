@@ -225,21 +225,31 @@ describe("server slice — hipfire engine dispatch", () => {
     // The binary is optional now — it auto-resolves at launch time — so an
     // empty hipfire_path must not block on its own once a tag is set.
     useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_path: "", hipfire_flags: { tag: "qwen3.6:27b" } }),
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "",
+        hipfire_flags: { tag: "qwen3.6:27b" },
+      }),
     );
     expect(launchPrereqError(useAppStore.getState)).toBeNull();
   });
 
   it("launchPrereqError: hipfire with no tag still errors, even with a path set", () => {
-    useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_path: "C:/hipfire/hipfire.exe" }),
-    );
+    useAppStore
+      .getState()
+      .setSettings(
+        makeSettings({ engine_kind: "hipfire", hipfire_path: "C:/hipfire/hipfire.exe" }),
+      );
     expect(launchPrereqError(useAppStore.getState)).toMatch(/tag/i);
   });
 
   it("startServer proceeds when hipfire_path is empty but a tag is set (binary auto-resolves)", async () => {
     useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_path: "", hipfire_flags: { tag: "qwen3.6:27b" } }),
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "",
+        hipfire_flags: { tag: "qwen3.6:27b" },
+      }),
     );
     await useAppStore.getState().startServer(["serve", "qwen3.6:27b", "127.0.0.1:8080"]);
     expect(api.resolveHipfireBin).toHaveBeenCalledWith("");
@@ -252,7 +262,11 @@ describe("server slice — hipfire engine dispatch", () => {
 
   it("startServer surfaces a clear error and never spawns when the hipfire binary can't be resolved", async () => {
     useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_path: "", hipfire_flags: { tag: "qwen3.6:27b" } }),
+      makeSettings({
+        engine_kind: "hipfire",
+        hipfire_path: "",
+        hipfire_flags: { tag: "qwen3.6:27b" },
+      }),
     );
     vi.spyOn(api, "resolveHipfireBin").mockRejectedValueOnce(
       new Error("hipfire not found on PATH — install it or set the binary path in Configure"),
@@ -263,9 +277,11 @@ describe("server slice — hipfire engine dispatch", () => {
   });
 
   it("startServer blocks when the exe path is set but no tag is configured", async () => {
-    useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_path: "C:/hipfire/hipfire.exe" }),
-    );
+    useAppStore
+      .getState()
+      .setSettings(
+        makeSettings({ engine_kind: "hipfire", hipfire_path: "C:/hipfire/hipfire.exe" }),
+      );
     await useAppStore.getState().startServer(["serve", "", "127.0.0.1:8080"]);
     expect(useAppStore.getState().startError).toMatch(/tag/i);
     expect(api.startServer).not.toHaveBeenCalled();
@@ -314,7 +330,11 @@ describe("server slice — hipfire engine dispatch", () => {
     // binary auto-resolution introduces, and it must get the same
     // before-teardown protection as the sync prereq checks above.
     s.setSettings(
-      makeSettings({ build_dir: "/b", engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }),
+      makeSettings({
+        build_dir: "/b",
+        engine_kind: "hipfire",
+        hipfire_flags: { tag: "qwen3.6:27b" },
+      }),
     );
     s.setServer({
       running: true,
@@ -667,9 +687,9 @@ describe("server slice — activeModelLabel selector", () => {
   });
 
   it("hipfire with a tag set returns the tag", () => {
-    useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }),
-    );
+    useAppStore
+      .getState()
+      .setSettings(makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "qwen3.6:27b" } }));
     expect(activeModelLabel(useAppStore.getState)).toBe("qwen3.6:27b");
   });
 
@@ -679,9 +699,9 @@ describe("server slice — activeModelLabel selector", () => {
   });
 
   it("a running hipfire server wins over the toggle flipped to llama", () => {
-    useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }),
-    );
+    useAppStore
+      .getState()
+      .setSettings(makeSettings({ engine_kind: "llama", hipfire_flags: { tag: "qwen3.6:27b" } }));
     useAppStore.getState().setFlag("model", "/models/should-be-ignored.gguf");
     useAppStore.getState().setServer({
       running: true,
@@ -694,9 +714,11 @@ describe("server slice — activeModelLabel selector", () => {
   });
 
   it("a running llama server wins over the toggle flipped to hipfire", () => {
-    useAppStore.getState().setSettings(
-      makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "should-be-ignored" } }),
-    );
+    useAppStore
+      .getState()
+      .setSettings(
+        makeSettings({ engine_kind: "hipfire", hipfire_flags: { tag: "should-be-ignored" } }),
+      );
     useAppStore.getState().setFlag("model", "/models/owner/name/q4.gguf");
     useAppStore.getState().setServer({
       running: true,

@@ -254,7 +254,10 @@ export function BinaryLocator() {
                 </button>
               ) : (
                 // Keep the 4th grid column so size badges stay aligned across rows.
-                <span aria-hidden="true" style={{ width: 28, height: 28, display: "inline-block" }} />
+                <span
+                  aria-hidden="true"
+                  style={{ width: 28, height: 28, display: "inline-block" }}
+                />
               )}
             </div>
           ))}

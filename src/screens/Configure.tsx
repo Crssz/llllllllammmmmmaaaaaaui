@@ -333,7 +333,11 @@ function HipfireConvertPanel({
               placeholder="(none)"
               style={{ flex: 1, minWidth: 0 }}
             />
-            <button className="btn ghost" onClick={() => pickGguf().catch(() => {})} title="Browse…">
+            <button
+              className="btn ghost"
+              onClick={() => pickGguf().catch(() => {})}
+              title="Browse…"
+            >
               <I.Folder size={11} />
             </button>
           </div>
@@ -387,7 +391,10 @@ function HipfireConvertPanel({
             onClick={() => convert().catch(() => {})}
             title={!hipfirePath ? "Set the hipfire executable path first" : undefined}
           >
-            <I.Refresh size={12} style={{ animation: running ? "spin 0.9s linear infinite" : "none" }} />{" "}
+            <I.Refresh
+              size={12}
+              style={{ animation: running ? "spin 0.9s linear infinite" : "none" }}
+            />{" "}
             {running ? "Converting…" : "Convert"}
           </button>
           {running && (
@@ -710,7 +717,11 @@ function HipfirePullPanel({ hipfirePath }: Readonly<{ hipfirePath: string }>) {
             <span
               style={{
                 fontSize: 11.5,
-                color: result.cancelled ? "var(--muted)" : result.ok ? "var(--green)" : "var(--red)",
+                color: result.cancelled
+                  ? "var(--muted)"
+                  : result.ok
+                    ? "var(--green)"
+                    : "var(--red)",
                 display: "flex",
                 alignItems: "center",
                 gap: 4,
@@ -1123,7 +1134,12 @@ export function ConfigureScreen({
               <I.Stop size={12} /> Stop
             </button>
           ) : null}
-          <button className="btn primary" onClick={reload} disabled={startDisabled} title={startHint}>
+          <button
+            className="btn primary"
+            onClick={reload}
+            disabled={startDisabled}
+            title={startHint}
+          >
             <I.Refresh
               size={12}
               style={{ animation: busy ? "spin 0.9s linear infinite" : "none" }}
@@ -1318,259 +1334,261 @@ export function ConfigureScreen({
               (tab === "binary"
                 ? null
                 : FLAG_GROUPS.filter((g) => tab === "all" || g.id === tab).map((g) => {
-                  const flags =
-                    g.id === "spec"
-                      ? g.flags.filter((f) => !f.only || f.only === vals.spec_type)
-                      : g.flags;
-                  const IconCmp = I[g.icon];
-                  // With an explicit MTP drafter GGUF the heads come from the
-                  // drafter, so the main model not having them is fine.
-                  const mtpDrafter = Boolean(vals.model_draft_mtp);
-                  // Filename-based MTP detection couldn't confirm heads and no
-                  // explicit drafter is set. This is a caution, not a blocker:
-                  // the drafter is optional and many MTP GGUFs embed the heads
-                  // without advertising them in the name.
-                  const mtpUnconfirmed = !!modelInfo && !modelInfo.mtp_support && !mtpDrafter;
-                  // DFlash needs an explicit drafter GGUF; without one buildArgs
-                  // emits no --spec-type and llama-server runs unaccelerated.
-                  const dflashMissing =
-                    vals.spec_type === "draft-dflash" && !vals.model_draft_dflash;
-                  // Same for draft-simple, which has no in-model fallback at
-                  // all. draft-mtp (heads can live in the model GGUF) and
-                  // draft-eagle3 (no drafter) are exempt.
-                  const simpleDraftMissing =
-                    vals.spec_type === "draft-simple" && !vals.model_draft;
-                  // buildArgs emits nothing for either of these until the
-                  // drafter is set, so the section badge must not claim
-                  // speculative decoding is on.
-                  const specDraftMissing = simpleDraftMissing || dflashMissing;
-                  return (
-                    <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
-                      {/* The heading wraps the button (rather than the button
+                    const flags =
+                      g.id === "spec"
+                        ? g.flags.filter((f) => !f.only || f.only === vals.spec_type)
+                        : g.flags;
+                    const IconCmp = I[g.icon];
+                    // With an explicit MTP drafter GGUF the heads come from the
+                    // drafter, so the main model not having them is fine.
+                    const mtpDrafter = Boolean(vals.model_draft_mtp);
+                    // Filename-based MTP detection couldn't confirm heads and no
+                    // explicit drafter is set. This is a caution, not a blocker:
+                    // the drafter is optional and many MTP GGUFs embed the heads
+                    // without advertising them in the name.
+                    const mtpUnconfirmed = !!modelInfo && !modelInfo.mtp_support && !mtpDrafter;
+                    // DFlash needs an explicit drafter GGUF; without one buildArgs
+                    // emits no --spec-type and llama-server runs unaccelerated.
+                    const dflashMissing =
+                      vals.spec_type === "draft-dflash" && !vals.model_draft_dflash;
+                    // Same for draft-simple, which has no in-model fallback at
+                    // all. draft-mtp (heads can live in the model GGUF) and
+                    // draft-eagle3 (no drafter) are exempt.
+                    const simpleDraftMissing =
+                      vals.spec_type === "draft-simple" && !vals.model_draft;
+                    // buildArgs emits nothing for either of these until the
+                    // drafter is set, so the section badge must not claim
+                    // speculative decoding is on.
+                    const specDraftMissing = simpleDraftMissing || dflashMissing;
+                    return (
+                      <div key={g.id} className={"cfg-section" + (open[g.id] ? "" : " collapsed")}>
+                        {/* The heading wraps the button (rather than the button
                           becoming one) because a heading is flow content and
                           can't live inside a <button>. */}
-                      <h2 style={{ margin: 0 }}>
-                        <button
-                          type="button"
-                          className="cfg-section-head"
-                          aria-expanded={!!open[g.id]}
-                          aria-controls={`cfg-rows-${g.id}`}
-                          onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
-                        >
-                          <IconCmp size={14} />
-                          <span>{g.label}</span>
-                          {g.id === "spec" &&
-                            vals.spec_type !== "none" &&
-                            vals.spec_type !== "off" && (
-                              <span
-                                className={"badge " + (specDraftMissing ? "yellow" : "accent")}
-                                style={{ marginLeft: 6, fontSize: 10 }}
-                                title={
-                                  specDraftMissing
-                                    ? `${vals.spec_type as string} needs a draft model and none is set — speculative decoding is off.`
-                                    : undefined
+                        <h2 style={{ margin: 0 }}>
+                          <button
+                            type="button"
+                            className="cfg-section-head"
+                            aria-expanded={!!open[g.id]}
+                            aria-controls={`cfg-rows-${g.id}`}
+                            onClick={() => setOpen((s) => ({ ...s, [g.id]: !s[g.id] }))}
+                          >
+                            <IconCmp size={14} />
+                            <span>{g.label}</span>
+                            {g.id === "spec" &&
+                              vals.spec_type !== "none" &&
+                              vals.spec_type !== "off" && (
+                                <span
+                                  className={"badge " + (specDraftMissing ? "yellow" : "accent")}
+                                  style={{ marginLeft: 6, fontSize: 10 }}
+                                  title={
+                                    specDraftMissing
+                                      ? `${vals.spec_type as string} needs a draft model and none is set — speculative decoding is off.`
+                                      : undefined
+                                  }
+                                >
+                                  <span className="dot" />
+                                  {specDraftMissing
+                                    ? "off — no draft model"
+                                    : vals.spec_type === "draft-mtp"
+                                      ? "MTP heads"
+                                      : vals.spec_type === "draft-simple"
+                                        ? "draft model"
+                                        : vals.spec_type === "draft-dflash"
+                                          ? "DFlash drafter"
+                                          : (vals.spec_type as string)}
+                                </span>
+                              )}
+                            <span className="sec-count">
+                              {flags.length} flag{flags.length === 1 ? "" : "s"}
+                            </span>
+                            <I.Chevron size={14} />
+                          </button>
+                        </h2>
+                        <div className="cfg-rows" id={`cfg-rows-${g.id}`}>
+                          {flags.map((f) => {
+                            const isModelPath =
+                              f.key === "model" ||
+                              f.key === "model_draft" ||
+                              f.key === "model_draft_mtp" ||
+                              f.key === "model_draft_dflash" ||
+                              f.key === "mmproj";
+                            const isTemplatePath = f.key === "chat_template_file";
+                            const onBrowse =
+                              f.key === "model"
+                                ? () => pickModel().catch(() => {})
+                                : f.key === "mmproj"
+                                  ? () => pickMmproj().catch(() => {})
+                                  : isModelPath
+                                    ? () => pickGgufFor(f.key).catch(() => {})
+                                    : isTemplatePath
+                                      ? () => pickTemplateFile().catch(() => {})
+                                      : undefined;
+                            // mmproj is auto-detected from the model folder unless
+                            // the user takes control; editing it pins the choice,
+                            // and the trailing control flips between "auto" (a
+                            // hint) and a revert button (when pinned).
+                            const extra =
+                              f.key !== "mmproj" ? undefined : mmprojPinned ? (
+                                <button
+                                  className="btn ghost"
+                                  style={{ flexShrink: 0 }}
+                                  title="Revert to auto-detecting the projector from the model's folder"
+                                  onClick={() => unpinMmproj()}
+                                >
+                                  <I.History size={11} /> auto
+                                </button>
+                              ) : modelInfo && modelInfo.mmproj_siblings.length > 0 ? (
+                                <span
+                                  className="badge ghost"
+                                  style={{ flexShrink: 0, cursor: "help" }}
+                                  title="Auto-detected from the model's folder. Edit or clear to override."
+                                >
+                                  auto
+                                </span>
+                              ) : undefined;
+                            // Cap the ctx slider at the model's native context
+                            // window when the GGUF advertises one.
+                            const maxOverride =
+                              f.key === "ctx" && modelInfo?.context_length
+                                ? Number(modelInfo.context_length)
+                                : undefined;
+                            return (
+                              <FlagRow
+                                key={f.key}
+                                f={f}
+                                value={vals[f.key] ?? f.value}
+                                onChange={
+                                  f.key === "mmproj"
+                                    ? (v) => setMmproj(String(v))
+                                    : (v) => set(f.key, v)
                                 }
-                              >
-                                <span className="dot" />
-                                {specDraftMissing
-                                  ? "off — no draft model"
-                                  : vals.spec_type === "draft-mtp"
-                                    ? "MTP heads"
-                                    : vals.spec_type === "draft-simple"
-                                      ? "draft model"
-                                      : vals.spec_type === "draft-dflash"
-                                        ? "DFlash drafter"
-                                        : (vals.spec_type as string)}
-                              </span>
-                            )}
-                          <span className="sec-count">
-                            {flags.length} flag{flags.length === 1 ? "" : "s"}
-                          </span>
-                          <I.Chevron size={14} />
-                        </button>
-                      </h2>
-                      <div className="cfg-rows" id={`cfg-rows-${g.id}`}>
-                        {flags.map((f) => {
-                          const isModelPath =
-                            f.key === "model" ||
-                            f.key === "model_draft" ||
-                            f.key === "model_draft_mtp" ||
-                            f.key === "model_draft_dflash" ||
-                            f.key === "mmproj";
-                          const isTemplatePath = f.key === "chat_template_file";
-                          const onBrowse =
-                            f.key === "model"
-                              ? () => pickModel().catch(() => {})
-                              : f.key === "mmproj"
-                                ? () => pickMmproj().catch(() => {})
-                                : isModelPath
-                                  ? () => pickGgufFor(f.key).catch(() => {})
-                                  : isTemplatePath
-                                    ? () => pickTemplateFile().catch(() => {})
-                                    : undefined;
-                          // mmproj is auto-detected from the model folder unless
-                          // the user takes control; editing it pins the choice,
-                          // and the trailing control flips between "auto" (a
-                          // hint) and a revert button (when pinned).
-                          const extra =
-                            f.key !== "mmproj" ? undefined : mmprojPinned ? (
-                              <button
-                                className="btn ghost"
-                                style={{ flexShrink: 0 }}
-                                title="Revert to auto-detecting the projector from the model's folder"
-                                onClick={() => unpinMmproj()}
-                              >
-                                <I.History size={11} /> auto
-                              </button>
-                            ) : modelInfo && modelInfo.mmproj_siblings.length > 0 ? (
-                              <span
-                                className="badge ghost"
-                                style={{ flexShrink: 0, cursor: "help" }}
-                                title="Auto-detected from the model's folder. Edit or clear to override."
-                              >
-                                auto
-                              </span>
-                            ) : undefined;
-                          // Cap the ctx slider at the model's native context
-                          // window when the GGUF advertises one.
-                          const maxOverride =
-                            f.key === "ctx" && modelInfo?.context_length
-                              ? Number(modelInfo.context_length)
-                              : undefined;
-                          return (
-                            <FlagRow
-                              key={f.key}
-                              f={f}
-                              value={vals[f.key] ?? f.value}
-                              onChange={
-                                f.key === "mmproj"
-                                  ? (v) => setMmproj(String(v))
-                                  : (v) => set(f.key, v)
-                              }
-                              onBrowse={onBrowse}
-                              extra={extra}
-                              maxOverride={maxOverride}
-                            />
-                          );
-                        })}
-                        {g.id === "spec" && simpleDraftMissing && (
-                          <div
-                            style={{
-                              padding: "10px 16px",
-                              borderTop: "1px solid var(--border)",
-                              background: "var(--yellow-soft)",
-                              fontSize: 11.5,
-                              color: "var(--yellow)",
-                              display: "flex",
-                              gap: 10,
-                              alignItems: "flex-start",
-                            }}
-                          >
-                            <I.Info size={13} style={{ marginTop: 1, color: "var(--yellow)" }} />
-                            <div>
-                              No <strong>Draft model</strong> set — pick a{" "}
-                              <span className="mono">--model-draft</span> GGUF above, or
-                              draft-simple stays off and llama-server runs without speculation.
-                            </div>
-                          </div>
-                        )}
-                        {g.id === "spec" && vals.spec_type === "draft-mtp" && (
-                          <div
-                            style={{
-                              padding: "10px 16px",
-                              borderTop: "1px solid var(--border)",
-                              background: mtpUnconfirmed ? "var(--yellow-soft)" : "var(--surface)",
-                              fontSize: 11.5,
-                              color: mtpUnconfirmed ? "var(--yellow)" : "var(--muted)",
-                              display: "flex",
-                              gap: 10,
-                              alignItems: "flex-start",
-                            }}
-                          >
-                            <I.Info
-                              size={13}
+                                onBrowse={onBrowse}
+                                extra={extra}
+                                maxOverride={maxOverride}
+                              />
+                            );
+                          })}
+                          {g.id === "spec" && simpleDraftMissing && (
+                            <div
                               style={{
-                                marginTop: 1,
-                                color: mtpUnconfirmed ? "var(--yellow)" : "var(--accent)",
+                                padding: "10px 16px",
+                                borderTop: "1px solid var(--border)",
+                                background: "var(--yellow-soft)",
+                                fontSize: 11.5,
+                                color: "var(--yellow)",
+                                display: "flex",
+                                gap: 10,
+                                alignItems: "flex-start",
                               }}
-                            />
-                            <div>
-                              {mtpUnconfirmed ? (
-                                <>
-                                  This GGUF&apos;s filename doesn&apos;t advertise MTP heads. The
-                                  drafter below is <strong>optional</strong> — if the model embeds
-                                  the heads, <span className="mono">draft-mtp</span> works as-is. If
-                                  it doesn&apos;t, llama-server will refuse to start; set an MTP
-                                  drafter GGUF above, or switch to{" "}
-                                  <span className="mono">none</span> or{" "}
-                                  <span className="mono">draft-simple</span>.
-                                </>
-                              ) : mtpDrafter ? (
-                                <>
-                                  Explicit MTP drafter — heads load from the drafter GGUF via{" "}
-                                  <span className="mono">--model-draft</span>.
-                                </>
-                              ) : modelInfo?.mtp_support ? (
-                                <>
-                                  Filename advertises MTP — heads load from the model GGUF, no
-                                  separate draft model needed.
-                                </>
-                              ) : (
-                                <>
-                                  MTP heads load from the model GGUF — no separate draft model
-                                  needed. Memory overhead is ~10% of the target. Best with Qwen 3.6
-                                  MTP and DeepSeek-V3 MTP GGUFs.
-                                </>
-                              )}
+                            >
+                              <I.Info size={13} style={{ marginTop: 1, color: "var(--yellow)" }} />
+                              <div>
+                                No <strong>Draft model</strong> set — pick a{" "}
+                                <span className="mono">--model-draft</span> GGUF above, or
+                                draft-simple stays off and llama-server runs without speculation.
+                              </div>
                             </div>
-                          </div>
-                        )}
-                        {g.id === "spec" && vals.spec_type === "draft-dflash" && (
-                          <div
-                            style={{
-                              padding: "10px 16px",
-                              borderTop: "1px solid var(--border)",
-                              background: dflashMissing ? "var(--yellow-soft)" : "var(--surface)",
-                              fontSize: 11.5,
-                              color: dflashMissing ? "var(--yellow)" : "var(--muted)",
-                              display: "flex",
-                              gap: 10,
-                              alignItems: "flex-start",
-                            }}
-                          >
-                            <I.Info
-                              size={13}
+                          )}
+                          {g.id === "spec" && vals.spec_type === "draft-mtp" && (
+                            <div
                               style={{
-                                marginTop: 1,
-                                color: dflashMissing ? "var(--yellow)" : "var(--accent)",
+                                padding: "10px 16px",
+                                borderTop: "1px solid var(--border)",
+                                background: mtpUnconfirmed
+                                  ? "var(--yellow-soft)"
+                                  : "var(--surface)",
+                                fontSize: 11.5,
+                                color: mtpUnconfirmed ? "var(--yellow)" : "var(--muted)",
+                                display: "flex",
+                                gap: 10,
+                                alignItems: "flex-start",
                               }}
-                            />
-                            <div>
-                              {dflashMissing ? (
-                                <>
-                                  No DFlash drafter set yet — pick a{" "}
-                                  <span className="mono">--model-draft</span> GGUF above, or DFlash
-                                  stays off and llama-server runs without speculation.
-                                </>
-                              ) : (
-                                <>
-                                  DFlash drafts a whole <strong>block</strong> of tokens per step
-                                  with a small block-diffusion drafter, then the target verifies
-                                  them — lossless, and strongest on code and structured output.
-                                  Block size, target layers and mask token are read from the drafter
-                                  GGUF&apos;s metadata;{" "}
-                                  <span className="mono">--spec-draft-n-max</span> is clamped to
-                                  that block size. Requires a llama.cpp build with the DFlash patch
-                                  (<span className="mono">draft-dflash</span>, PR #22105).
-                                </>
-                              )}
+                            >
+                              <I.Info
+                                size={13}
+                                style={{
+                                  marginTop: 1,
+                                  color: mtpUnconfirmed ? "var(--yellow)" : "var(--accent)",
+                                }}
+                              />
+                              <div>
+                                {mtpUnconfirmed ? (
+                                  <>
+                                    This GGUF&apos;s filename doesn&apos;t advertise MTP heads. The
+                                    drafter below is <strong>optional</strong> — if the model embeds
+                                    the heads, <span className="mono">draft-mtp</span> works as-is.
+                                    If it doesn&apos;t, llama-server will refuse to start; set an
+                                    MTP drafter GGUF above, or switch to{" "}
+                                    <span className="mono">none</span> or{" "}
+                                    <span className="mono">draft-simple</span>.
+                                  </>
+                                ) : mtpDrafter ? (
+                                  <>
+                                    Explicit MTP drafter — heads load from the drafter GGUF via{" "}
+                                    <span className="mono">--model-draft</span>.
+                                  </>
+                                ) : modelInfo?.mtp_support ? (
+                                  <>
+                                    Filename advertises MTP — heads load from the model GGUF, no
+                                    separate draft model needed.
+                                  </>
+                                ) : (
+                                  <>
+                                    MTP heads load from the model GGUF — no separate draft model
+                                    needed. Memory overhead is ~10% of the target. Best with Qwen
+                                    3.6 MTP and DeepSeek-V3 MTP GGUFs.
+                                  </>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
+                          {g.id === "spec" && vals.spec_type === "draft-dflash" && (
+                            <div
+                              style={{
+                                padding: "10px 16px",
+                                borderTop: "1px solid var(--border)",
+                                background: dflashMissing ? "var(--yellow-soft)" : "var(--surface)",
+                                fontSize: 11.5,
+                                color: dflashMissing ? "var(--yellow)" : "var(--muted)",
+                                display: "flex",
+                                gap: 10,
+                                alignItems: "flex-start",
+                              }}
+                            >
+                              <I.Info
+                                size={13}
+                                style={{
+                                  marginTop: 1,
+                                  color: dflashMissing ? "var(--yellow)" : "var(--accent)",
+                                }}
+                              />
+                              <div>
+                                {dflashMissing ? (
+                                  <>
+                                    No DFlash drafter set yet — pick a{" "}
+                                    <span className="mono">--model-draft</span> GGUF above, or
+                                    DFlash stays off and llama-server runs without speculation.
+                                  </>
+                                ) : (
+                                  <>
+                                    DFlash drafts a whole <strong>block</strong> of tokens per step
+                                    with a small block-diffusion drafter, then the target verifies
+                                    them — lossless, and strongest on code and structured output.
+                                    Block size, target layers and mask token are read from the
+                                    drafter GGUF&apos;s metadata;{" "}
+                                    <span className="mono">--spec-draft-n-max</span> is clamped to
+                                    that block size. Requires a llama.cpp build with the DFlash
+                                    patch (<span className="mono">draft-dflash</span>, PR #22105).
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                }))}
+                    );
+                  }))}
           </div>
 
           <aside>

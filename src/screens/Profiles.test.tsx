@@ -25,7 +25,10 @@ describe("defaultProfileName", () => {
   });
 
   it("falls back to 'untitled' under hipfire with no tag set", () => {
-    const name = defaultProfileName({}, makeSettings({ engine_kind: "hipfire", hipfire_flags: {} }));
+    const name = defaultProfileName(
+      {},
+      makeSettings({ engine_kind: "hipfire", hipfire_flags: {} }),
+    );
     expect(name).toBe("untitled");
   });
 });

@@ -149,7 +149,10 @@ describe("transcribeSlice", () => {
       ...useAppStore.getState().settings,
       engine_kind: "hipfire",
     });
-    vi.stubGlobal("fetch", vi.fn(async () => fakeRes(["data: [DONE]\n"])));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => fakeRes(["data: [DONE]\n"])),
+    );
     await useAppStore.getState().startTranscribe({ audioPath: "/a.wav", prompt: "go" });
     expect(useAppStore.getState().trError).toBeNull();
   });
@@ -177,7 +180,10 @@ describe("transcribeSlice", () => {
       engine_kind: "hipfire",
     });
     expect(useAppStore.getState().loadedEngine).toBeNull();
-    vi.stubGlobal("fetch", vi.fn(async () => fakeRes(["data: [DONE]\n"])));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => fakeRes(["data: [DONE]\n"])),
+    );
     await useAppStore.getState().startTranscribe({ audioPath: "/a.wav", prompt: "go" });
     expect(useAppStore.getState().trError).toBeNull();
   });

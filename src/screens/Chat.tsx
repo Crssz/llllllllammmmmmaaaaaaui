@@ -296,7 +296,8 @@ export function ChatScreen() {
 
   // llama identifies itself by GGUF path (basenamed for display); hipfire has
   // no --model flag — its identity IS the configured tag, shown as-is.
-  const modelName = modelLabel == null ? "no model" : isHipfireActive ? modelLabel : basename(modelLabel);
+  const modelName =
+    modelLabel == null ? "no model" : isHipfireActive ? modelLabel : basename(modelLabel);
 
   // Whose turn is in flight. chatPending alone can't answer that — it's a
   // single global flag — so every per-chat control keys off chatStreamingId

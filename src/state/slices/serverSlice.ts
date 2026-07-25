@@ -303,7 +303,11 @@ export const createServerSlice: StateCreator<AppStore, [], [], ServerSlice> = (s
       const msg = e instanceof Error ? e.message : String(e);
       // notify() logs at error level AND raises a user-visible toast, so a Load
       // from a surface that doesn't show startError still reports the failure.
-      log.notify("error", "server", `Failed to start ${isHipfire ? "hipfire" : "llama-server"}: ${msg}`);
+      log.notify(
+        "error",
+        "server",
+        `Failed to start ${isHipfire ? "hipfire" : "llama-server"}: ${msg}`,
+      );
       set({ startError: msg });
     }
   },

@@ -170,10 +170,7 @@ export function LogsPanel({ open, onClose }: Readonly<{ open: boolean; onClose: 
                 }}
               >
                 <span style={{ color: "var(--subtle)" }}>{ts}</span>
-                <span
-                  className={LEVEL_BADGE[e.level]}
-                  style={{ fontSize: 11, padding: "1px 5px" }}
-                >
+                <span className={LEVEL_BADGE[e.level]} style={{ fontSize: 11, padding: "1px 5px" }}>
                   {e.level}
                 </span>
                 <span style={{ color: "var(--muted)" }}>[{e.area}]</span>

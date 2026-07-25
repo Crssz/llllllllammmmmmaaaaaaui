@@ -542,8 +542,8 @@ export function McpScreen() {
         <div className="panel" style={{ margin: "0 28px 14px" }}>
           <div className="panel-body" style={{ fontSize: 12.5, color: "var(--muted)" }}>
             <I.Info size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
-            MCP servers configured here are not offered to hipfire chats because the hipfire
-            engine does not support tool calls yet. Configuration below stays fully functional.
+            MCP servers configured here are not offered to hipfire chats because the hipfire engine
+            does not support tool calls yet. Configuration below stays fully functional.
           </div>
         </div>
       )}

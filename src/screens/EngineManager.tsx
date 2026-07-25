@@ -612,7 +612,13 @@ function HipfireDiagScreen() {
           <div className="panel">
             <div
               className="panel-body"
-              style={{ fontSize: 12.5, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}
+              style={{
+                fontSize: 12.5,
+                color: "var(--red)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
             >
               <I.X size={12} style={{ flexShrink: 0 }} />
               <span style={{ flex: 1 }}>Couldn&apos;t run hipfire diag: {error}</span>
@@ -719,16 +725,18 @@ function HipfireDiagScreen() {
               <div className="panel-head">
                 <I.Sliders size={14} /> Config
                 {diag.config_path && (
-                  <span className="meta mono" style={{ marginLeft: "auto" }} title={diag.config_path}>
+                  <span
+                    className="meta mono"
+                    style={{ marginLeft: "auto" }}
+                    title={diag.config_path}
+                  >
                     {diag.config_path}
                   </span>
                 )}
               </div>
               <div className="panel-body">
                 {diag.config.length === 0 ? (
-                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
-                    No config file found.
-                  </div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>No config file found.</div>
                 ) : (
                   <div className="row-ctrl">
                     {diag.config.map(([k, v]) => (

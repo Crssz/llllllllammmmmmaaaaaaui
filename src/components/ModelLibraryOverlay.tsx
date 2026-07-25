@@ -525,9 +525,7 @@ export function ModelLibraryOverlay({
             <input
               autoFocus
               placeholder={
-                isHipfire
-                  ? "Filter by tag or file…"
-                  : "Filter by owner, model, quant, or filename…"
+                isHipfire ? "Filter by tag or file…" : "Filter by owner, model, quant, or filename…"
               }
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -628,7 +626,9 @@ export function ModelLibraryOverlay({
                     <div
                       key={m.tag}
                       className={"model-row" + (isLoaded ? " loaded-row" : "")}
-                      style={{ gridTemplateColumns: "minmax(160px, 1fr) minmax(160px, 1.6fr) 90px auto" }}
+                      style={{
+                        gridTemplateColumns: "minmax(160px, 1fr) minmax(160px, 1.6fr) 90px auto",
+                      }}
                     >
                       <div className="model-row-name">
                         <span className="quant-tag mono">{m.tag}</span>
@@ -671,7 +671,9 @@ export function ModelLibraryOverlay({
                         style={{ padding: "3px 9px" }}
                         onClick={() => doLoadHipfire(m.tag, true).catch(() => {})}
                         disabled={isServing}
-                        title={isServing ? "Already selected" : "Serve this tag & restart the server"}
+                        title={
+                          isServing ? "Already selected" : "Serve this tag & restart the server"
+                        }
                       >
                         {isServing ? (
                           <>
