@@ -13,6 +13,7 @@ import {
   type HipfireLocalModel,
 } from "../lib/api";
 import { buildArgs, type FlagValue } from "../lib/buildArgs";
+import { kvCacheGb } from "../lib/kvCache";
 import { buildHipfireArgs } from "../lib/buildHipfireArgs";
 import { useConfirm } from "../components/ConfirmDialog";
 import { log } from "../lib/logger";
@@ -882,20 +883,19 @@ export function ConfigureScreen({
   // K and V are separate tensors, so --cache-type-k and --cache-type-v each
   // size their own half of that sum rather than one dtype covering both.
   //
-  // Of those three geometry terms only n_layers is available here
-  // (GgufInfo.block_count). inspect_gguf (src-tauri/src/gguf.rs) doesn't parse
-  // `{arch}.attention.head_count_kv`, `.attention.key_length`/`.value_length`,
-  // or `.embedding_length`, so n_kv_heads * head_dim is unknown and the figure
-  // cannot be computed. Report it as unknown instead of guessing: this used to
-  // substitute a literal 64 for that entire product, which real models put at
-  // ~4096-131072 — a 7B at ctx=32768 with f16/f16 rendered 0.01 GB against a
-  // true ~16 GB, understating it ~1000x. Context length is chosen off this
-  // panel, so that made context look free and fed straight into the
-  // out-of-memory load failures. A blank is honest; 0.01 GB is not.
+  // Every one of those terms comes from the model's own GGUF metadata —
+  // inspect_gguf (src-tauri/src/gguf.rs) parses the attention geometry and
+  // lib/kvCache.ts does the arithmetic, returning null the moment a term is
+  // missing. That null matters: this used to substitute a literal 64 for
+  // n_layers * n_kv_heads * head_dim, which real models put at ~4096-131072 —
+  // a 7B at ctx=32768 with f16/f16 rendered 0.01 GB against a true ~16 GB,
+  // understating it ~1000x. Context length is chosen off this panel, so that
+  // made context look free and fed straight into the out-of-memory load
+  // failures. A blank is honest; 0.01 GB is not, and neither is a real-looking
+  // figure built on a guessed geometry.
   //
-  // Cache dtypes and --no-kv-offload are deliberately not read: they can only
-  // scale or relocate a number we don't have (nkvo moves the cache to host RAM
-  // without changing its size), so neither can rescue the estimate.
+  // --no-kv-offload is deliberately not read: it relocates the cache to host
+  // RAM without changing its size, so it can't move this number.
   const est = useMemo<{
     weights: number | null;
     kv: number | null;
@@ -905,8 +905,9 @@ export function ConfigureScreen({
     kvPct: number;
     overheadPct: number;
   }>(() => {
-    // Unknown until the attention geometry above is surfaced by inspect_gguf.
-    const kv: number | null = null;
+    const ctx = vals.ctx as number;
+    // Null when the GGUF omits a geometry term — the row then says so.
+    const kv = kvCacheGb(modelInfo, ctx, vals.ctk as string, vals.ctv as string);
     const overhead = 0.6;
     // Real weights size comes from the inspected GGUF (modelInfo.size_gb).
     // Unknown when no model is selected or the file size couldn't be read.
@@ -929,7 +930,9 @@ export function ConfigureScreen({
       kvPct: kv != null ? pct(kv) : 0,
       overheadPct: pct(overhead),
     };
-  }, [modelInfo]);
+    // `vals` is a real dependency again: the KV term reads ctx and both cache
+    // dtypes, so dropping it would freeze the estimate at its first render.
+  }, [vals, modelInfo]);
 
   // Browse for a GGUF and store it under the given flag key. The store's
   // pickModel() is only correct for the main "model" flag.
@@ -1641,9 +1644,9 @@ export function ConfigureScreen({
                       <span
                         style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}
                         title={
-                          modelInfo?.block_count
-                            ? `Known: ${modelInfo.block_count} layers. Missing: KV-head count and head dimension.`
-                            : "Missing: layer count, KV-head count and head dimension."
+                          modelInfo
+                            ? `This GGUF doesn't declare the attention geometry needed to size a KV cache (layers × KV heads × head width). Known: ${modelInfo.block_count ?? "?"} layers, ${modelInfo.head_count_kv ?? "?"} KV heads.`
+                            : "Select a model to size its KV cache."
                         }
                       >
                         needs model metadata
@@ -1679,9 +1682,9 @@ export function ConfigureScreen({
                   {est.kv == null && (
                     <span style={{ fontSize: 10.5, color: "var(--muted)" }}>
                       Total excludes the KV cache — sizing it needs the model&apos;s attention
-                      geometry (layers × KV heads × head dim), which this app doesn&apos;t read from
-                      the GGUF yet. Real KV usage grows linearly with context size and can exceed
-                      the weights at long contexts, so budget headroom above this figure.
+                      geometry (layers × KV heads × head dim), which this GGUF doesn&apos;t declare.
+                      Real KV usage grows linearly with context size and can exceed the weights at
+                      long contexts, so budget headroom above this figure.
                     </span>
                   )}
                 </div>

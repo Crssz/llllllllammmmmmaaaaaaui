@@ -388,6 +388,17 @@ export type GgufInfo = {
   context_length: number | null;
   /** Transformer block/layer count (`{arch}.block_count`); null when absent. */
   block_count: number | null;
+  /** Attention geometry from the `{arch}.`-prefixed GGUF metadata. Together
+   *  with block_count these size the KV cache (see lib/kvCache.ts); each is
+   *  null when the model doesn't declare it, and the UI must say "unknown"
+   *  rather than substitute a default. */
+  head_count_kv: number | null;
+  head_count: number | null;
+  /** Per-head K/V width; null on most models — fall back to
+   *  `embedding_length / head_count`. */
+  key_length: number | null;
+  value_length: number | null;
+  embedding_length: number | null;
   mtp_support: boolean;
   size_gb: number;
   mmproj_siblings: string[];
