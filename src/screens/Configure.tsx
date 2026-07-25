@@ -13,6 +13,7 @@ import {
   type HipfireLocalModel,
 } from "../lib/api";
 import { buildArgs, type FlagValue } from "../lib/buildArgs";
+import { kvCacheGb } from "../lib/kvCache";
 import { buildHipfireArgs } from "../lib/buildHipfireArgs";
 import { useConfirm } from "../components/ConfirmDialog";
 import { log } from "../lib/logger";
@@ -817,20 +818,24 @@ export function ConfigureScreen({
 
   const est = useMemo(() => {
     const ctx = vals.ctx as number;
-    const ctk = vals.ctk as string;
-    const ctv = vals.ctv as string;
-    const kvBytesPerTok = ctk === "f16" ? 2 : ctk === "f32" ? 4 : 1;
-    const vBytesPerTok = ctv === "f16" ? 2 : ctv === "f32" ? 4 : 1;
-    const kv = (ctx * 64 * (kvBytesPerTok + vBytesPerTok)) / (1024 * 1024 * 1024);
+    // KV = layers × kv_heads × head_dim × ctx × (K dtype + V dtype), every term
+    // read from the model's own GGUF metadata. Null whenever a term is missing
+    // — the row then says so instead of showing a number. This used to stand in
+    // 64 for layers × kv_heads × head_dim (really ~4k-131k), which understated
+    // a 7B at 32k by ~1000× and made long context look free right up until the
+    // model silently failed to load.
+    const kv = kvCacheGb(modelInfo, ctx, vals.ctk as string, vals.ctv as string);
     const overhead = 0.6;
     // Real weights size comes from the inspected GGUF (modelInfo.size_gb).
     // Unknown when no model is selected or the file size couldn't be read.
     const weights = modelInfo && modelInfo.size_gb > 0 ? modelInfo.size_gb : null;
-    const total = weights != null ? weights + kv + overhead : null;
+    // A total that silently omits KV would be the same lie in a different
+    // place, so when KV is unknown the panel labels the total "excl. KV".
+    const total = weights != null ? weights + (kv ?? 0) + overhead : null;
     // Bar widths are proportional to the actual GB. Scale against the total
     // when known; otherwise against the KV+overhead sum so those two bars stay
     // meaningful even before a model is picked.
-    const denom = total ?? kv + overhead;
+    const denom = total ?? (kv ?? 0) + overhead;
     const pct = (v: number) => (denom > 0 ? Math.min(100, (v / denom) * 100) : 0);
     return {
       weights,
@@ -838,7 +843,7 @@ export function ConfigureScreen({
       overhead,
       total,
       weightsPct: weights != null ? pct(weights) : 0,
-      kvPct: pct(kv),
+      kvPct: kv != null ? pct(kv) : 0,
       overheadPct: pct(overhead),
     };
   }, [vals, modelInfo]);
@@ -1458,7 +1463,7 @@ export function ConfigureScreen({
               <div className="panel" style={{ marginTop: 12 }}>
                 <div className="panel-head">
                   <I.Mem size={14} /> Estimated memory
-                  <span className="meta">est.</span>
+                  <span className="meta">{est.kv != null ? "est." : "est. · excl. KV"}</span>
                 </div>
                 <div
                   className="panel-body"
@@ -1481,10 +1486,19 @@ export function ConfigureScreen({
                   </div>
                   <div className="thr-row">
                     <span className="lbl">KV cache</span>
-                    <div className="bar">
-                      <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
-                    </div>
-                    <span className="val">{est.kv.toFixed(2)} GB</span>
+                    {est.kv != null ? (
+                      <div className="bar">
+                        <i style={{ width: `${est.kvPct}%`, background: "var(--cyan)" }} />
+                      </div>
+                    ) : (
+                      <span
+                        style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}
+                        title="Sizing the KV cache needs the model's layer count, KV head count and head width. This GGUF doesn't declare all of them, so the estimate below excludes KV — assume it is much larger than the weights at long context."
+                      >
+                        needs model metadata
+                      </span>
+                    )}
+                    <span className="val">{est.kv != null ? `${est.kv.toFixed(2)} GB` : "—"}</span>
                   </div>
                   <div className="thr-row">
                     <span className="lbl">Overhead</span>

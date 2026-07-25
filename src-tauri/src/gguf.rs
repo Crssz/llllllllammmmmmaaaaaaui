@@ -28,6 +28,20 @@ pub struct GgufInfo {
     /// the GPU-offload (ngl) slider to the model's real layer count instead of
     /// a fixed 0-100 range.
     pub block_count: Option<u64>,
+    /// Attention geometry, read from the architecture-prefixed KV block. A KV
+    /// cache costs `layers × kv_heads × head_dim × ctx × dtype_width` bytes per
+    /// tensor, so the UI needs every one of these terms to size it. They stay
+    /// `Option` because plenty of GGUFs omit some, and a fabricated default
+    /// here becomes an understated memory estimate downstream — which is what
+    /// makes long context look free right up until the model fails to load.
+    pub head_count_kv: Option<u64>,
+    pub head_count: Option<u64>,
+    /// Per-head K/V widths (`{arch}.attention.key_length` / `.value_length`).
+    /// Most architectures omit them; fall back to `embedding_length /
+    /// head_count`.
+    pub key_length: Option<u64>,
+    pub value_length: Option<u64>,
+    pub embedding_length: Option<u64>,
     pub mtp_support: bool,
     pub size_gb: f64,
     /// Sibling mmproj-*.gguf files in the same directory as this model.
@@ -222,6 +236,126 @@ pub fn gguf_read_u64_value<R: Read + Seek>(r: &mut R, ty: u32) -> io::Result<Opt
     })
 }
 
+/// The numeric metadata keys we care about, WITHOUT their architecture prefix.
+/// In the file they're arch-prefixed (`llama.attention.head_count`,
+/// `qwen2.embedding_length`, `gemma3.block_count`), and `general.architecture`
+/// isn't *guaranteed* to be declared before them, so the KV loop collects every
+/// key ending in one of these suffixes and `resolve_meta` picks the arch-owned
+/// one once the whole block has been read.
+const NUMERIC_KEY_SUFFIXES: [&str; 7] = [
+    ".context_length",
+    ".block_count",
+    ".embedding_length",
+    ".attention.head_count",
+    ".attention.head_count_kv",
+    ".attention.key_length",
+    ".attention.value_length",
+];
+
+/// Header fields + the metadata values `inspect_gguf` cares about. Split out of
+/// the command so the parse is testable over an in-memory cursor.
+#[derive(Debug)]
+struct ParsedMeta {
+    version: u32,
+    tensor_count: u64,
+    metadata_count: u64,
+    architecture: Option<String>,
+    general_name: Option<String>,
+    chat_template: Option<String>,
+    /// Every `NUMERIC_KEY_SUFFIXES` hit as (full key, value), in file order.
+    numeric: Vec<(String, u64)>,
+}
+
+/// Pick the value of `{arch}{suffix}` out of the collected numeric KVs.
+///
+/// Falls back to a *unique* suffix match when the architecture is unknown or
+/// doesn't own the key (hand-built GGUFs, mmproj bundles whose keys sit under
+/// `clip.vision.`). An ambiguous suffix — two architectures' worth of the same
+/// key — resolves to `None`: guessing which one describes the text model is how
+/// you end up with a head count that belongs to a vision tower.
+fn resolve_meta(entries: &[(String, u64)], arch: Option<&str>, suffix: &str) -> Option<u64> {
+    if let Some(a) = arch {
+        let want = format!("{a}{suffix}");
+        if let Some((_, v)) = entries.iter().find(|(k, _)| *k == want) {
+            return Some(*v);
+        }
+    }
+    let mut hits = entries.iter().filter(|(k, _)| k.ends_with(suffix));
+    match (hits.next(), hits.next()) {
+        (Some((_, v)), None) => Some(*v),
+        _ => None,
+    }
+}
+
+/// Read the GGUF header and walk the metadata KV block, capturing the strings
+/// and numbers we surface. Every arm reads or skips its value in full and the
+/// loop never breaks early, so on return the reader sits exactly at the first
+/// tensor descriptor.
+fn read_header_and_metadata<R: Read + Seek>(r: &mut R) -> Result<ParsedMeta, String> {
+    let mut magic = [0u8; 4];
+    r.read_exact(&mut magic)
+        .map_err(|e| format!("read magic: {e}"))?;
+    if &magic != b"GGUF" {
+        return Err(format!(
+            "not a GGUF file (magic = {:?})",
+            String::from_utf8_lossy(&magic)
+        ));
+    }
+
+    let version = gguf_read_u32(r).map_err(|e| format!("read version: {e}"))?;
+    if version < 2 {
+        return Err(format!("GGUF v{version} too old (need >= 2)"));
+    }
+    let tensor_count = gguf_read_u64(r).map_err(|e| format!("read tcount: {e}"))?;
+    let metadata_count = gguf_read_u64(r).map_err(|e| format!("read mcount: {e}"))?;
+
+    let mut out = ParsedMeta {
+        version,
+        tensor_count,
+        metadata_count,
+        architecture: None,
+        general_name: None,
+        chat_template: None,
+        numeric: Vec::new(),
+    };
+
+    for i in 0..metadata_count {
+        let key = gguf_read_string(r).map_err(|e| format!("read kv key at {i}: {e}"))?;
+        let ty = gguf_read_u32(r).map_err(|e| format!("read kv type at {i}: {e}"))?;
+        match key.as_str() {
+            "general.architecture" if ty == 8 => {
+                out.architecture =
+                    Some(gguf_read_string(r).map_err(|e| format!("read architecture: {e}"))?);
+            }
+            "general.name" if ty == 8 => {
+                out.general_name =
+                    Some(gguf_read_string(r).map_err(|e| format!("read general.name: {e}"))?);
+            }
+            // Capture only the DEFAULT template (exact key). Named variants like
+            // `tokenizer.chat_template.tool_use` fall through to skip.
+            "tokenizer.chat_template" if ty == 8 => {
+                out.chat_template =
+                    Some(gguf_read_string(r).map_err(|e| format!("read chat_template: {e}"))?);
+            }
+            // The leading `.` in every suffix is what keeps neighbours like
+            // `deepseek2.leading_dense_block_count` from being mistaken for
+            // `{arch}.block_count`.
+            k if NUMERIC_KEY_SUFFIXES.iter().any(|s| k.ends_with(s)) => {
+                let full = k.to_string();
+                if let Some(v) =
+                    gguf_read_u64_value(r, ty).map_err(|e| format!("read {full}: {e}"))?
+                {
+                    out.numeric.push((full, v));
+                }
+            }
+            _ => {
+                gguf_skip_value(r, ty).map_err(|e| format!("skip kv {key}: {e}"))?;
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
     let p = PathBuf::from(&path);
@@ -234,71 +368,26 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
     let f = fs::File::open(&p).map_err(|e| format!("open: {e}"))?;
     let mut r = std::io::BufReader::new(f);
 
-    let mut magic = [0u8; 4];
-    r.read_exact(&mut magic)
-        .map_err(|e| format!("read magic: {e}"))?;
-    if &magic != b"GGUF" {
-        return Err(format!(
-            "not a GGUF file (magic = {:?})",
-            String::from_utf8_lossy(&magic)
-        ));
-    }
+    let parsed = read_header_and_metadata(&mut r)?;
+    let tensor_count = parsed.tensor_count;
 
-    let version = gguf_read_u32(&mut r).map_err(|e| format!("read version: {e}"))?;
-    if version < 2 {
-        return Err(format!("GGUF v{version} too old (need >= 2)"));
-    }
-    let tensor_count = gguf_read_u64(&mut r).map_err(|e| format!("read tcount: {e}"))?;
-    let metadata_count = gguf_read_u64(&mut r).map_err(|e| format!("read mcount: {e}"))?;
-
-    let mut architecture: Option<String> = None;
-    let mut general_name: Option<String> = None;
-    let mut context_length: Option<u64> = None;
-    let mut block_count: Option<u64> = None;
-    let mut chat_template: Option<String> = None;
-
-    for i in 0..metadata_count {
-        let key = gguf_read_string(&mut r).map_err(|e| format!("read kv key at {i}: {e}"))?;
-        let ty = gguf_read_u32(&mut r).map_err(|e| format!("read kv type at {i}: {e}"))?;
-        match key.as_str() {
-            "general.architecture" if ty == 8 => {
-                architecture =
-                    Some(gguf_read_string(&mut r).map_err(|e| format!("read architecture: {e}"))?);
-            }
-            "general.name" if ty == 8 => {
-                general_name =
-                    Some(gguf_read_string(&mut r).map_err(|e| format!("read general.name: {e}"))?);
-            }
-            // Capture only the DEFAULT template (exact key). Named variants like
-            // `tokenizer.chat_template.tool_use` fall through to skip.
-            "tokenizer.chat_template" if ty == 8 => {
-                chat_template =
-                    Some(gguf_read_string(&mut r).map_err(|e| format!("read chat_template: {e}"))?);
-            }
-            k if k.ends_with(".context_length") => {
-                context_length = gguf_read_u64_value(&mut r, ty)
-                    .map_err(|e| format!("read context_length: {e}"))?;
-            }
-            // `{arch}.block_count` = transformer layer count. `ends_with` mirrors
-            // the context_length match; the leading `.` guard means keys like
-            // `deepseek2.leading_dense_block_count` don't clobber it.
-            k if k.ends_with(".block_count") => {
-                block_count = gguf_read_u64_value(&mut r, ty)
-                    .map_err(|e| format!("read block_count: {e}"))?;
-            }
-            _ => {
-                gguf_skip_value(&mut r, ty).map_err(|e| format!("skip kv {key}: {e}"))?;
-            }
-        }
-    }
-
-    // The KV loop above fully consumes every value (each arm reads or skips the
-    // whole value, and it never breaks early), so the reader is now positioned
-    // exactly at the first tensor descriptor. Enumerate the distinct quant types
-    // best-effort — a parse hiccup yields a partial/empty vec, never an error.
+    // `read_header_and_metadata` leaves the reader on the first tensor
+    // descriptor. Enumerate the distinct quant types best-effort — a parse
+    // hiccup yields a partial/empty vec, never an error.
     let tensor_types = read_tensor_types(&mut r, tensor_count);
 
-    let (supports_thinking, thinking_style) = match chat_template.as_deref() {
+    // Resolve the arch-prefixed numerics now that the whole KV block (and with
+    // it `general.architecture`) has been read.
+    let arch = parsed.architecture.as_deref();
+    let context_length = resolve_meta(&parsed.numeric, arch, ".context_length");
+    let block_count = resolve_meta(&parsed.numeric, arch, ".block_count");
+    let embedding_length = resolve_meta(&parsed.numeric, arch, ".embedding_length");
+    let head_count = resolve_meta(&parsed.numeric, arch, ".attention.head_count");
+    let head_count_kv = resolve_meta(&parsed.numeric, arch, ".attention.head_count_kv");
+    let key_length = resolve_meta(&parsed.numeric, arch, ".attention.key_length");
+    let value_length = resolve_meta(&parsed.numeric, arch, ".attention.value_length");
+
+    let (supports_thinking, thinking_style) = match parsed.chat_template.as_deref() {
         Some(t) => classify_thinking(t),
         None => (false, None),
     };
@@ -338,13 +427,18 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
 
     let info = GgufInfo {
         path,
-        gguf_version: version,
+        gguf_version: parsed.version,
         tensor_count,
-        metadata_count,
-        architecture,
-        general_name,
+        metadata_count: parsed.metadata_count,
+        architecture: parsed.architecture,
+        general_name: parsed.general_name,
         context_length,
         block_count,
+        head_count_kv,
+        head_count,
+        key_length,
+        value_length,
+        embedding_length,
         mtp_support,
         size_gb,
         mmproj_siblings,
@@ -353,11 +447,16 @@ pub fn inspect_gguf(path: String) -> Result<GgufInfo, String> {
         tensor_types,
     };
     log::info!(
-        "inspect_gguf: arch={:?} mtp={} ctx={:?} layers={:?} size={:.2} GB mmproj={} thinking={}({:?}) quants={:?}",
+        "inspect_gguf: arch={:?} mtp={} ctx={:?} layers={:?} heads={:?}/{:?}kv kv_dim={:?}/{:?} emb={:?} size={:.2} GB mmproj={} thinking={}({:?}) quants={:?}",
         info.architecture,
         info.mtp_support,
         info.context_length,
         info.block_count,
+        info.head_count,
+        info.head_count_kv,
+        info.key_length,
+        info.value_length,
+        info.embedding_length,
         info.size_gb,
         info.mmproj_siblings.len(),
         info.supports_thinking,
@@ -548,5 +647,172 @@ mod tests {
     fn read_tensor_types_empty_for_zero_count() {
         let mut c = Cursor::new(Vec::new());
         assert!(read_tensor_types(&mut c, 0).is_empty());
+    }
+
+    // ── metadata parse ──────────────────────────────────────────────────────
+
+    fn push_gguf_string(buf: &mut Vec<u8>, s: &str) {
+        buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+    }
+
+    /// Build a minimal GGUF header + metadata block: a `general.architecture`
+    /// string KV followed by the given u32 KVs (gguf value type 4), then zero
+    /// tensor descriptors.
+    fn build_gguf(arch: Option<&str>, kvs: &[(&str, u32)]) -> Vec<u8> {
+        let mut buf = b"GGUF".to_vec();
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        let count = kvs.len() as u64 + u64::from(arch.is_some());
+        buf.extend_from_slice(&count.to_le_bytes()); // metadata_count
+        if let Some(a) = arch {
+            push_gguf_string(&mut buf, "general.architecture");
+            buf.extend_from_slice(&8u32.to_le_bytes()); // type: string
+            push_gguf_string(&mut buf, a);
+        }
+        for (k, v) in kvs {
+            push_gguf_string(&mut buf, k);
+            buf.extend_from_slice(&4u32.to_le_bytes()); // type: u32
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        buf
+    }
+
+    /// Resolve every geometry key for `arch` at once — mirrors what
+    /// `inspect_gguf` does after the KV block is read.
+    fn geometry(m: &ParsedMeta) -> [Option<u64>; 6] {
+        let a = m.architecture.as_deref();
+        [
+            resolve_meta(&m.numeric, a, ".block_count"),
+            resolve_meta(&m.numeric, a, ".attention.head_count"),
+            resolve_meta(&m.numeric, a, ".attention.head_count_kv"),
+            resolve_meta(&m.numeric, a, ".attention.key_length"),
+            resolve_meta(&m.numeric, a, ".attention.value_length"),
+            resolve_meta(&m.numeric, a, ".embedding_length"),
+        ]
+    }
+
+    #[test]
+    fn parses_mha_geometry_for_llama() {
+        // Llama-2-7B: 32 layers, 32 heads, 32 KV heads (no GQA), no explicit
+        // key/value_length — head_dim falls back to 4096 / 32 = 128.
+        let buf = build_gguf(
+            Some("llama"),
+            &[
+                ("llama.context_length", 4096),
+                ("llama.block_count", 32),
+                ("llama.embedding_length", 4096),
+                ("llama.attention.head_count", 32),
+                ("llama.attention.head_count_kv", 32),
+            ],
+        );
+        let mut c = Cursor::new(buf);
+        let m = read_header_and_metadata(&mut c).unwrap();
+        assert_eq!(m.architecture.as_deref(), Some("llama"));
+        assert_eq!(
+            geometry(&m),
+            [Some(32), Some(32), Some(32), None, None, Some(4096)]
+        );
+        assert_eq!(
+            resolve_meta(&m.numeric, Some("llama"), ".context_length"),
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn parses_gqa_geometry_for_qwen2() {
+        // Qwen2.5-7B: 28 layers, 28 heads but only 4 KV heads, explicit
+        // key/value_length. head_count_kv must NOT be swallowed by the
+        // `.attention.head_count` suffix.
+        let buf = build_gguf(
+            Some("qwen2"),
+            &[
+                ("qwen2.block_count", 28),
+                ("qwen2.embedding_length", 3584),
+                ("qwen2.attention.head_count", 28),
+                ("qwen2.attention.head_count_kv", 4),
+                ("qwen2.attention.key_length", 128),
+                ("qwen2.attention.value_length", 128),
+            ],
+        );
+        let mut c = Cursor::new(buf);
+        let m = read_header_and_metadata(&mut c).unwrap();
+        assert_eq!(
+            geometry(&m),
+            [
+                Some(28),
+                Some(28),
+                Some(4),
+                Some(128),
+                Some(128),
+                Some(3584)
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_meta_prefers_the_declared_architecture() {
+        // A vision-bundle GGUF carries a second embedding_length under
+        // `clip.vision.` — the text model's must win.
+        let buf = build_gguf(
+            Some("gemma3"),
+            &[
+                ("clip.vision.embedding_length", 1152),
+                ("clip.vision.block_count", 27),
+                ("gemma3.embedding_length", 2560),
+                ("gemma3.block_count", 34),
+            ],
+        );
+        let mut c = Cursor::new(buf);
+        let m = read_header_and_metadata(&mut c).unwrap();
+        assert_eq!(
+            resolve_meta(&m.numeric, Some("gemma3"), ".embedding_length"),
+            Some(2560)
+        );
+        assert_eq!(
+            resolve_meta(&m.numeric, Some("gemma3"), ".block_count"),
+            Some(34)
+        );
+    }
+
+    #[test]
+    fn resolve_meta_falls_back_to_a_unique_suffix_match() {
+        // No general.architecture at all: a lone suffix hit still resolves...
+        let entries = vec![("mystery.block_count".to_string(), 12u64)];
+        assert_eq!(resolve_meta(&entries, None, ".block_count"), Some(12));
+        // ...but two competing prefixes are ambiguous, so we report nothing
+        // rather than guess which one describes the text model.
+        let entries = vec![
+            ("clip.vision.block_count".to_string(), 27u64),
+            ("mystery.block_count".to_string(), 12u64),
+        ];
+        assert_eq!(resolve_meta(&entries, None, ".block_count"), None);
+    }
+
+    #[test]
+    fn read_header_and_metadata_ignores_lookalike_keys() {
+        // `leading_dense_block_count` has no dot before `block_count`, so the
+        // suffix match must skip it; the real block_count still resolves.
+        let buf = build_gguf(
+            Some("deepseek2"),
+            &[
+                ("deepseek2.leading_dense_block_count", 1),
+                ("deepseek2.block_count", 61),
+            ],
+        );
+        let mut c = Cursor::new(buf);
+        let m = read_header_and_metadata(&mut c).unwrap();
+        assert_eq!(m.numeric.len(), 1);
+        assert_eq!(
+            resolve_meta(&m.numeric, Some("deepseek2"), ".block_count"),
+            Some(61)
+        );
+    }
+
+    #[test]
+    fn read_header_and_metadata_rejects_bad_magic() {
+        let mut c = Cursor::new(b"NOPE1234".to_vec());
+        let err = read_header_and_metadata(&mut c).unwrap_err();
+        assert!(err.contains("not a GGUF file"));
     }
 }
