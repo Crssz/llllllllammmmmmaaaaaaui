@@ -18,7 +18,16 @@ import { useConfirm } from "./ConfirmDialog";
 import { quantDescription } from "../lib/quant";
 import { buildArgs } from "../lib/buildArgs";
 
-type SortBy = "recent" | "size" | "name";
+// No "recent": neither scan surfaces a modification time (QuantFile is
+// {tag, filename, path, size_gb, bits, badges}; HipfireLocalModel is
+// {file, size, tag}), so a recency option could only ever be a no-op that
+// silently left the rows in raw scan order.
+type SortBy = "name" | "size";
+
+const SORT_TITLES: Record<SortBy, string> = {
+  name: "Sort alphabetically",
+  size: "Sort by size, largest first",
+};
 
 function basename(p: string): string {
   if (!p) return "";
@@ -105,7 +114,7 @@ export function ModelLibraryOverlay({
   const openMenu = useContextMenu();
   const { confirmElement, confirm } = useConfirm();
   const [q, setQ] = useState("");
-  const [sort, setSort] = useState<SortBy>("recent");
+  const [sort, setSort] = useState<SortBy>("name");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [rowInfo, setRowInfo] = useState<Record<string, GgufInfo | "loading" | "error">>({});
 
@@ -194,7 +203,7 @@ export function ModelLibraryOverlay({
     }
     if (sort === "size") {
       flat.sort((a, b) => b.quant.size_gb - a.quant.size_gb);
-    } else if (sort === "name") {
+    } else {
       flat.sort((a, b) =>
         `${a.owner}/${a.model.name}-${a.quant.tag}`.localeCompare(
           `${b.owner}/${b.model.name}-${b.quant.tag}`,
@@ -214,7 +223,7 @@ export function ModelLibraryOverlay({
     }
     if (sort === "size") {
       list = [...list].sort((a, b) => parseSizeGb(b.size) - parseSizeGb(a.size));
-    } else if (sort === "name") {
+    } else {
       list = [...list].sort((a, b) => a.tag.localeCompare(b.tag));
     }
     return list;
@@ -555,8 +564,14 @@ export function ModelLibraryOverlay({
             </button>
           )}
           <div className="segmented">
-            {(["recent", "size", "name"] as SortBy[]).map((s) => (
-              <button key={s} className={sort === s ? "on" : ""} onClick={() => setSort(s)}>
+            {(["name", "size"] as SortBy[]).map((s) => (
+              <button
+                key={s}
+                className={sort === s ? "on" : ""}
+                aria-pressed={sort === s}
+                title={SORT_TITLES[s]}
+                onClick={() => setSort(s)}
+              >
                 {s}
               </button>
             ))}
